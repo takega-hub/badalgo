@@ -1,0 +1,4143 @@
+import math
+import time
+import warnings
+import os
+
+# Подавляем предупреждения scikit-learn ДО импорта библиотек
+# Устанавливаем переменную окружения ПЕРВОЙ
+os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning'
+os.environ['SKLEARN_WARNINGS'] = 'ignore'
+
+# Фильтруем все предупреждения sklearn
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', module='sklearn')
+warnings.filterwarnings('ignore', message='.*sklearn.*')
+warnings.filterwarnings('ignore', message='.*parallel.*')
+warnings.filterwarnings('ignore', message='.*delayed.*')
+warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.*')
+warnings.filterwarnings('ignore', message='.*should be used with.*')
+warnings.filterwarnings('ignore', message='.*propagate the scikit-learn configuration.*')
+# Специфичное предупреждение из терминала
+warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.delayed.*')
+
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any, List, Tuple
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from bot.config import AppSettings
+from bot.exchange.bybit_client import BybitClient
+from bot.indicators import prepare_with_indicators
+from bot.strategy import Action, Bias, build_signals, enrich_for_strategy
+from bot.web.history import add_signal, add_trade, check_recent_loss_trade
+from bot.ml.strategy_ml import build_ml_signals
+
+# Импорт для обработки ошибок Bybit API
+try:
+    from pybit.exceptions import InvalidRequestError
+except ImportError:
+    InvalidRequestError = Exception
+
+
+def _timeframe_to_bybit_interval(tf: str) -> str:
+    mapping = {
+        "1m": "1",
+        "3m": "3",
+        "5m": "5",
+        "15m": "15",
+        "30m": "30",
+        "1h": "60",
+        "4h": "240",
+    }
+    return mapping.get(tf, "15")
+
+
+def _log(message: str, symbol: Optional[str] = None) -> None:
+    """
+    Вспомогательная функция для логирования с префиксом символа.
+    
+    Args:
+        message: Сообщение для логирования
+        symbol: Торговая пара (опционально, для многопарной торговли)
+    """
+    if symbol:
+        print(f"[live] [{symbol}] {message}")
+    else:
+        print(f"[live] {message}")
+
+
+def _load_processed_signals(processed_signals_file: Path) -> set:
+    """Загрузить обработанные сигналы из файла."""
+    if processed_signals_file.exists():
+        try:
+            import json
+            with open(processed_signals_file, 'r', encoding='utf-8') as f:
+                saved_signals = json.load(f)
+                processed_signals = set(saved_signals.get("signal_ids", []))
+                print(f"[live] Loaded {len(processed_signals)} processed signals from file")
+                return processed_signals
+        except Exception as e:
+            print(f"[live] ⚠️ Error loading processed signals: {e}")
+            return set()
+    return set()
+
+
+def _save_processed_signals(processed_signals: set, processed_signals_file: Path) -> None:
+    """Сохранить обработанные сигналы в файл."""
+    try:
+        import json
+        data = {
+            "signal_ids": list(processed_signals),
+            "last_updated": datetime.now(timezone.utc).isoformat()
+        }
+        with open(processed_signals_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[live] ⚠️ Error saving processed signals: {e}")
+
+
+def _calculate_tp_sl_for_signal(
+    sig,
+    settings: AppSettings,
+    entry_price: float,
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Рассчитывает TP и SL для сигнала при открытии позиции.
+    
+    Args:
+        sig: Сигнал (Signal объект)
+        settings: Настройки бота
+        entry_price: Цена входа
+        
+    Returns:
+        Tuple (take_profit_price, stop_loss_price) или (None, None) если не удалось рассчитать
+    """
+    try:
+        strategy_type = None
+        if sig.reason.startswith("ml_"):
+            strategy_type = "ml"
+        elif sig.reason.startswith("trend_"):
+            strategy_type = "trend"
+        elif sig.reason.startswith("range_"):
+            strategy_type = "flat"
+        
+        if strategy_type == "ml":
+            # Для ML стратегии используем настройки из ml_target_profit_pct_margin и ml_max_loss_pct_margin
+            # Проценты от маржи нужно перевести в проценты от цены: / leverage (без деления на 100, так как настройки уже в процентах)
+            tp_pct = settings.ml_target_profit_pct_margin / settings.leverage / 100.0
+            sl_pct = settings.ml_max_loss_pct_margin / settings.leverage / 100.0
+            
+            # Пытаемся извлечь TP/SL из reason сигнала (формат: "ml_LONG_сила_среднее_70%_TP_2.50%_SL_1.00%_...")
+            # Если в сигнале указаны конкретные проценты, используем их (они уже в процентах от цены)
+            import re
+            tp_match = re.search(r'TP_([\d.]+)%', sig.reason)
+            sl_match = re.search(r'SL_([\d.]+)%', sig.reason)
+            
+            if tp_match:
+                # Извлекаем процент из reason (например, "2.50%") и преобразуем в долю (0.025)
+                tp_pct = float(tp_match.group(1)) / 100.0
+            if sl_match:
+                # Извлекаем процент из reason (например, "1.00%") и преобразуем в долю (0.01)
+                sl_pct = float(sl_match.group(1)) / 100.0
+            
+            # Рассчитываем абсолютные цены
+            if sig.action == Action.LONG:
+                take_profit = entry_price * (1 + tp_pct)
+                stop_loss = entry_price * (1 - sl_pct)
+            else:  # SHORT
+                take_profit = entry_price * (1 - tp_pct)
+                stop_loss = entry_price * (1 + sl_pct)
+            
+            return take_profit, stop_loss
+            
+        else:
+            # Для TREND/FLAT стратегий используем стандартные настройки (уже в долях, например 0.02 для 2%)
+            tp_pct = settings.risk.take_profit_pct  # Уже в долях (например, 0.02 для 2%)
+            sl_pct = settings.risk.stop_loss_pct    # Уже в долях (например, 0.01 для 1%)
+            
+            if sig.action == Action.LONG:
+                take_profit = entry_price * (1 + tp_pct)
+                stop_loss = entry_price * (1 - sl_pct)
+            else:  # SHORT
+                take_profit = entry_price * (1 - tp_pct)
+                stop_loss = entry_price * (1 + sl_pct)
+            
+            return take_profit, stop_loss
+            
+    except Exception as e:
+        print(f"[live] ⚠️ Error calculating TP/SL for signal: {e}")
+        return None, None
+
+
+def _update_position_tracking(
+    position: Dict[str, Any],
+    position_bias: Bias,
+    current_price: float,
+    position_max_profit: Dict[str, float],
+    position_max_price: Dict[str, float],
+    symbol: str,
+) -> None:
+    """
+    Обновляет отслеживание максимальной прибыли и цены для позиции.
+    
+    Args:
+        position: Информация о позиции
+        position_bias: Направление позиции
+        current_price: Текущая цена
+        position_max_profit: Словарь для хранения максимальной прибыли {symbol: max_profit_pct}
+        position_max_price: Словарь для хранения максимальной цены {symbol: max_price}
+        symbol: Торговая пара
+    """
+    try:
+        avg_price = position.get("avg_price", 0)
+        if avg_price == 0:
+            return
+        
+        # Рассчитываем текущую прибыль в процентах
+        if position_bias == Bias.LONG:
+            profit_pct = ((current_price - avg_price) / avg_price) * 100
+        else:  # SHORT
+            profit_pct = ((avg_price - current_price) / avg_price) * 100
+        
+        # Обновляем максимальную прибыль
+        if symbol not in position_max_profit or profit_pct > position_max_profit[symbol]:
+            position_max_profit[symbol] = profit_pct
+            position_max_price[symbol] = current_price
+    except Exception as e:
+        print(f"[live] Error updating position tracking: {e}")
+
+
+def _ensure_tp_sl_set(
+    client: BybitClient,
+    position: Dict[str, Any],
+    settings: AppSettings,
+    position_bias: Bias,
+    current_price: float,
+    position_max_profit: Dict[str, float],
+    position_max_price: Dict[str, float],
+) -> None:
+    """
+    Проверяет и устанавливает TP/SL для открытой позиции с поддержкой trailing stop, безубытка и защиты прибыли.
+    
+    Args:
+        client: Bybit клиент
+        position: Информация о позиции
+        settings: Настройки бота
+        position_bias: Направление позиции (LONG или SHORT)
+        current_price: Текущая цена
+        position_max_profit: Словарь максимальной прибыли {symbol: max_profit_pct}
+        position_max_price: Словарь максимальной цены {symbol: max_price}
+    """
+    try:
+        avg_price = position.get("avg_price", 0)
+        if avg_price == 0:
+            return
+        
+        symbol = settings.symbol
+        
+        # Обновляем отслеживание максимальной прибыли
+        _update_position_tracking(position, position_bias, current_price, position_max_profit, position_max_price, symbol)
+        
+        # Получаем текущую прибыль
+        max_profit_pct = position_max_profit.get(symbol, 0.0)
+        max_price = position_max_price.get(symbol, current_price)
+        
+        # Проверяем, установлены ли TP/SL
+        current_tp = position.get("take_profit", "")
+        current_sl = position.get("stop_loss", "")
+        tp_set = current_tp and current_tp != "" and str(current_tp).strip() != ""
+        sl_set = current_sl and current_sl != "" and str(current_sl).strip() != ""
+        
+        # Определяем, какая стратегия используется для расчета TP/SL
+        # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
+        # Если ML стратегия включена и имеет приоритет, используем ML TP/SL
+        # Иначе используем TREND/FLAT TP/SL
+        use_ml_tp_sl = False
+        if settings.enable_ml_strategy and settings.ml_model_path:
+            # Проверяем приоритет стратегий
+            strategy_priority = getattr(settings, 'strategy_priority', 'trend')
+            if strategy_priority == "ml":
+                use_ml_tp_sl = True
+            elif strategy_priority == "hybrid" and (settings.enable_trend_strategy or settings.enable_flat_strategy):
+                # В гибридном режиме используем ML TP/SL, если ML стратегия включена
+                use_ml_tp_sl = True
+            elif not (settings.enable_trend_strategy or settings.enable_flat_strategy):
+                # Если только ML стратегия включена, используем ML TP/SL
+                use_ml_tp_sl = True
+        
+        if use_ml_tp_sl:
+            # ML стратегия: используем специальные TP/SL для прибыли от маржи
+            tp_pct = settings.ml_target_profit_pct_margin / settings.leverage
+            sl_pct = settings.ml_max_loss_pct_margin / settings.leverage
+            
+            if position_bias == Bias.LONG:
+                base_tp = avg_price * (1 + tp_pct / 100)
+                base_sl = avg_price * (1 - sl_pct / 100)
+            else:  # SHORT
+                base_tp = avg_price * (1 - tp_pct / 100)
+                base_sl = avg_price * (1 + sl_pct / 100)
+            
+            strategy_name = "ML"
+        else:
+            # Обычные стратегии: используем стандартные TP/SL
+            if position_bias == Bias.LONG:
+                base_tp = avg_price * (1 + settings.risk.take_profit_pct)
+                base_sl = avg_price * (1 - settings.risk.stop_loss_pct)
+            else:  # SHORT
+                base_tp = avg_price * (1 - settings.risk.take_profit_pct)
+                base_sl = avg_price * (1 + settings.risk.stop_loss_pct)
+            
+            strategy_name = "TREND/FLAT"
+        
+        # Инициализируем целевые TP/SL базовыми значениями
+        target_tp = base_tp
+        target_sl = base_sl
+        
+        # 1. БЕЗУБЫТОК: Перемещаем SL в безубыток при достижении определенной прибыли
+        if settings.risk.enable_breakeven and max_profit_pct >= settings.risk.breakeven_activation_pct * 100:
+            if position_bias == Bias.LONG:
+                breakeven_sl = avg_price * 1.001  # Немного выше входа для LONG
+            else:  # SHORT
+                breakeven_sl = avg_price * 0.999  # Немного ниже входа для SHORT
+            
+            # Если текущий SL хуже безубытка, перемещаем его
+            if sl_set:
+                try:
+                    current_sl_val = float(current_sl)
+                    if position_bias == Bias.LONG and current_sl_val < breakeven_sl:
+                        target_sl = breakeven_sl
+                        print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
+                    elif position_bias == Bias.SHORT and current_sl_val > breakeven_sl:
+                        target_sl = breakeven_sl
+                        print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
+                except (ValueError, TypeError):
+                    target_sl = breakeven_sl
+                    print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
+            else:
+                target_sl = breakeven_sl
+                print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
+        
+        # 2. TRAILING STOP: Активируем trailing stop при достижении определенной прибыли
+        if settings.risk.enable_trailing_stop and max_profit_pct >= settings.risk.trailing_stop_activation_pct * 100:
+            trailing_distance_pct = settings.risk.trailing_stop_distance_pct
+            
+            if position_bias == Bias.LONG:
+                # Для LONG: SL должен быть ниже максимальной цены на trailing_distance_pct
+                trailing_sl = max_price * (1 - trailing_distance_pct)
+                # SL не должен быть ниже безубытка или базового SL
+                if trailing_sl > target_sl:
+                    target_sl = trailing_sl
+                    print(f"[live] 📈 Trailing stop: ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%)")
+            else:  # SHORT
+                # Для SHORT: SL должен быть выше максимальной цены на trailing_distance_pct
+                trailing_sl = max_price * (1 + trailing_distance_pct)
+                # SL не должен быть выше безубытка или базового SL
+                if trailing_sl < target_sl:
+                    target_sl = trailing_sl
+                    print(f"[live] 📉 Trailing stop: ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%)")
+        
+        # Проверяем, нужно ли обновить TP/SL
+        tp_needs_update = not tp_set
+        sl_needs_update = not sl_set
+        
+        # Если TP/SL установлены, проверяем, соответствуют ли они целевым значениям
+        # (допускаем погрешность в 0.2% для избежания частых обновлений и ошибок "not modified")
+        if tp_set:
+            try:
+                current_tp_val = float(current_tp)
+                tp_diff_pct = abs((current_tp_val - target_tp) / avg_price) * 100
+                if tp_diff_pct > 0.2:  # Если разница больше 0.2%
+                    tp_needs_update = True
+                    print(f"[live] TP needs update: current={current_tp_val:.2f}, target={target_tp:.2f} (diff: {tp_diff_pct:.2f}%)")
+            except (ValueError, TypeError):
+                tp_needs_update = True
+        
+        if sl_set:
+            try:
+                current_sl_val = float(current_sl)
+                sl_diff_pct = abs((current_sl_val - target_sl) / avg_price) * 100
+                if sl_diff_pct > 0.2:  # Если разница больше 0.2%
+                    sl_needs_update = True
+                    print(f"[live] SL needs update: current={current_sl_val:.2f}, target={target_sl:.2f} (diff: {sl_diff_pct:.2f}%)")
+            except (ValueError, TypeError):
+                sl_needs_update = True
+        
+        # Устанавливаем или обновляем TP/SL
+        if tp_needs_update or sl_needs_update:
+            print(f"[live] 🔧 Ensuring TP/SL for {position_bias.value} position ({strategy_name} strategy):")
+            print(f"[live]   Entry: ${avg_price:.2f}, Current: ${current_price:.2f}, Max: ${max_price:.2f}")
+            print(f"[live]   Max Profit: {max_profit_pct:.2f}%")
+            print(f"[live]   Target TP: ${target_tp:.2f} ({'+' if position_bias == Bias.LONG else '-'}{abs((target_tp - avg_price) / avg_price * 100):.2f}%)")
+            print(f"[live]   Target SL: ${target_sl:.2f} ({'-' if position_bias == Bias.LONG else '+'}{abs((target_sl - avg_price) / avg_price * 100):.2f}%)")
+            
+            try:
+                tp_sl_resp = client.set_trading_stop(
+                    symbol=settings.symbol,
+                    stop_loss=target_sl if sl_needs_update else None,
+                    take_profit=target_tp if tp_needs_update else None,
+                )
+                
+                if tp_sl_resp.get("retCode") == 0:
+                    if tp_needs_update and sl_needs_update:
+                        print(f"[live] ✅ TP and SL set/updated successfully")
+                    elif tp_needs_update:
+                        print(f"[live] ✅ TP set/updated successfully")
+                    elif sl_needs_update:
+                        print(f"[live] ✅ SL set/updated successfully")
+                else:
+                    ret_code = tp_sl_resp.get("retCode")
+                    ret_msg = tp_sl_resp.get("retMsg", "Unknown error")
+                    # Ошибка 34040 "not modified" - это нормально, значение уже установлено
+                    if ret_code == 34040 or "not modified" in str(ret_msg).lower():
+                        # Это не ошибка, просто значение уже установлено или слишком близко
+                        if tp_needs_update and sl_needs_update:
+                            print(f"[live] ℹ️  TP/SL already set (not modified)")
+                        elif tp_needs_update:
+                            print(f"[live] ℹ️  TP already set (not modified)")
+                        elif sl_needs_update:
+                            print(f"[live] ℹ️  SL already set (not modified)")
+                    else:
+                        print(f"[live] ⚠️  Failed to set/update TP/SL: {ret_msg} (ErrCode: {ret_code})")
+            except InvalidRequestError as e:
+                error_msg = str(e)
+                # Ошибка 34040 "not modified" - это нормально
+                if "34040" in error_msg or "not modified" in error_msg.lower():
+                    print(f"[live] ℹ️  TP/SL already set (not modified) - skipping update")
+                else:
+                    raise  # Пробрасываем другие ошибки
+            except Exception as e:
+                # Для других ошибок логируем, но не прерываем выполнение
+                error_msg = str(e)
+                if "34040" in error_msg or "not modified" in error_msg.lower():
+                    print(f"[live] ℹ️  TP/SL already set (not modified) - skipping update")
+                else:
+                    print(f"[live] ⚠️  Error setting TP/SL: {e}")
+    
+    except Exception as e:
+        error_msg = str(e)
+        # Ошибка 34040 "not modified" - это нормально, не логируем как ошибку
+        if "34040" not in error_msg and "not modified" not in error_msg.lower():
+            print(f"[live] Error ensuring TP/SL: {e}")
+            import traceback
+            traceback.print_exc()
+        else:
+            print(f"[live] ℹ️  TP/SL already set (not modified) - skipping update")
+
+
+def _check_partial_close(
+    client: BybitClient,
+    position: Dict[str, Any],
+    position_bias: Bias,
+    current_price: float,
+    settings: AppSettings,
+    position_max_profit: Dict[str, float],
+    position_partial_closed: Dict[str, bool],
+) -> bool:
+    """
+    Проверяет, нужно ли частично закрыть позицию при достижении определенного процента пути к TP.
+    
+    Args:
+        client: Bybit клиент
+        position: Информация о позиции
+        position_bias: Направление позиции
+        current_price: Текущая цена
+        settings: Настройки бота
+        position_max_profit: Словарь максимальной прибыли
+        position_partial_closed: Словарь флагов частичного закрытия {symbol: bool}
+    
+    Returns:
+        True если позиция была частично закрыта, False иначе
+    """
+    try:
+        if not settings.risk.enable_partial_close:
+            return False
+        
+        symbol = settings.symbol
+        
+        # Проверяем, не закрывали ли уже частично
+        if position_partial_closed.get(symbol, False):
+            return False
+        
+        avg_price = position.get("avg_price", 0)
+        if avg_price == 0:
+            return False
+        
+        # Рассчитываем целевой TP
+        if settings.enable_ml_strategy and settings.ml_model_path:
+            tp_pct = settings.ml_target_profit_pct_margin / settings.leverage
+        else:
+            tp_pct = settings.risk.take_profit_pct
+        
+        if position_bias == Bias.LONG:
+            target_tp = avg_price * (1 + tp_pct)
+            # Процент пути к TP
+            progress_to_tp = ((current_price - avg_price) / (target_tp - avg_price)) * 100 if target_tp > avg_price else 0
+        else:  # SHORT
+            target_tp = avg_price * (1 - tp_pct)
+            # Процент пути к TP
+            progress_to_tp = ((avg_price - current_price) / (avg_price - target_tp)) * 100 if avg_price > target_tp else 0
+        
+        # Проверяем, достигли ли мы нужного процента пути к TP
+        if progress_to_tp >= settings.risk.partial_close_at_tp_pct * 100:
+            # Частично закрываем позицию
+            qty = position["size"]
+            close_qty = qty * settings.risk.partial_close_pct
+            
+            print(f"[live] 📊 Partial close triggered:")
+            print(f"[live]   Progress to TP: {progress_to_tp:.2f}% (threshold: {settings.risk.partial_close_at_tp_pct * 100:.2f}%)")
+            print(f"[live]   Closing {settings.risk.partial_close_pct * 100:.0f}% of position: {close_qty:.3f} of {qty:.3f}")
+            
+            side = "Sell" if position_bias == Bias.LONG else "Buy"
+            resp = client.place_order(
+                symbol=symbol,
+                side=side,
+                qty=close_qty,
+                reduce_only=True,
+            )
+            
+            if resp.get("retCode") == 0:
+                print(f"[live] ✅ Partial close successful: {close_qty:.3f} @ ${current_price:.2f}")
+                position_partial_closed[symbol] = True
+                return True
+            else:
+                print(f"[live] ⚠️ Failed to partially close: {resp.get('retMsg', 'Unknown error')}")
+        
+        return False
+    
+    except Exception as e:
+        print(f"[live] Error checking partial close: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _check_profit_protection(
+    client: BybitClient,
+    position: Dict[str, Any],
+    position_bias: Bias,
+    current_price: float,
+    settings: AppSettings,
+    position_max_profit: Dict[str, float],
+    position_max_price: Dict[str, float],
+) -> Optional[str]:
+    """
+    Проверяет защиту прибыли - закрывает позицию при откате от максимума.
+    
+    Args:
+        client: Bybit клиент
+        position: Информация о позиции
+        position_bias: Направление позиции
+        current_price: Текущая цена
+        settings: Настройки бота
+        position_max_profit: Словарь максимальной прибыли
+        position_max_price: Словарь максимальной цены
+    
+    Returns:
+        Причина для закрытия или None
+    """
+    try:
+        if not settings.risk.enable_profit_protection:
+            return None
+        
+        symbol = settings.symbol
+        max_profit_pct = position_max_profit.get(symbol, 0.0)
+        max_price = position_max_price.get(symbol, current_price)
+        
+        # Проверяем, активирована ли защита прибыли
+        if max_profit_pct < settings.risk.profit_protection_activation_pct * 100:
+            return None
+        
+        # Рассчитываем откат от максимума
+        if position_bias == Bias.LONG:
+            retreat_pct = ((max_price - current_price) / max_price) * 100
+        else:  # SHORT
+            retreat_pct = ((current_price - max_price) / max_price) * 100
+        
+        # Если откат превышает порог, закрываем позицию
+        if retreat_pct >= settings.risk.profit_protection_retreat_pct * 100:
+            return f"profit_protection_retreat_{retreat_pct:.2f}%_from_max_{max_profit_pct:.2f}%"
+        
+        return None
+    
+    except Exception as e:
+        print(f"[live] Error checking profit protection: {e}")
+        return None
+
+
+def _check_position_strategy_alignment(
+    client: BybitClient,
+    position: Dict[str, Any],
+    position_bias: Bias,
+    all_signals: list,
+    current_price: float,
+    settings: AppSettings,
+    df_ready: pd.DataFrame,
+) -> Optional[str]:
+    """
+    Проверяет соответствие открытой позиции текущим сигналам стратегий.
+    Закрывает позицию ТОЛЬКО при ЭКСТРЕМАЛЬНЫХ условиях:
+    - Экстремальные смены тенденций (сильный разворот с движением > 2 ATR)
+    - Резкое увеличение объема в обратном направлении (> 2x от среднего + движение > 1.5 ATR)
+    - Использует ATR для фильтрации мелких колебаний
+    
+    Позиция имеет стоп-лосс, поэтому экстренное закрытие только при действительно экстремальных условиях.
+    
+    Args:
+        client: Bybit клиент
+        position: Информация о позиции
+        position_bias: Направление позиции (LONG или SHORT)
+        all_signals: Все текущие сигналы от стратегий
+        current_price: Текущая цена
+        settings: Настройки бота
+        df_ready: DataFrame с индикаторами (для ATR и объема)
+    
+    Returns:
+        Причина для закрытия позиции или None, если закрытие не требуется
+    """
+    try:
+        if not position or not all_signals or df_ready.empty:
+            return None
+        
+        avg_price = position.get("avg_price", 0)
+        if avg_price == 0:
+            return None
+        
+        # Получаем последнюю свечу с индикаторами
+        last_row = df_ready.iloc[-1]
+        # Используем среднее значение ATR с 1H и 4H таймфреймов для среднесрочного анализа
+        atr_value = last_row.get("atr_avg", None)  # Среднее ATR с 1H и 4H
+        # Fallback на 15M ATR если нет данных с высших таймфреймов
+        if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+            atr_value = last_row.get("atr", None)
+        
+        current_volume = last_row.get("volume", 0)
+        vol_sma = last_row.get("vol_sma", 0)
+        
+        # Если нет ATR, не можем проверить волатильность - не закрываем экстренно
+        if pd.isna(atr_value) or atr_value is None or atr_value <= 0:
+            # ATR не критичен для работы, просто пропускаем проверку
+            atr_value = avg_price * 0.01  # Используем 1% от цены как fallback
+            print(f"[live] ⚠️ ATR (1H+4H avg) not available, using fallback: {atr_value:.2f}")
+        else:
+            atr_1h = last_row.get("atr_1h", 0)
+            atr_4h = last_row.get("atr_4h", 0)
+            if not pd.isna(atr_1h) and not pd.isna(atr_4h):
+                print(f"[live] Using avg ATR(1H+4H): ${atr_value:.2f} (1H: ${atr_1h:.2f}, 4H: ${atr_4h:.2f}) for volatility analysis")
+        
+        unrealised_pnl = position.get("unrealised_pnl", 0)
+        unrealised_pnl_pct = (unrealised_pnl / (position["size"] * avg_price)) * 100 if position["size"] > 0 else 0
+        
+        # Рассчитываем движение цены в единицах ATR (для фильтрации мелких колебаний)
+        price_move = abs(current_price - avg_price)
+        price_move_atr = price_move / atr_value if atr_value > 0 else 0
+        
+        # Анализируем текущие сигналы
+        # Ищем СИЛЬНЫЕ сигналы на противоположное направление (только OPEN, не ADD)
+        strong_opposite_signals = []
+        
+        for sig in all_signals:
+            # Только сильные разворотные сигналы (SHORT при LONG позиции или LONG при SHORT позиции)
+            if sig.action == Action.SHORT and position_bias == Bias.LONG:
+                # Проверяем, что это действительно сильный сигнал (breakout, bias_flip)
+                if "breakout" in sig.reason or "bias_flip" in sig.reason or "trend" in sig.reason:
+                    strong_opposite_signals.append(("SHORT", sig.reason))
+            elif sig.action == Action.LONG and position_bias == Bias.SHORT:
+                if "breakout" in sig.reason or "bias_flip" in sig.reason or "trend" in sig.reason:
+                    strong_opposite_signals.append(("LONG", sig.reason))
+        
+        # Принимаем решение о закрытии ТОЛЬКО при экстремальных условиях
+        should_close = False
+        close_reason = ""
+        
+        # 1. ЭКСТРЕМАЛЬНАЯ СМЕНА ТЕНДЕНЦИИ: Сильный сигнал на противоположное направление
+        # И движение цены против позиции более чем на 2 ATR
+        if strong_opposite_signals:
+            # Проверяем, что цена движется против позиции на значительную величину (более 2 ATR)
+            if position_bias == Bias.LONG:
+                price_move_against = avg_price - current_price  # Для LONG: движение вниз = против позиции
+            else:  # SHORT
+                price_move_against = current_price - avg_price  # Для SHORT: движение вверх = против позиции
+            
+            price_move_against_atr = price_move_against / atr_value if atr_value > 0 else 0
+            
+            # Закрываем только если движение против позиции >= 2 ATR (экстремальное движение)
+            if price_move_against_atr >= 2.0:
+                should_close = True
+                reason_type, reason = strong_opposite_signals[0]
+                close_reason = f"extreme_trend_reversal_{reason_type.lower()}_{reason}_price_move_{price_move_against_atr:.2f}ATR"
+                print(f"[live] 🚨 EXTREME TREND REVERSAL detected:")
+                print(f"[live]   Signal: {reason_type} ({reason})")
+                print(f"[live]   Price move against position: {price_move_against_atr:.2f} ATR (threshold: 2.0 ATR)")
+        
+        # 2. РЕЗКОЕ УВЕЛИЧЕНИЕ ОБЪЕМА в обратном направлении
+        # Проверяем объем последних свечей
+        if not should_close and len(df_ready) >= 3 and vol_sma > 0:
+            # Проверяем, есть ли резкий всплеск объема (более 2x от среднего)
+            volume_spike = current_volume > (vol_sma * 2.0)
+            
+            if volume_spike:
+                # Проверяем направление движения цены
+                if position_bias == Bias.LONG:
+                    # Для LONG: объемный всплеск при падении цены = экстремальное условие
+                    price_change = current_price - avg_price
+                    price_change_atr = price_change / atr_value if atr_value > 0 else 0
+                    if price_change < 0 and abs(price_change_atr) >= 1.5:  # Падение более 1.5 ATR
+                        should_close = True
+                        close_reason = f"extreme_volume_spike_against_long_volume_{current_volume:.0f}_vs_sma_{vol_sma:.0f}_price_move_{price_change_atr:.2f}ATR"
+                else:  # SHORT
+                    # Для SHORT: объемный всплеск при росте цены = экстремальное условие
+                    price_change = current_price - avg_price
+                    price_change_atr = price_change / atr_value if atr_value > 0 else 0
+                    if price_change > 0 and abs(price_change_atr) >= 1.5:  # Рост более 1.5 ATR
+                        should_close = True
+                        close_reason = f"extreme_volume_spike_against_short_volume_{current_volume:.0f}_vs_sma_{vol_sma:.0f}_price_move_{price_change_atr:.2f}ATR"
+                
+                if should_close:
+                    print(f"[live] 🚨 EXTREME VOLUME SPIKE detected:")
+                    print(f"[live]   Current volume: {current_volume:.0f} vs SMA: {vol_sma:.0f} ({current_volume/vol_sma if vol_sma > 0 else 0:.2f}x)")
+                    print(f"[live]   Price move: {price_change_atr:.2f} ATR (threshold: 1.5 ATR)")
+        
+        if should_close:
+            print(f"[live] ⚠️ EMERGENCY CLOSE triggered:")
+            print(f"[live]   Position: {position_bias.value} @ ${avg_price:.2f}")
+            print(f"[live]   Current price: ${current_price:.2f}")
+            print(f"[live]   PnL: ${unrealised_pnl:.2f} ({unrealised_pnl_pct:.2f}%)")
+            atr_1h = last_row.get("atr_1h", 0)
+            atr_4h = last_row.get("atr_4h", 0)
+            atr_source = "avg(1H+4H)" if not pd.isna(atr_1h) and not pd.isna(atr_4h) else "15M fallback"
+            print(f"[live]   ATR ({atr_source}): ${atr_value:.2f}, Price move: {price_move_atr:.2f} ATR")
+            if not pd.isna(atr_1h) and not pd.isna(atr_4h):
+                print(f"[live]   ATR details: 1H=${atr_1h:.2f}, 4H=${atr_4h:.2f}, avg=${atr_value:.2f}")
+            print(f"[live]   Close reason: {close_reason}")
+            return close_reason
+        
+        return None
+    
+    except Exception as e:
+        print(f"[live] Error checking position strategy alignment: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _get_balance(client: BybitClient) -> Optional[float]:
+    """Получить доступный баланс USDT."""
+    try:
+        resp = client.get_wallet_balance(account_type="UNIFIED")
+        if resp.get("retCode") != 0:
+            print(f"[live] Error getting balance: {resp.get('retMsg', 'Unknown error')}")
+            return None
+        
+        result = resp.get("result", {})
+        list_data = result.get("list", [])
+        if not list_data:
+            return None
+        
+        # Для unified account берем первый аккаунт
+        account = list_data[0]
+        coins = account.get("coin", [])
+        
+        # Ищем USDT
+        for coin in coins:
+            if coin.get("coin") == "USDT":
+                # Используем usdValue как доступный баланс
+                usd_value = coin.get("usdValue", "0")
+                try:
+                    return float(usd_value)
+                except (ValueError, TypeError):
+                    return None
+        
+        return None
+    except Exception as e:
+        print(f"[live] Error getting balance: {e}")
+        return None
+
+
+def _get_position(client: BybitClient, symbol: str) -> Optional[Dict[str, Any]]:
+    """Получить информацию о позиции для символа."""
+    try:
+        resp = client.get_position_info(symbol=symbol)
+        if resp.get("retCode") != 0:
+            return None
+        
+        result = resp.get("result", {})
+        list_data = result.get("list", [])
+        if not list_data:
+            return None
+        
+        # Ищем позицию с ненулевым размером
+        for pos in list_data:
+            size = float(pos.get("size", "0") or "0")
+            if size > 0:
+                # Преобразуем в удобный формат
+                return {
+                    "side": "long" if pos.get("side") == "Buy" else "short",
+                    "size": size,
+                    "avg_price": float(pos.get("avgPrice", "0") or "0"),
+                    "mark_price": float(pos.get("markPrice", "0") or "0"),
+                    "unrealised_pnl": float(pos.get("unrealisedPnl", "0") or "0"),
+                    "take_profit": pos.get("takeProfit", ""),
+                    "stop_loss": pos.get("stopLoss", ""),
+                    "leverage": pos.get("leverage", "1"),
+                    "cum_realised_pnl": float(pos.get("cumRealisedPnl", "0") or "0"),
+                }
+        
+        return None
+    except Exception as e:
+        print(f"[live] Error getting position: {e}")
+        return None
+
+
+def _get_open_orders(client: BybitClient, symbol: str) -> list:
+    """Получить список открытых ордеров для символа."""
+    try:
+        resp = client.get_open_orders(symbol=symbol)
+        if resp.get("retCode") != 0:
+            return []
+        
+        result = resp.get("result", {})
+        list_data = result.get("list", [])
+        return list_data if list_data else []
+    except Exception as e:
+        print(f"[live] Error getting open orders: {e}")
+        return []
+
+
+def _calculate_order_qty(
+    client: BybitClient,
+    price: float,
+    desired_usd: float,
+    settings: AppSettings,
+) -> float:
+    """
+    Рассчитывает количество контрактов для ордера.
+    
+    Args:
+        client: Bybit клиент
+        price: Цена входа
+        desired_usd: Желаемая сумма в USD
+        settings: Настройки бота
+    
+    Returns:
+        Количество контрактов (округленное по qtyStep)
+    """
+    try:
+        # Получаем qtyStep для символа
+        qty_step = client.get_qty_step(settings.symbol)
+        if qty_step <= 0:
+            qty_step = 0.001  # Дефолтное значение
+        
+        # Рассчитываем количество контрактов с учетом плеча
+        # desired_usd уже учитывает процент от баланса и плечо
+        total_qty = (desired_usd * settings.leverage) / price
+        
+        # Округляем по qtyStep с использованием math.floor для точности
+        import math
+        rounded_qty = math.floor(total_qty / qty_step) * qty_step
+        
+        # Минимальное количество = qtyStep
+        if rounded_qty < qty_step:
+            rounded_qty = qty_step
+        
+        # Дополнительное округление для устранения проблем с float precision
+        # Определяем количество знаков после запятой на основе qty_step
+        if qty_step >= 1:
+            decimals = 0
+        elif qty_step >= 0.1:
+            decimals = 1
+        elif qty_step >= 0.01:
+            decimals = 2
+        elif qty_step >= 0.001:
+            decimals = 3
+        else:
+            decimals = 6  # Максимум 6 знаков
+        
+        # Округляем до нужного количества знаков
+        rounded_qty = round(rounded_qty, decimals)
+        
+        return rounded_qty
+    except Exception as e:
+        print(f"[live] Error calculating order qty: {e}")
+        return 0.0
+
+
+def _calculate_add_position_qty(
+    client: BybitClient,
+    current_position_size: float,
+    settings: AppSettings,
+) -> float:
+    """
+    Рассчитывает количество контрактов для добавления к существующей позиции.
+    Количество = половина от текущего размера позиции, округленная в большую сторону.
+    
+    Args:
+        client: Bybit клиент
+        current_position_size: Текущий размер позиции
+        settings: Настройки бота
+    
+    Returns:
+        Количество контрактов для добавления (округленное по qtyStep в большую сторону)
+    """
+    try:
+        # Получаем qtyStep для символа
+        qty_step = client.get_qty_step(settings.symbol)
+        if qty_step <= 0:
+            qty_step = 0.001  # Дефолтное значение
+        
+        import math
+        # Вычисляем половину от текущего размера позиции
+        half_qty = current_position_size / 2.0
+        
+        # Округляем в большую сторону с учетом qtyStep
+        # Используем math.ceil для округления вверх
+        rounded_qty = math.ceil(half_qty / qty_step) * qty_step
+        
+        # Минимальное количество = qtyStep
+        if rounded_qty < qty_step:
+            rounded_qty = qty_step
+        
+        # Дополнительное округление для устранения проблем с float precision
+        # Определяем количество знаков после запятой на основе qty_step
+        if qty_step >= 1:
+            decimals = 0
+        elif qty_step >= 0.1:
+            decimals = 1
+        elif qty_step >= 0.01:
+            decimals = 2
+        elif qty_step >= 0.001:
+            decimals = 3
+        else:
+            decimals = 6  # Максимум 6 знаков
+        
+        # Округляем до нужного количества знаков
+        rounded_qty = round(rounded_qty, decimals)
+        
+        return rounded_qty
+    except Exception as e:
+        print(f"[live] Error calculating add position qty: {e}")
+        return 0.0
+
+
+def _get_position_bias_from_position(position: Dict[str, Any]) -> Optional[Bias]:
+    """Преобразует side позиции в Bias."""
+    if not position:
+        return None
+    side = position.get("side", "").lower()
+    if side == "long":
+        return Bias.LONG
+    elif side == "short":
+        return Bias.SHORT
+    return None
+
+
+def get_strategy_type_from_signal(signal_reason: str) -> str:
+    """Определяет тип стратегии по reason сигнала."""
+    if signal_reason.startswith("ml_"):
+        return "ml"
+    elif signal_reason.startswith("trend_"):
+        return "trend"
+    elif signal_reason.startswith("range_"):
+        return "flat"
+    else:
+        return "unknown"
+
+
+def _determine_strategy_with_fallback(
+    symbol: str,
+    position_strategy: Dict[str, str],
+    position: Optional[Dict[str, Any]] = None,
+    entry_time: Optional[datetime] = None,
+    quiet: bool = False,
+) -> str:
+    """
+    Определяет стратегию с fallback логикой.
+    
+    Args:
+        symbol: Торговая пара
+        position_strategy: Словарь стратегий {symbol: strategy}
+        position: Информация о позиции (опционально)
+        entry_time: Время открытия позиции (опционально)
+        quiet: Если True, не выводить предупреждения (для синхронизации)
+    
+    Returns:
+        Тип стратегии: "trend", "flat", "ml", "hybrid", или "unknown"
+    """
+    # Сначала проверяем сохраненную стратегию
+    strategy = position_strategy.get(symbol, "unknown")
+    if strategy != "unknown":
+        return strategy
+    
+    # Если стратегия unknown, пытаемся определить по order_link_id
+    if position:
+        order_link_id = position.get("orderLinkId", "") or position.get("order_link_id", "")
+        if order_link_id and order_link_id.startswith("sig_"):
+            # Извлекаем signal_id из order_link_id
+            # Новый формат: "sig_<signal_id>_<timestamp_ms>"
+            # Старый формат: "sig_<signal_id>"
+            parts = order_link_id[4:].split("_")  # Убираем префикс "sig_" и разбиваем
+            if parts:
+                signal_id = parts[0]  # Берем первую часть (signal_id до timestamp)
+                
+                # Ищем соответствующий сигнал в истории
+                try:
+                    from bot.web.history import get_signals
+                    all_signals = get_signals(limit=1000)
+                    
+                    for hist_signal in all_signals:
+                        # Сначала проверяем сохраненный signal_id в истории
+                        hist_signal_id = hist_signal.get("signal_id")
+                        if hist_signal_id and hist_signal_id == signal_id:
+                            hist_strategy = hist_signal.get("strategy_type", "unknown")
+                            hist_reason = hist_signal.get("reason", "")
+                            if hist_strategy != "unknown":
+                                strategy = hist_strategy
+                                if not quiet:
+                                    print(f"[live] ✅ Strategy determined from order_link_id (signal_id match): {strategy}")
+                                return strategy
+                            elif hist_reason:
+                                strategy = get_strategy_type_from_signal(hist_reason)
+                                if strategy != "unknown":
+                                    if not quiet:
+                                        print(f"[live] ✅ Strategy determined from order_link_id (reason match): {strategy}")
+                                    return strategy
+                        
+                        # Fallback: генерируем signal_id из истории для сравнения
+                        if not hist_signal_id:
+                            hist_timestamp = hist_signal.get("timestamp", "")
+                            hist_reason = hist_signal.get("reason", "")
+                            hist_price = hist_signal.get("price", 0)
+                            hist_action = hist_signal.get("action", "")
+                            
+                            # Генерируем signal_id из истории для сравнения
+                            if hist_reason and hist_price:
+                                import hashlib
+                                # Нормализуем timestamp для генерации ID (убираем микросекунды и таймзону)
+                                hist_ts_normalized = hist_timestamp
+                                if '.' in hist_ts_normalized:
+                                    hist_ts_normalized = hist_ts_normalized.split('.')[0]
+                                if '+' in hist_ts_normalized:
+                                    hist_ts_normalized = hist_ts_normalized.split('+')[0]
+                                elif 'Z' in hist_ts_normalized:
+                                    hist_ts_normalized = hist_ts_normalized.replace('Z', '')
+                                
+                                hist_id_string = f"{hist_ts_normalized}_{hist_action}_{hist_reason}_{hist_price:.4f}"
+                                hist_signal_id_generated = hashlib.md5(hist_id_string.encode()).hexdigest()[:16]
+                                
+                                # Если ID совпадает, используем стратегию из истории
+                                if hist_signal_id_generated == signal_id:
+                                    hist_strategy = hist_signal.get("strategy_type", "unknown")
+                                    if hist_strategy != "unknown":
+                                        strategy = hist_strategy
+                                        if not quiet:
+                                            print(f"[live] ✅ Strategy determined from order_link_id (generated signal_id match): {strategy}")
+                                        return strategy
+                                    else:
+                                        strategy = get_strategy_type_from_signal(hist_reason)
+                                        if strategy != "unknown":
+                                            if not quiet:
+                                                print(f"[live] ✅ Strategy determined from order_link_id (reason match): {strategy}")
+                                            return strategy
+                except Exception as e:
+                    print(f"[live] ⚠️ Error determining strategy from order_link_id in fallback: {e}")
+    
+    # Если стратегия все еще unknown, пытаемся определить по времени открытия позиции
+    if entry_time:
+        try:
+            from bot.web.history import get_signals
+            # Ищем сигналы в диапазоне ±10 минут от времени открытия позиции (увеличено для лучшего поиска)
+            time_window = timedelta(minutes=10)
+            all_signals = get_signals(limit=500)
+            
+            # Сортируем сигналы по времени (новые первыми)
+            signals_with_time = []
+            for hist_signal in all_signals:
+                hist_time_str = hist_signal.get("timestamp", "")
+                if not hist_time_str:
+                    continue
+                
+                try:
+                    if isinstance(hist_time_str, str):
+                        if 'T' in hist_time_str:
+                            hist_time = datetime.fromisoformat(hist_time_str.replace('Z', '+00:00'))
+                        else:
+                            try:
+                                hist_time = datetime.strptime(hist_time_str, '%Y-%m-%d %H:%M:%S')
+                                hist_time = hist_time.replace(tzinfo=timezone.utc)
+                            except ValueError:
+                                hist_time = datetime.fromisoformat(hist_time_str.replace('Z', '+00:00'))
+                    else:
+                        hist_time = datetime.fromisoformat(str(hist_time_str).replace('Z', '+00:00'))
+                    
+                    if hist_time.tzinfo is None:
+                        hist_time = hist_time.replace(tzinfo=timezone.utc)
+                    else:
+                        hist_time = hist_time.astimezone(timezone.utc)
+                    
+                    signals_with_time.append((hist_time, hist_signal))
+                except Exception:
+                    continue
+            
+            # Сортируем по времени (новые первыми) и ищем ближайший сигнал
+            signals_with_time.sort(key=lambda x: x[0], reverse=True)
+            
+            for hist_time, hist_signal in signals_with_time:
+                # Проверяем, попадает ли время сигнала в окно времени открытия позиции
+                time_diff = abs((hist_time - entry_time).total_seconds())
+                if time_diff <= time_window.total_seconds():
+                    hist_strategy = hist_signal.get("strategy_type", "unknown")
+                    hist_reason = hist_signal.get("reason", "")
+                    hist_action = hist_signal.get("action", "").lower()
+                    
+                    # Предпочитаем сигналы LONG/SHORT (не HOLD)
+                    if hist_action in ("long", "short"):
+                        if hist_strategy != "unknown":
+                            strategy = hist_strategy
+                            if not quiet:
+                                print(f"[live] ✅ Strategy determined from signal history (time window, strategy match): {strategy} (time diff: {time_diff:.0f}s)")
+                            break
+                        elif hist_reason:
+                            strategy = get_strategy_type_from_signal(hist_reason)
+                            if strategy != "unknown":
+                                if not quiet:
+                                    print(f"[live] ✅ Strategy determined from signal history (time window, reason match): {strategy} (time diff: {time_diff:.0f}s)")
+                                break
+        except Exception as e:
+            print(f"[live] ⚠️ Error determining strategy from signal history in fallback: {e}")
+    
+    return strategy
+
+
+def _sync_closed_positions_from_bybit(
+    client: BybitClient,
+    symbol: str,
+    last_sync_time: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Синхронизирует закрытые позиции из Bybit с историей сделок.
+    
+    Args:
+        client: Bybit клиент
+        symbol: Торговая пара
+        last_sync_time: Время последней синхронизации (опционально)
+    
+    Returns:
+        Список синхронизированных сделок
+    """
+    try:
+        # Получаем закрытые позиции за последние 24 часа (или с last_sync_time)
+        if last_sync_time:
+            start_time = int(last_sync_time.timestamp() * 1000)
+        else:
+            # По умолчанию за последние 24 часа
+            start_time = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
+        
+        end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+        
+        # Получаем закрытые позиции
+        closed_pnl_resp = client.get_closed_pnl(
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+            limit=100,
+        )
+        
+        if closed_pnl_resp.get("retCode") != 0:
+            print(f"[live] ⚠️ Failed to get closed PnL: {closed_pnl_resp.get('retMsg', 'Unknown error')}")
+            return []
+        
+        result = closed_pnl_resp.get("result", {})
+        closed_positions = result.get("list", [])
+        
+        if not closed_positions:
+            return []
+        
+        synced_trades = []
+        
+        for pos in closed_positions:
+            try:
+                # Парсим данные о закрытой позиции
+                side = pos.get("side", "").lower()
+                if side not in ["buy", "sell"]:
+                    continue
+                
+                closed_size = float(pos.get("closedSize", 0))
+                if closed_size == 0:
+                    continue
+                
+                avg_entry_price = float(pos.get("avgEntryPrice", 0))
+                avg_exit_price = float(pos.get("avgExitPrice", 0))
+                if avg_entry_price == 0 or avg_exit_price == 0:
+                    continue
+                
+                closed_pnl = float(pos.get("closedPnl", 0))
+                
+                # Определяем причину закрытия
+                exit_reason = "unknown"
+                if pos.get("takeProfit"):
+                    exit_reason = "take_profit_auto"
+                elif pos.get("stopLoss"):
+                    exit_reason = "stop_loss_auto"
+                else:
+                    # Проверяем по PnL - если отрицательный, скорее всего SL
+                    if closed_pnl < 0:
+                        exit_reason = "stop_loss_auto"
+                    else:
+                        exit_reason = "take_profit_auto"
+                
+                # Парсим время
+                created_time = pos.get("createdTime", "")
+                updated_time = pos.get("updatedTime", created_time)
+                
+                try:
+                    if isinstance(created_time, str):
+                        if created_time.isdigit():
+                            entry_time = datetime.fromtimestamp(int(created_time) / 1000, tz=timezone.utc)
+                        else:
+                            entry_time = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
+                    else:
+                        entry_time = datetime.fromtimestamp(int(created_time) / 1000, tz=timezone.utc) if created_time else datetime.now(timezone.utc)
+                    
+                    if isinstance(updated_time, str):
+                        if updated_time.isdigit():
+                            exit_time = datetime.fromtimestamp(int(updated_time) / 1000, tz=timezone.utc)
+                        else:
+                            exit_time = datetime.fromisoformat(updated_time.replace('Z', '+00:00'))
+                    else:
+                        exit_time = datetime.fromtimestamp(int(updated_time) / 1000, tz=timezone.utc) if updated_time else datetime.now(timezone.utc)
+                except Exception:
+                    entry_time = datetime.now(timezone.utc)
+                    exit_time = datetime.now(timezone.utc)
+                
+                # Определяем стратегию из order_link_id или истории сигналов
+                strategy_type = "unknown"
+                
+                # Получаем orderLinkId из закрытой позиции (сохраняем для использования позже)
+                order_link_id = pos.get("orderLinkId") or pos.get("order_link_id") or ""
+                
+                # Пытаемся извлечь signal_id из order_link_id
+                if order_link_id and order_link_id.startswith("sig_"):
+                    # Извлекаем signal_id из order_link_id
+                    # Новый формат: "sig_<signal_id>_<timestamp_ms>"
+                    # Старый формат: "sig_<signal_id>"
+                    parts = order_link_id[4:].split("_")  # Убираем префикс "sig_" и разбиваем
+                    if parts:
+                        signal_id = parts[0]  # Берем первую часть (signal_id до timestamp)
+                    else:
+                        signal_id = order_link_id[4:]  # Fallback для старого формата
+                    
+                    # Ищем соответствующий сигнал в истории
+                    try:
+                        from bot.web.history import get_signals
+                        all_signals = get_signals(limit=1000)  # Берем больше, чтобы найти старые сигналы
+                        
+                        for hist_signal in all_signals:
+                            # Проверяем, соответствует ли signal_id сигналу из истории
+                            # Сначала проверяем сохраненный signal_id в истории
+                            hist_signal_id = hist_signal.get("signal_id")
+                            if hist_signal_id and hist_signal_id == signal_id:
+                                hist_strategy = hist_signal.get("strategy_type", "unknown")
+                                hist_reason = hist_signal.get("reason", "")
+                                if hist_strategy != "unknown":
+                                    strategy_type = hist_strategy
+                                    break
+                                else:
+                                    strategy_type = get_strategy_type_from_signal(hist_reason)
+                                    break
+                            
+                            # Fallback: если signal_id не сохранен в истории, генерируем его для сравнения
+                            if not hist_signal_id:
+                                hist_timestamp = hist_signal.get("timestamp", "")
+                                hist_reason = hist_signal.get("reason", "")
+                                hist_price = hist_signal.get("price", 0)
+                                hist_action = hist_signal.get("action", "")
+                                
+                                # Генерируем signal_id из истории для сравнения
+                                if hist_reason and hist_price:
+                                    import hashlib
+                                    # Нормализуем timestamp для генерации ID (убираем микросекунды и таймзону)
+                                    hist_ts_normalized = hist_timestamp
+                                    if '.' in hist_ts_normalized:
+                                        hist_ts_normalized = hist_ts_normalized.split('.')[0]
+                                    if '+' in hist_ts_normalized:
+                                        hist_ts_normalized = hist_ts_normalized.split('+')[0]
+                                    elif 'Z' in hist_ts_normalized:
+                                        hist_ts_normalized = hist_ts_normalized.replace('Z', '')
+                                    
+                                    hist_id_string = f"{hist_ts_normalized}_{hist_action}_{hist_reason}_{hist_price:.4f}"
+                                    hist_signal_id_generated = hashlib.md5(hist_id_string.encode()).hexdigest()[:16]
+                                    
+                                    # Если ID совпадает, используем стратегию из истории
+                                    if hist_signal_id_generated == signal_id:
+                                        hist_strategy = hist_signal.get("strategy_type", "unknown")
+                                        if hist_strategy != "unknown":
+                                            strategy_type = hist_strategy
+                                            break
+                                        else:
+                                            strategy_type = get_strategy_type_from_signal(hist_reason)
+                                            break
+                    except Exception as e:
+                        print(f"[live] ⚠️ Error determining strategy from order_link_id: {e}")
+                
+                # Если стратегия все еще unknown, пытаемся определить по времени открытия позиции
+                # Проверяем, есть ли сигналы в истории около времени открытия позиции
+                if strategy_type == "unknown":
+                    try:
+                        from bot.web.history import get_signals
+                        # Расширяем временное окно до ±30 минут для лучшего поиска старых позиций
+                        time_window = timedelta(minutes=30)
+                        all_signals = get_signals(limit=2000)  # Берем больше сигналов для старых позиций
+                        
+                        for hist_signal in all_signals:
+                            hist_time_str = hist_signal.get("timestamp", "")
+                            if not hist_time_str:
+                                continue
+                            
+                            try:
+                                if isinstance(hist_time_str, str):
+                                    if 'T' in hist_time_str:
+                                        hist_time = datetime.fromisoformat(hist_time_str.replace('Z', '+00:00'))
+                                    else:
+                                        hist_time = datetime.strptime(hist_time_str, '%Y-%m-%d %H:%M:%S')
+                                        hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                else:
+                                    continue
+                                
+                                if hist_time.tzinfo is None:
+                                    hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                else:
+                                    hist_time = hist_time.astimezone(timezone.utc)
+                                
+                                # Проверяем, попадает ли сигнал во временное окно открытия позиции
+                                time_diff = abs((entry_time - hist_time).total_seconds())
+                                if time_diff <= time_window.total_seconds():
+                                    # Проверяем, совпадает ли цена и сторона
+                                    hist_price = hist_signal.get("price", 0)
+                                    hist_side = hist_signal.get("action", "").lower()
+                                    price_diff = abs(hist_price - avg_entry_price)
+                                    
+                                    # Если цена близка (±1%) и сторона совпадает, используем стратегию из сигнала
+                                    if price_diff / avg_entry_price < 0.01 and (
+                                        (hist_side == "long" and side == "buy") or 
+                                        (hist_side == "short" and side == "sell")
+                                    ):
+                                        hist_strategy = hist_signal.get("strategy_type", "unknown")
+                                        if hist_strategy != "unknown":
+                                            strategy_type = hist_strategy
+                                        else:
+                                            strategy_type = get_strategy_type_from_signal(hist_signal.get("reason", ""))
+                                        break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        print(f"[live] ⚠️ Error determining strategy from signal history: {e}")
+                
+                # Если стратегия все еще unknown, пытаемся определить с fallback логикой (без предупреждений)
+                if strategy_type == "unknown":
+                    # Используем упрощенную версию без предупреждений для синхронизации
+                    try:
+                        strategy_type = _determine_strategy_with_fallback(
+                            symbol,
+                            {},  # position_strategy пустой для синхронизированных позиций
+                            pos,  # Передаем данные позиции
+                            entry_time=entry_time,
+                            quiet=True,  # Подавляем предупреждения при синхронизации
+                        )
+                    except Exception:
+                        pass  # Тихо игнорируем ошибки
+                
+                # Получаем orderId - это ID ордера, который закрыл позицию (market order, TP или SL)
+                # Пытаемся получить из нескольких источников:
+                # 1. Из самого закрытого PnL (если есть поле orderId)
+                # 2. Из истории исполненных ордеров (execution list)
+                # 3. Из истории ордеров (order history) для TP/SL ордеров
+                order_id = None
+                
+                # Попытка 1: Проверяем, есть ли orderId прямо в закрытом PnL
+                order_id_from_pnl = pos.get("orderId") or pos.get("order_id")
+                if order_id_from_pnl:
+                    order_id = order_id_from_pnl
+                
+                # Попытка 2: Ищем в истории исполненных ордеров
+                if not order_id:
+                    try:
+                        exec_start_time = int((exit_time - timedelta(minutes=15)).timestamp() * 1000)
+                        exec_end_time = int((exit_time + timedelta(minutes=5)).timestamp() * 1000)
+                        exec_resp = client.get_execution_list(
+                            symbol=symbol,
+                            start_time=exec_start_time,
+                            end_time=exec_end_time,
+                            limit=200,  # Увеличено для лучшего поиска
+                        )
+                        if exec_resp.get("retCode") == 0:
+                            exec_result = exec_resp.get("result", {})
+                            exec_list = exec_result.get("list", [])
+                            # Ищем исполненный ордер, который закрыл позицию
+                            for exec_order in exec_list:
+                                exec_order_id = exec_order.get("orderId")
+                                exec_reduce_only = exec_order.get("reduceOnly", False)
+                                exec_qty = float(exec_order.get("execQty", 0))
+                                exec_side = exec_order.get("side", "").lower()
+                                exec_time = exec_order.get("execTime", 0)
+                                
+                                # Проверяем, что это reduceOnly ордер (закрытие позиции)
+                                if exec_reduce_only and exec_order_id:
+                                    # Проверяем соответствие стороны (Sell для long позиции, Buy для short)
+                                    side_match = (side == "buy" and exec_side == "sell") or (side == "sell" and exec_side == "buy")
+                                    # Проверяем время (должно быть близко к времени закрытия)
+                                    if exec_time:
+                                        exec_time_dt = datetime.fromtimestamp(int(exec_time) / 1000, tz=timezone.utc)
+                                        time_diff = abs((exec_time_dt - exit_time).total_seconds())
+                                        time_ok = time_diff <= 300  # 5 минут
+                                    else:
+                                        time_ok = True
+                                    
+                                    if side_match and time_ok:
+                                        # Проверяем, что количество примерно совпадает (допуск ±15%)
+                                        if abs(exec_qty - closed_size) / max(closed_size, 0.001) < 0.15:
+                                            order_id = exec_order_id
+                                            break
+                    except Exception as e:
+                        pass  # Тихо игнорируем ошибки при поиске Order ID
+                
+                # Попытка 3: Ищем в истории ордеров (для TP/SL ордеров)
+                if not order_id:
+                    try:
+                        order_start_time = int((exit_time - timedelta(minutes=30)).timestamp() * 1000)
+                        order_end_time = int((exit_time + timedelta(minutes=5)).timestamp() * 1000)
+                        order_resp = client.get_order_history(
+                            symbol=symbol,
+                            start_time=order_start_time,
+                            end_time=order_end_time,
+                            limit=200,
+                            order_status="Filled",  # Только исполненные ордера
+                        )
+                        if order_resp.get("retCode") == 0:
+                            order_result = order_resp.get("result", {})
+                            order_list = order_result.get("list", [])
+                            # Ищем ордер, который закрыл позицию (reduceOnly, TP или SL)
+                            for order_item in order_list:
+                                order_item_id = order_item.get("orderId")
+                                order_reduce_only = order_item.get("reduceOnly", False)
+                                order_side = order_item.get("side", "").lower()
+                                order_qty = float(order_item.get("qty", 0))
+                                order_type = order_item.get("orderType", "").lower()
+                                
+                                # Проверяем, что это reduceOnly ордер или TP/SL
+                                if order_item_id and (order_reduce_only or order_type in ("takeprofit", "stoploss")):
+                                    # Проверяем соответствие стороны
+                                    side_match = (side == "buy" and order_side == "sell") or (side == "sell" and order_side == "buy")
+                                    # Проверяем количество
+                                    qty_match = abs(order_qty - closed_size) / max(closed_size, 0.001) < 0.15
+                                    
+                                    if side_match and qty_match:
+                                        order_id = order_item_id
+                                        break
+                    except Exception as e:
+                        pass  # Тихо игнорируем ошибки при поиске Order ID
+                
+                # orderLinkId мы уже получили выше при определении стратегии
+                # Преобразуем пустую строку в None, если orderLinkId пустой
+                if not order_link_id or order_link_id == "":
+                    order_link_id = None
+                
+                # Добавляем сделку в историю (с проверкой дубликатов внутри add_trade)
+                size_usd = closed_size * avg_exit_price
+                
+                add_trade(
+                    entry_time=entry_time,
+                    exit_time=exit_time,
+                    side="long" if side == "buy" else "short",
+                    entry_price=avg_entry_price,
+                    exit_price=avg_exit_price,
+                    size_usd=size_usd,
+                    pnl=closed_pnl,
+                    entry_reason="auto_synced",
+                    exit_reason=exit_reason,
+                    strategy_type=strategy_type,
+                    symbol=symbol,
+                    order_id=order_id,
+                    order_link_id=order_link_id,
+                )
+                
+                synced_trades.append({
+                    "side": side,
+                    "pnl": closed_pnl,
+                    "exit_reason": exit_reason,
+                    "exit_time": exit_time,
+                    "strategy_type": strategy_type,  # Сохраняем стратегию для подсчета
+                })
+                
+            except Exception as e:
+                print(f"[live] ⚠️ Error syncing closed position: {e}")
+                continue
+        
+        if synced_trades:
+            # Подсчитываем сколько позиций с неизвестной стратегией
+            unknown_count = sum(1 for trade in synced_trades if trade.get("strategy_type") == "unknown")
+            if unknown_count > 0 and unknown_count < len(synced_trades):
+                print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit ({unknown_count} with unknown strategy)")
+            elif unknown_count == len(synced_trades) and len(synced_trades) > 0:
+                print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit (all with unknown strategy - no signal history found)")
+            else:
+                print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit")
+        
+        return synced_trades
+    
+    except Exception as e:
+        print(f"[live] ⚠️ Error syncing closed positions: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def run_live_from_api(
+    initial_settings: AppSettings,
+    bot_state: Optional[Dict[str, Any]] = None,
+    signal_max_age_seconds: int = 60,
+    symbol: Optional[str] = None,  # НОВЫЙ ПАРАМЕТР: явно указываем символ для этого воркера
+) -> None:
+    """
+    Основной цикл live-торговли.
+    
+    Args:
+        initial_settings: Начальные настройки
+        bot_state: Словарь для обмена состоянием с веб-интерфейсом
+        signal_max_age_seconds: Максимальный возраст сигнала для обработки (в секундах)
+        symbol: Торговая пара (если None, используется initial_settings.symbol для обратной совместимости)
+    """
+    from bot.shared_settings import get_settings
+    
+    # Определяем символ для этого воркера
+    # Если symbol не задан явно, используем из settings (обратная совместимость)
+    if symbol is None:
+        symbol = initial_settings.symbol
+    
+    # Создаем локальную копию настроек с переопределенным символом
+    # Это нужно для сохранения обратной совместимости
+    import copy
+    local_settings = copy.deepcopy(initial_settings)
+    local_settings.symbol = symbol
+    local_settings.primary_symbol = symbol
+    
+    # Инициализируем bot_state, если он None (для multi-symbol режима)
+    # Важно: bot_state всегда должен быть словарем, даже если передан None
+    if bot_state is None or bot_state is False:
+        bot_state = {
+            "is_running": False,
+            "current_status": "Stopped",
+            "current_phase": None,
+            "current_adx": None,
+            "last_action": None,
+            "last_action_time": None,
+            "last_signal": None,
+            "last_signal_time": None,
+            "last_error": None,
+            "last_error_time": None,
+            "last_update": None,
+        }
+    elif not isinstance(bot_state, dict):
+        # Если bot_state не словарь и не None, создаем новый словарь
+        _log(f"⚠️ bot_state is not a dict: {type(bot_state)}, initializing new dict", symbol)
+        bot_state = {
+            "is_running": False,
+            "current_status": "Stopped",
+            "current_phase": None,
+            "current_adx": None,
+            "last_action": None,
+            "last_action_time": None,
+            "last_signal": None,
+            "last_signal_time": None,
+            "last_error": None,
+            "last_error_time": None,
+            "last_update": None,
+        }
+    
+    # Инициализация
+    client = BybitClient(local_settings.api)
+    # Загружаем обработанные сигналы из файла (для персистентности между перезапусками)
+    # Используем отдельный файл для каждого символа
+    processed_signals_file = Path(__file__).parent.parent / f"processed_signals_{symbol}.json"
+    processed_signals = _load_processed_signals(processed_signals_file)
+    
+    position_max_profit: Dict[str, float] = {}
+    position_max_price: Dict[str, float] = {}
+    position_partial_closed: Dict[str, bool] = {}
+    position_strategy: Dict[str, str] = {}  # Хранит стратегию, которая открыла позицию {symbol: "trend"|"flat"|"ml"|"hybrid"|"unknown"}
+    position_order_id: Dict[str, str] = {}  # Хранит orderId открытой позиции {symbol: orderId}
+    position_order_link_id: Dict[str, str] = {}  # Хранит orderLinkId открытой позиции {symbol: orderLinkId}
+    last_handled_signal: Optional[tuple] = None  # (timestamp, action)
+    seen_signal_keys_cycle: set = set()  # Отслеживание сохраненных сигналов за цикл
+    previous_position: Optional[Dict[str, Any]] = None  # Хранит предыдущую позицию для обнаружения закрытия
+    
+    # Устанавливаем плечо
+    try:
+        client.set_leverage(symbol, local_settings.leverage)
+        print(f"[live] [{symbol}] Leverage set to {local_settings.leverage}x")
+    except Exception as e:
+        print(f"[live] [{symbol}] Warning: Failed to set leverage: {e}")
+    
+    # Обновляем bot_state (теперь он всегда словарь)
+    if bot_state is not None:
+        bot_state["is_running"] = True
+        bot_state["current_status"] = "Starting..."
+        bot_state["last_action"] = "Initializing..."
+        bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+    
+    print(f"[live] [{symbol}] ========================================")
+    print(f"[live] [{symbol}] 🚀 Starting live trading bot for {symbol}")
+    print(f"[live] [{symbol}] 📊 Active strategies: Trend={local_settings.enable_trend_strategy}, Flat={local_settings.enable_flat_strategy}, ML={local_settings.enable_ml_strategy}")
+    print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
+    print(f"[live] [{symbol}] ========================================")
+    
+    # Синхронизируем закрытые позиции при старте
+    last_sync_time = datetime.now(timezone.utc) - timedelta(hours=24)
+    try:
+        _sync_closed_positions_from_bybit(client, symbol, last_sync_time)
+    except Exception as e:
+        print(f"[live] [{symbol}] ⚠️ Error syncing closed positions on startup: {e}")
+    
+    # Проверяем существующие открытые позиции при старте и устанавливаем TP/SL
+    print(f"[live] [{symbol}] 🔍 Checking for existing open positions...")
+    try:
+        startup_position = _get_position(client, symbol)
+        previous_position = startup_position.copy() if startup_position else None  # Инициализируем previous_position
+        if startup_position:
+            startup_bias = _get_position_bias_from_position(startup_position)
+            if startup_bias:
+                # Получаем текущую цену
+                ticker_resp = client.session.get_tickers(category="linear", symbol=symbol)
+                if ticker_resp.get("retCode") == 0:
+                    result = ticker_resp.get("result", {})
+                    list_data = result.get("list", [])
+                    if list_data:
+                        startup_price = float(list_data[0].get("lastPrice", "0") or "0")
+                        if startup_price > 0:
+                            print(f"[live] [{symbol}] 📊 Found existing {startup_bias.value} position, taking control...")
+                            print(f"[live] [{symbol}]   Entry: ${startup_position.get('avg_price', 0):.2f}, Current: ${startup_price:.2f}, Size: {startup_position.get('size', 0):.3f}")
+                            
+                            # Инициализируем отслеживание прибыли для существующей позиции
+                            _update_position_tracking(
+                                startup_position,
+                                startup_bias,
+                                startup_price,
+                                position_max_profit,
+                                position_max_price,
+                                symbol,
+                            )
+                            
+                            # Устанавливаем TP/SL для существующей позиции
+                            _ensure_tp_sl_set(
+                                client=client,
+                                position=startup_position,
+                                settings=local_settings,
+                                position_bias=startup_bias,
+                                current_price=startup_price,
+                                position_max_profit=position_max_profit,
+                                position_max_price=position_max_price,
+                            )
+                            print(f"[live] [{symbol}] ✅ TP/SL management activated for existing position")
+                        else:
+                            print(f"[live] [{symbol}] ⚠️ Could not get current price for existing position")
+                    else:
+                        print(f"[live] [{symbol}] ⚠️ No ticker data for existing position")
+                else:
+                    print(f"[live] [{symbol}] ⚠️ Error getting ticker for existing position: {ticker_resp.get('retMsg', 'Unknown error')}")
+        else:
+            print(f"[live] [{symbol}] ✅ No existing open positions found")
+    except Exception as e:
+        print(f"[live] [{symbol}] ⚠️ Error checking existing positions on startup: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Счетчик циклов для периодической синхронизации
+    sync_counter = 0
+    sync_interval = 10  # Синхронизировать каждые 10 циклов
+    
+    print(f"[live] [{symbol}] ✅ Bot initialized successfully - entering main trading loop")
+    print(f"[live] [{symbol}] 🔄 Starting main trading loop (poll interval: {local_settings.live_poll_seconds}s)...")
+    print(f"[live] [{symbol}] ✨ Bot is ACTIVE and monitoring {symbol} market! ✨")
+    
+    while True:
+        try:
+            # Обновляем статус воркера для мониторинга (если используется MultiSymbolManager)
+            try:
+                from bot.multi_symbol_manager import update_worker_status
+                # Обновляем статус воркера при старте
+                update_worker_status(symbol, current_status="Running", error=None)
+            except ImportError:
+                pass  # MultiSymbolManager может быть не импортирован
+            
+            # Получаем актуальные настройки из shared_settings
+            # ВАЖНО: обновляем только те настройки, которые не зависят от символа
+            current_settings_raw = get_settings() or local_settings
+            # Создаем копию с переопределенным символом
+            current_settings = copy.deepcopy(current_settings_raw)
+            current_settings.symbol = symbol  # ВСЕГДА используем переданный symbol
+            current_settings.primary_symbol = symbol
+            
+            # ВАЖНО: Обновляем ml_model_path для текущего символа, если ML стратегия включена
+            # Это необходимо, потому что ml_model_path зависит от символа
+            if current_settings.enable_ml_strategy:
+                try:
+                    models_dir = Path(__file__).parent.parent / "ml_models"
+                    if models_dir.exists():
+                        # Ищем модель для текущего символа (предпочитаем rf_ перед xgb_)
+                        found_model = None
+                        for model_file in sorted(models_dir.glob(f"rf_{symbol}_*.pkl")):
+                            if model_file.is_file():
+                                found_model = str(model_file)
+                                break
+                        if not found_model:
+                            for model_file in sorted(models_dir.glob(f"xgb_{symbol}_*.pkl")):
+                                if model_file.is_file():
+                                    found_model = str(model_file)
+                                    break
+                        
+                        if found_model:
+                            current_settings.ml_model_path = found_model
+                        else:
+                            # Если модель не найдена, отключаем ML стратегию для этого символа
+                            current_settings.enable_ml_strategy = False
+                            current_settings.ml_model_path = None
+                            _log(f"⚠️ No ML model found for {symbol}, disabling ML strategy", symbol)
+                except Exception as e:
+                    _log(f"⚠️ Error updating ML model path for {symbol}: {e}", symbol)
+            
+            # Очищаем seen_signal_keys_cycle в начале каждого цикла
+            seen_signal_keys_cycle.clear()
+            
+            # Периодически синхронизируем закрытые позиции из Bybit
+            sync_counter += 1
+            if sync_counter >= sync_interval:
+                sync_counter = 0
+                try:
+                    _sync_closed_positions_from_bybit(client, symbol, last_sync_time)
+                    last_sync_time = datetime.now(timezone.utc)
+                except Exception as e:
+                    print(f"[live] [{symbol}] ⚠️ Error syncing closed positions: {e}")
+            
+            # Обновляем статус
+            if bot_state:
+                bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
+            
+            # Получаем текущую цену и позицию
+            try:
+                ticker_resp = client.session.get_tickers(category="linear", symbol=symbol)
+                if ticker_resp.get("retCode") == 0:
+                    result = ticker_resp.get("result", {})
+                    list_data = result.get("list", [])
+                    if list_data:
+                        current_price = float(list_data[0].get("lastPrice", "0") or "0")
+                    else:
+                        print(f"[live] [{symbol}] Error: No ticker data")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                else:
+                    print(f"[live] [{symbol}] Error getting ticker: {ticker_resp.get('retMsg', 'Unknown error')}")
+                    time.sleep(current_settings.live_poll_seconds)
+                    continue
+            except Exception as e:
+                print(f"[live] [{symbol}] Error fetching ticker: {e}")
+                if bot_state:
+                    bot_state["current_status"] = "Error"
+                    bot_state["last_error"] = f"Error fetching ticker: {e}"
+                    bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
+                time.sleep(current_settings.live_poll_seconds)
+                continue
+            
+            # Получаем позицию
+            position = _get_position(client, symbol)
+            current_position_bias = _get_position_bias_from_position(position) if position else None
+            
+            # Обнаруживаем закрытие позиции (была позиция, теперь нет)
+            if previous_position and not position:
+                previous_bias = _get_position_bias_from_position(previous_position)
+                if previous_bias:
+                    prev_entry = previous_position.get("avg_price", 0)
+                    prev_size = previous_position.get("size", 0)
+                    _log(f"🔴 Position CLOSED: {previous_bias.value} position was closed (Entry: ${prev_entry:.2f}, Size: {prev_size:.3f})", symbol)
+                    _log(f"   Possible reasons: Stop Loss hit, Take Profit hit, or manual close", symbol)
+                    # Очищаем отслеживание позиции
+                    position_max_profit.pop(symbol, None)
+                    position_max_price.pop(symbol, None)
+                    position_partial_closed.pop(symbol, None)
+                    position_strategy.pop(symbol, None)
+                    position_order_id.pop(symbol, None)
+                    position_order_link_id.pop(symbol, None)
+            
+            # Обновляем previous_position для следующего цикла
+            previous_position = position.copy() if position else None
+            
+            # Если есть открытая позиция, обеспечиваем установку TP/SL в начале каждого цикла
+            # Это гарантирует, что бот всегда контролирует TP/SL для открытых позиций
+            if position and current_position_bias:
+                try:
+                    _ensure_tp_sl_set(
+                        client=client,
+                        position=position,
+                        settings=current_settings,
+                        position_bias=current_position_bias,
+                        current_price=current_price,
+                        position_max_profit=position_max_profit,
+                        position_max_price=position_max_price,
+                    )
+                except Exception as e:
+                    print(f"[live] ⚠️ Error ensuring TP/SL for existing position: {e}")
+            
+            # Обновляем статус: получение данных
+            from bot.multi_symbol_manager import update_worker_status
+            if bot_state:
+                bot_state["current_status"] = "Fetching Data"
+                bot_state["last_action"] = "Fetching klines..."
+                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+            update_worker_status(symbol, current_status="Fetching Data", last_action="Fetching klines...")
+            
+            # Получаем свечи
+            try:
+                interval = _timeframe_to_bybit_interval(current_settings.timeframe)
+                df_raw = client.get_kline_df(symbol=symbol, interval=interval, limit=current_settings.kline_limit)
+                
+                # ДИАГНОСТИКА: Логируем информацию о полученных данных
+                if df_raw.empty:
+                    _log(f"⚠️ WARNING: Received EMPTY dataframe for {symbol}!", symbol)
+                    _log(f"   Interval: {interval}, Limit: {current_settings.kline_limit}", symbol)
+                else:
+                    _log(f"✅ Data fetched: {len(df_raw)} candles for {symbol} (interval: {interval})", symbol)
+                    if not df_raw.empty:
+                        last_candle_time = df_raw.index[-1] if hasattr(df_raw.index, '__getitem__') else None
+                        first_candle_time = df_raw.index[0] if hasattr(df_raw.index, '__getitem__') else None
+                        _log(f"   Time range: {first_candle_time} to {last_candle_time}", symbol)
+                        _log(f"   Last close price: ${df_raw.iloc[-1]['close']:.2f}" if 'close' in df_raw.columns else "   (no close price)", symbol)
+            except Exception as e:
+                print(f"[live] Error fetching klines: {e}")
+                _log(f"❌ ERROR fetching klines for {symbol}: {e}", symbol)
+                import traceback
+                _log(f"   Traceback: {traceback.format_exc()}", symbol)
+                if bot_state:
+                    bot_state["current_status"] = "Error"
+                    bot_state["last_error"] = f"Error fetching klines: {e}"
+                    bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
+                update_worker_status(symbol, current_status="Error", error=f"Error fetching klines: {e}")
+                time.sleep(current_settings.live_poll_seconds)
+                continue
+            
+            # Обновляем статус: вычисление индикаторов
+            if bot_state:
+                bot_state["current_status"] = "Analyzing"
+                bot_state["last_action"] = "Computing indicators..."
+                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+            update_worker_status(symbol, current_status="Analyzing", last_action="Computing indicators...")
+            
+            try:
+                # ДИАГНОСТИКА: Проверяем, что данные не пустые перед обработкой
+                if df_raw.empty:
+                    _log(f"⚠️ WARNING: df_raw is EMPTY for {symbol}, skipping indicator computation", symbol)
+                    if bot_state:
+                        bot_state["current_status"] = "Error"
+                        bot_state["last_error"] = f"Empty data received for {symbol}"
+                        bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
+                    update_worker_status(symbol, current_status="Error", error=f"Empty data received for {symbol}")
+                    time.sleep(current_settings.live_poll_seconds)
+                    continue
+                
+                df_ind = prepare_with_indicators(
+                    df_raw,
+                    adx_length=current_settings.strategy.adx_length,
+                    di_length=current_settings.strategy.di_length,
+                    sma_length=current_settings.strategy.sma_length,
+                    rsi_length=current_settings.strategy.rsi_length,
+                    breakout_lookback=current_settings.strategy.breakout_lookback,
+                    bb_length=current_settings.strategy.bb_length,
+                    bb_std=current_settings.strategy.bb_std,
+                    atr_length=14,  # ATR период
+                )
+                df_ready = enrich_for_strategy(df_ind, current_settings.strategy)
+                
+                # ДИАГНОСТИКА: Логируем результат обработки индикаторов
+                if df_ready.empty:
+                    _log(f"⚠️ WARNING: df_ready is EMPTY after indicator computation for {symbol}!", symbol)
+                else:
+                    _log(f"✅ Indicators computed: {len(df_ready)} candles ready for {symbol}", symbol)
+                
+                # Определяем текущую фазу рынка из последнего бара (bot_state всегда инициализирован)
+                if not df_ready.empty:
+                    last_row = df_ready.iloc[-1]
+                    from bot.strategy import detect_market_phase, MarketPhase
+                    
+                    # Всегда вычисляем phase через detect_market_phase для актуальности
+                    phase = detect_market_phase(last_row, current_settings.strategy)
+                    phase_value = phase.value if phase else "flat"
+                    
+                    # Также пробуем взять market_phase из обогащенного DataFrame для проверки
+                    if "market_phase" in df_ready.columns:
+                        try:
+                            market_phase_obj = last_row["market_phase"]
+                            if market_phase_obj:
+                                if hasattr(market_phase_obj, "value"):
+                                    # Это объект MarketPhase
+                                    phase_value = market_phase_obj.value
+                                elif isinstance(market_phase_obj, str):
+                                    # Это строка
+                                    phase_value = market_phase_obj
+                        except (KeyError, AttributeError, TypeError):
+                            pass
+                    
+                    bot_state["current_phase"] = phase_value
+                    
+                    # Извлекаем ADX из последнего бара
+                    adx_value = None
+                    try:
+                        if "adx" in df_ready.columns:
+                            adx_raw = last_row["adx"]
+                            if pd.notna(adx_raw):
+                                adx_value = float(adx_raw)
+                            else:
+                                # Если ADX NaN в последней строке, пробуем найти последнее валидное значение
+                                valid_adx = df_ready["adx"].dropna()
+                                if not valid_adx.empty:
+                                    adx_value = float(valid_adx.iloc[-1])
+                    except (KeyError, ValueError, TypeError, IndexError):
+                        # Если ADX не найден или ошибка преобразования, оставляем None
+                        pass
+                    
+                    bot_state["current_adx"] = adx_value
+                    # Обновляем статус воркера с фазой рынка и ADX (всегда, даже если None)
+                    update_worker_status(symbol, current_phase=phase_value, current_adx=adx_value)
+            except Exception as e:
+                print(f"[live] Error computing indicators/strategy: {e}")
+                if bot_state:
+                    bot_state["current_status"] = "Error"
+                    bot_state["last_error"] = f"Error computing indicators: {e}"
+                    bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
+                update_worker_status(symbol, current_status="Error", error=f"Error computing indicators: {e}")
+                time.sleep(current_settings.live_poll_seconds)
+                continue
+            
+            # Обновляем статус: генерация сигналов
+            if bot_state:
+                bot_state["current_status"] = "Running"
+                bot_state["last_action"] = "Generating signals..."
+                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+            update_worker_status(symbol, current_status="Running", last_action="Generating signals...")
+            
+            # Определяем тип стратегии из сигнала (для логирования)
+            def get_strategy_type_from_signal(signal_reason: str) -> str:
+                """Определяет тип стратегии по reason сигнала."""
+                if signal_reason.startswith("ml_"):
+                    return "ml"
+                elif signal_reason.startswith("trend_"):
+                    return "trend"
+                elif signal_reason.startswith("range_"):
+                    return "flat"
+                else:
+                    return "unknown"
+            
+            # Выбираем стратегию в зависимости от настроек
+            all_signals = []
+            trend_actionable = []
+            flat_actionable = []
+            ml_actionable = []
+            ml_filtered = []
+            
+            # Trend стратегия
+            if current_settings.enable_trend_strategy:
+                trend_signals = build_signals(df_ready, current_settings.strategy)
+                trend_generated = [s for s in trend_signals if s.reason.startswith("trend_") and s.action in (Action.LONG, Action.SHORT)]
+                _log(f"📊 TREND strategy: generated {len(trend_signals)} total, {len(trend_generated)} actionable (LONG/SHORT)", symbol)
+                
+                # Детальное логирование первых 3 сигналов для диагностики
+                if trend_generated:
+                    for i, sig in enumerate(trend_generated[:3]):
+                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                        _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                elif len(trend_signals) > 0:
+                    _log(f"  ⚠️ TREND signals exist but none are LONG/SHORT (all are HOLD)", symbol)
+                    # Показываем примеры HOLD сигналов для диагностики
+                    hold_signals = [s for s in trend_signals if s.reason.startswith("trend_") and s.action == Action.HOLD]
+                    if hold_signals:
+                        _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
+                else:
+                    _log(f"  ⚠️ No TREND signals generated at all", symbol)
+                
+                for sig in trend_generated:
+                    trend_actionable.append(sig)
+                    all_signals.append(sig)
+            else:
+                _log(f"⚠️ TREND strategy is DISABLED for {symbol}", symbol)
+            
+            # Flat стратегия
+            if current_settings.enable_flat_strategy:
+                flat_signals = build_signals(df_ready, current_settings.strategy)
+                flat_generated = [s for s in flat_signals if s.reason.startswith("range_") and s.action in (Action.LONG, Action.SHORT)]
+                _log(f"📊 FLAT strategy: generated {len(flat_signals)} total, {len(flat_generated)} actionable (LONG/SHORT)", symbol)
+                
+                # Диагностика: проверяем фазу рынка (TREND или FLAT)
+                if not df_ready.empty:
+                    last_row = df_ready.iloc[-1]
+                    adx = last_row.get("adx", np.nan)
+                    market_phase = "TREND" if np.isfinite(adx) and adx > current_settings.strategy.adx_threshold else "FLAT"
+                    _log(f"  📈 Market phase: {market_phase} (ADX={adx:.2f}, threshold={current_settings.strategy.adx_threshold})", symbol)
+                    
+                    # Показываем текущие значения индикаторов для диагностики
+                    rsi = last_row.get("rsi", np.nan)
+                    bb_upper = last_row.get("bb_upper", np.nan)
+                    bb_lower = last_row.get("bb_lower", np.nan)
+                    price = last_row.get("close", np.nan)
+                    volume = last_row.get("volume", np.nan)
+                    vol_sma = last_row.get("vol_sma", np.nan)
+                    
+                    if np.isfinite([rsi, bb_upper, bb_lower, price, volume, vol_sma]).all():
+                        touch_lower = price <= bb_lower
+                        touch_upper = price >= bb_upper
+                        rsi_oversold = rsi <= current_settings.strategy.range_rsi_oversold
+                        rsi_overbought = rsi >= current_settings.strategy.range_rsi_overbought
+                        volume_ok = volume < vol_sma * current_settings.strategy.range_volume_mult
+                        volume_confirms = volume > vol_sma * 0.8
+                        
+                        # ДИАГНОСТИКА: Детальная информация о том, почему FLAT стратегия не генерирует сигналы
+                        if symbol == "BTCUSDT":
+                            # Проверяем условия для LONG сигнала
+                            long_conditions = {
+                                "touch_lower": touch_lower,
+                                "rsi_oversold": rsi_oversold,
+                                "volume_ok": volume_ok,
+                                "volume_confirms": volume_confirms,
+                            }
+                            long_ready = all(long_conditions.values())
+                            
+                            # Проверяем условия для SHORT сигнала
+                            short_conditions = {
+                                "touch_upper": touch_upper,
+                                "rsi_overbought": rsi_overbought,
+                                "volume_ok": volume_ok,
+                                "volume_confirms": volume_confirms,
+                            }
+                            short_ready = all(short_conditions.values())
+                            
+                            _log(f"  🔍 FLAT strategy conditions check for BTCUSDT:", symbol)
+                            _log(f"    LONG signal ready: {long_ready}", symbol)
+                            for cond_name, cond_value in long_conditions.items():
+                                _log(f"      - {cond_name}: {cond_value}", symbol)
+                            _log(f"    SHORT signal ready: {short_ready}", symbol)
+                            for cond_name, cond_value in short_conditions.items():
+                                _log(f"      - {cond_name}: {cond_value}", symbol)
+                            
+                            # Показываем, что нужно для сигнала
+                            if not long_ready and not short_ready:
+                                missing_long = [k for k, v in long_conditions.items() if not v]
+                                missing_short = [k for k, v in short_conditions.items() if not v]
+                                _log(f"    💡 Missing conditions for LONG: {missing_long}", symbol)
+                                _log(f"    💡 Missing conditions for SHORT: {missing_short}", symbol)
+                        
+                        _log(f"  📊 Current indicators: RSI={rsi:.2f} (oversold={rsi_oversold}, overbought={rsi_overbought}), Price=${price:.2f} (BB: ${bb_lower:.2f}-${bb_upper:.2f}, touch_lower={touch_lower}, touch_upper={touch_upper}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x, ok={volume_ok}, confirms={volume_confirms})", symbol)
+                
+                # Детальное логирование первых 3 сигналов для диагностики
+                if flat_generated:
+                    for i, sig in enumerate(flat_generated[:3]):
+                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                        _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                elif len(flat_signals) > 0:
+                    _log(f"  ⚠️ FLAT signals exist but none are LONG/SHORT (all are HOLD)", symbol)
+                    # Показываем примеры HOLD сигналов для диагностики
+                    hold_signals = [s for s in flat_signals if s.reason.startswith("range_") and s.action == Action.HOLD]
+                    if hold_signals:
+                        _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
+                else:
+                    _log(f"  ⚠️ No FLAT signals generated at all", symbol)
+                    if not df_ready.empty:
+                        last_row = df_ready.iloc[-1]
+                        adx = last_row.get("adx", np.nan)
+                        if np.isfinite(adx) and adx > current_settings.strategy.adx_threshold:
+                            _log(f"  💡 Hint: Market is in TREND phase (ADX={adx:.2f} > {current_settings.strategy.adx_threshold}). FLAT strategy works only in FLAT phase. Consider enabling TREND strategy.", symbol)
+                
+                for sig in flat_generated:
+                    flat_actionable.append(sig)
+                    all_signals.append(sig)
+            else:
+                _log(f"⚠️ FLAT strategy is DISABLED for {symbol}", symbol)
+            
+            # ML стратегия
+            if current_settings.enable_ml_strategy and current_settings.ml_model_path:
+                try:
+                    # Логируем, какая модель используется для этого символа
+                    _log(f"🤖 Using ML model: {current_settings.ml_model_path}", symbol)
+                    ml_signals = build_ml_signals(
+                        df_ready,
+                        current_settings.ml_model_path,
+                        current_settings.ml_confidence_threshold,
+                        current_settings.ml_min_signal_strength,
+                        current_settings.ml_stability_filter,
+                    )
+                    ml_generated = [s for s in ml_signals if s.action in (Action.LONG, Action.SHORT)]
+                    _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
+                    
+                    # Детальное логирование первых 3 сигналов для диагностики
+                    if ml_generated:
+                        for i, sig in enumerate(ml_generated[:3]):
+                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                            _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                    elif len(ml_signals) > 0:
+                        _log(f"  ⚠️ ML signals exist but none are LONG/SHORT (all are HOLD)", symbol)
+                    else:
+                        _log(f"  ⚠️ No ML signals generated at all", symbol)
+                    
+                    import re
+                    min_strength_map = {
+                        "слабое": 0,
+                        "умеренное": 60,
+                        "среднее": 70,
+                        "сильное": 80,
+                        "очень_сильное": 90
+                    }
+                    min_strength_pct = min_strength_map.get(current_settings.ml_min_signal_strength, 70)
+                    
+                    for sig in ml_generated:
+                        # Проверяем, что сигнал прошел фильтр минимальной силы
+                        should_filter = False
+                        filter_reason = ""
+                        
+                        if "сила_слишком_слабая" in sig.reason:
+                            should_filter = True
+                            filter_reason = "сила слишком слабая"
+                        elif "сила_слабое" in sig.reason:
+                            # Проверяем процент уверенности из reason (формат: "ml_SHORT_сила_слабое_46%_...")
+                            confidence_match = re.search(r'сила_слабое_(\d+)%', sig.reason)
+                            if confidence_match:
+                                confidence_pct = int(confidence_match.group(1))
+                                if confidence_pct < min_strength_pct:
+                                    should_filter = True
+                                    filter_reason = f"confidence {confidence_pct}% < min {min_strength_pct}%"
+                        
+                        if should_filter:
+                            ml_filtered.append((sig, filter_reason))
+                        else:
+                            ml_actionable.append(sig)
+                            all_signals.append(sig)
+                    
+                    if ml_filtered:
+                        print(f"[live] ⛔ ML strategy: {len(ml_filtered)} signals filtered out (weak confidence)")
+                except Exception as e:
+                    print(f"[live] ❌ Error generating ML signals: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Разделяем сигналы по стратегиям
+            # Только LONG и SHORT сигналы (HOLD игнорируем)
+            main_strategy_signals = [s for s in all_signals if (s.reason.startswith("trend_") or s.reason.startswith("range_")) and s.action in (Action.LONG, Action.SHORT)]
+            ml_signals_only = [s for s in all_signals if s.reason.startswith("ml_") and s.action in (Action.LONG, Action.SHORT)]
+            
+            # Функция для получения timestamp для сортировки
+            def get_timestamp_for_sort(sig):
+                """Получает timestamp для сортировки сигнала."""
+                ts = sig.timestamp
+                if isinstance(ts, pd.Timestamp):
+                    if ts.tzinfo is None:
+                        ts = ts.tz_localize('UTC')
+                    else:
+                        ts = ts.tz_convert('UTC')
+                    return ts.to_pydatetime()
+                elif hasattr(ts, 'timestamp'):
+                    return ts
+                else:
+                    return pd.Timestamp(ts).to_pydatetime()
+            
+            # Функция для проверки, является ли сигнал свежим (от последних 5-10 свечей для более гибкой обработки)
+            def is_signal_fresh(sig, df_ready):
+                """Проверяет, является ли сигнал свежим (от последних 5-10 свечей)."""
+                try:
+                    if df_ready.empty:
+                        return True
+                    
+                    ts = sig.timestamp
+                    if isinstance(ts, pd.Timestamp):
+                        signal_ts = ts
+                        if signal_ts.tzinfo is None:
+                            signal_ts = signal_ts.tz_localize('UTC')
+                        else:
+                            signal_ts = signal_ts.tz_convert('UTC')
+                        
+                        # Проверяем последние 10 свечей (увеличено с 3 для более гибкой обработки)
+                        # Это позволяет обрабатывать сигналы, которые могли быть пропущены из-за задержек
+                        num_candles_to_check = min(10, len(df_ready))
+                        last_timestamps = df_ready.index[-num_candles_to_check:].tolist()
+                        for last_ts in last_timestamps:
+                            if isinstance(last_ts, pd.Timestamp):
+                                last_ts_utc = last_ts
+                                if last_ts_utc.tzinfo is None:
+                                    last_ts_utc = last_ts_utc.tz_localize('UTC')
+                                else:
+                                    last_ts_utc = last_ts_utc.tz_convert('UTC')
+                                
+                                # Сигнал считается свежим, если его timestamp совпадает с одной из последних 10 свечей (в пределах 5 минут)
+                                # Увеличено окно с 60 секунд до 5 минут для более гибкой обработки
+                                time_diff_seconds = abs((signal_ts - last_ts_utc).total_seconds())
+                                if time_diff_seconds < 300:  # 5 минут вместо 60 секунд
+                                    return True
+                    return False
+                except Exception as e:
+                    # В случае ошибки считаем сигнал свежим, чтобы не пропустить его
+                    return True
+            
+            # Фильтруем только свежие сигналы перед определением latest
+            fresh_main_signals = [s for s in main_strategy_signals if is_signal_fresh(s, df_ready)]
+            fresh_ml_signals = [s for s in ml_signals_only if is_signal_fresh(s, df_ready)]
+            
+            # ДИАГНОСТИКА: Логируем, почему сигналы могут быть не свежими
+            if main_strategy_signals and not fresh_main_signals:
+                _log(f"  ⚠️ TREND/FLAT: {len(main_strategy_signals)} signals generated, but NONE are fresh!", symbol)
+                # Показываем примеры сигналов и их timestamp'ы
+                for i, sig in enumerate(main_strategy_signals[-3:]):  # Последние 3 сигнала
+                    ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                    _log(f"    [{i+1}] {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]", symbol)
+                    # Проверяем свежесть этого сигнала
+                    is_fresh = is_signal_fresh(sig, df_ready)
+                    _log(f"      → Fresh check: {is_fresh}", symbol)
+                    # Показываем последние свечи для сравнения
+                    if not df_ready.empty:
+                        last_candles = df_ready.index[-3:].tolist()
+                        last_candles_str = [str(c) for c in last_candles]
+                        _log(f"      → Last 3 candles: {last_candles_str}", symbol)
+            
+            # Сортируем свежие сигналы по timestamp (от старых к новым) для правильного определения самого свежего
+            # ВАЖНО: После сортировки последний элемент [-1] будет самым свежим
+            if fresh_main_signals:
+                fresh_main_signals.sort(key=get_timestamp_for_sort)  # Сортировка по возрастанию timestamp
+            if fresh_ml_signals:
+                fresh_ml_signals.sort(key=get_timestamp_for_sort)  # Сортировка по возрастанию timestamp
+            
+            # ДИАГНОСТИКА: Детальная информация о сигналах для BTCUSDT
+            if symbol == "BTCUSDT":
+                _log(f"🔍 DETAILED DIAGNOSTICS for BTCUSDT:", symbol)
+                _log(f"  • df_ready size: {len(df_ready)} candles", symbol)
+                _log(f"  • df_ready empty: {df_ready.empty}", symbol)
+                if not df_ready.empty:
+                    last_row = df_ready.iloc[-1]
+                    _log(f"  • Last candle time: {df_ready.index[-1]}", symbol)
+                    _log(f"  • Last close price: ${last_row.get('close', 'N/A')}", symbol)
+                    _log(f"  • ADX: {last_row.get('adx', 'N/A')}", symbol)
+                    _log(f"  • RSI: {last_row.get('rsi', 'N/A')}", symbol)
+                _log(f"  • TREND strategy enabled: {current_settings.enable_trend_strategy}", symbol)
+                _log(f"  • FLAT strategy enabled: {current_settings.enable_flat_strategy}", symbol)
+                _log(f"  • ML strategy enabled: {current_settings.enable_ml_strategy}", symbol)
+                _log(f"  • ML model path: {current_settings.ml_model_path}", symbol)
+            
+            _log(f"🔍 Signal selection summary:", symbol)
+            _log(f"  • TREND/FLAT: {len(main_strategy_signals)} total signals, {len(fresh_main_signals)} fresh signals", symbol)
+            if main_strategy_signals:
+                trend_count = sum(1 for s in main_strategy_signals if s.reason.startswith("trend_"))
+                flat_count = sum(1 for s in main_strategy_signals if s.reason.startswith("range_"))
+                _log(f"    - TREND signals: {trend_count}, FLAT signals: {flat_count}", symbol)
+                # Показываем примеры сигналов
+                for i, sig in enumerate(main_strategy_signals[-3:]):  # Последние 3 сигнала
+                    ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                    is_fresh = sig in fresh_main_signals
+                    _log(f"    [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}] {'(FRESH)' if is_fresh else '(OLD)'}", symbol)
+            else:
+                _log(f"  ⚠️ WARNING: No TREND/FLAT signals found! (trend={current_settings.enable_trend_strategy}, flat={current_settings.enable_flat_strategy})", symbol)
+                if not current_settings.enable_trend_strategy and not current_settings.enable_flat_strategy:
+                    _log(f"  ⚠️ Both TREND and FLAT strategies are DISABLED!", symbol)
+            _log(f"  • ML: {len(ml_signals_only)} total signals, {len(fresh_ml_signals)} fresh signals", symbol)
+            _log(f"  • Total actionable: {len(all_signals)} signals", symbol)
+            if ml_filtered:
+                _log(f"  • ML filtered out: {len(ml_filtered)} weak signals", symbol)
+            
+            # Определяем основной сигнал и дополнительный (только из свежих сигналов, самые свежие по timestamp)
+            # Если есть несколько сигналов с одинаковым timestamp, выбираем самый последний по порядку добавления
+            main_sig = None
+            if fresh_main_signals:
+                # Берем самый последний сигнал (самый свежий по timestamp)
+                main_sig = fresh_main_signals[-1]
+                # Если есть несколько сигналов с одинаковым timestamp, выбираем тот, который был добавлен последним
+                # (сортируем по timestamp, затем берем последний)
+            elif main_strategy_signals:
+                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Если нет свежих сигналов, но есть сигналы вообще - используем последний
+                # Это позволяет обрабатывать сигналы, которые могут быть немного старше, но все еще актуальны
+                _log(f"  ⚠️ No fresh TREND/FLAT signals, but {len(main_strategy_signals)} signals exist. Using last signal as fallback.", symbol)
+                main_sig = main_strategy_signals[-1]
+                ts_str = main_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(main_sig.timestamp, 'strftime') else str(main_sig.timestamp)
+                _log(f"  📌 Fallback signal: {main_sig.action.value} @ ${main_sig.price:.2f} ({main_sig.reason}) [{ts_str}]", symbol)
+            
+            ml_sig = None
+            if fresh_ml_signals:
+                # Берем самый последний сигнал (самый свежий по timestamp)
+                ml_sig = fresh_ml_signals[-1]
+                # Если есть несколько сигналов с одинаковым timestamp, выбираем тот, который был добавлен последним
+            elif ml_signals_only:
+                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Если нет свежих ML сигналов, но есть сигналы вообще - используем последний
+                _log(f"  ⚠️ No fresh ML signals, but {len(ml_signals_only)} signals exist. Using last signal as fallback.", symbol)
+                ml_sig = ml_signals_only[-1]
+                ts_str = ml_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ml_sig.timestamp, 'strftime') else str(ml_sig.timestamp)
+                _log(f"  📌 Fallback ML signal: {ml_sig.action.value} @ ${ml_sig.price:.2f} ({ml_sig.reason}) [{ts_str}]", symbol)
+            
+            if main_sig:
+                ts_str = main_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(main_sig.timestamp, 'strftime') else str(main_sig.timestamp)
+                is_fresh = is_signal_fresh(main_sig, df_ready)
+                freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
+                print(f"[live]   🎯 Latest TREND/FLAT signal ({freshness_marker}): {main_sig.action.value} @ ${main_sig.price:.2f} ({main_sig.reason}) [{ts_str}]")
+            if ml_sig:
+                ts_str = ml_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ml_sig.timestamp, 'strftime') else str(ml_sig.timestamp)
+                is_fresh = is_signal_fresh(ml_sig, df_ready)
+                freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
+                print(f"[live]   🎯 Latest ML signal ({freshness_marker}): {ml_sig.action.value} @ ${ml_sig.price:.2f} ({ml_sig.reason}) [{ts_str}]")
+            
+            # Функция для сохранения latest сигнала в историю (строго один сигнал от каждой стратегии)
+            def save_latest_signal_to_history(sig, strategy_type_name: str, strategy_key: str):
+                """Сохраняет latest сигнал в историю с проверками. Сохраняет только один сигнал от каждой стратегии за цикл."""
+                try:
+                    if sig is None or sig.action == Action.HOLD:
+                        return  # Пропускаем HOLD сигналы и None
+                    
+                    ts_log = sig.timestamp
+                    if isinstance(ts_log, pd.Timestamp):
+                        if ts_log.tzinfo is None:
+                            ts_log = ts_log.tz_localize('UTC')
+                        else:
+                            ts_log = ts_log.tz_convert('UTC')
+                        ts_log = ts_log.to_pydatetime()
+                    
+                    strategy_type = get_strategy_type_from_signal(sig.reason)
+                    
+                    # Проверяем, не сохраняли ли мы уже сигнал от этой стратегии в этом цикле
+                    # Используем strategy_key для отслеживания (например, "TREND/FLAT" или "ML")
+                    if strategy_key in seen_signal_keys_cycle:
+                        return  # Уже сохранили latest сигнал от этой стратегии в этом цикле
+                    
+                    # Дополнительная проверка для ML сигналов: не добавляем слабые сигналы в историю
+                    if strategy_type == "ml" and "сила_слабое" in sig.reason:
+                        # Извлекаем процент уверенности из reason (формат: "ml_SHORT_сила_слабое_46%_...")
+                        import re
+                        confidence_match = re.search(r'сила_слабое_(\d+)%', sig.reason)
+                        if confidence_match:
+                            confidence_pct = int(confidence_match.group(1))
+                            # Проверяем минимальную силу сигнала из настроек
+                            min_strength_map = {
+                                "слабое": 0,
+                                "умеренное": 60,
+                                "среднее": 70,
+                                "сильное": 80,
+                                "очень_сильное": 90
+                            }
+                            min_strength_pct = min_strength_map.get(current_settings.ml_min_signal_strength, 70)
+                            if confidence_pct < min_strength_pct:
+                                print(f"[live] ⛔ Skipping weak ML signal in history: {sig.reason} (min: {min_strength_pct}%)")
+                                return
+                    
+                    # ВАЖНО: Сохраняем ВСЕ сигналы, не только свежие
+                    # Это позволяет видеть все сгенерированные сигналы в истории
+                    # Проверка свежести используется только для выбора "latest" сигнала для действия
+                    # Но в историю сохраняем все сигналы для анализа
+                    
+                    # Используем signal_id из объекта Signal для сохранения в истории
+                    sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                    
+                    # Сохраняем сигнал в историю
+                    # Дедупликация происходит на уровне add_signal (по timestamp, reason, price, symbol)
+                    # Но мы дополнительно проверяем, что сохраняем только один сигнал от каждой стратегии за цикл
+                    add_signal(
+                        action=sig.action.value,
+                        reason=sig.reason,
+                        price=sig.price,
+                        timestamp=ts_log,
+                        symbol=symbol,
+                        strategy_type=strategy_type,
+                        signal_id=sig_signal_id,
+                    )
+                    
+                    # Отмечаем, что мы сохранили latest сигнал от этой стратегии
+                    seen_signal_keys_cycle.add(strategy_key)
+                    
+                    _log(f"💾 Saved latest {strategy_type_name} signal to history: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_log.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts_log, 'strftime') else ts_log}]", symbol)
+                except Exception as e:
+                    print(f"[live] ⚠️ Warning: Failed to save latest {strategy_type_name} signal to history: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Сохраняем latest сигналы в историю (строго один сигнал от каждой стратегии - те же, что показываются в логах)
+            # Это гарантирует согласованность между логами и историей сигналов
+            try:
+                # Сохраняем только один latest сигнал от TREND/FLAT стратегии
+                if main_sig:
+                    save_latest_signal_to_history(main_sig, "TREND/FLAT", "TREND/FLAT_LATEST")
+                else:
+                    _log(f"⚠️ No main_sig to save (TREND/FLAT strategies: trend={current_settings.enable_trend_strategy}, flat={current_settings.enable_flat_strategy})", symbol)
+                    # Если нет свежего сигнала, но есть сигналы вообще - сохраняем последний
+                    if main_strategy_signals:
+                        last_sig = main_strategy_signals[-1]
+                        if last_sig.action in (Action.LONG, Action.SHORT):
+                            _log(f"💾 Saving last TREND/FLAT signal (not fresh but exists): {last_sig.action.value} @ ${last_sig.price:.2f} ({last_sig.reason})", symbol)
+                            save_latest_signal_to_history(last_sig, "TREND/FLAT", "TREND/FLAT_LATEST")
+                    else:
+                        # Если вообще нет сигналов - логируем это для диагностики
+                        _log(f"⚠️ No TREND/FLAT signals generated at all (trend={current_settings.enable_trend_strategy}, flat={current_settings.enable_flat_strategy})", symbol)
+                
+                # Сохраняем только один latest сигнал от ML стратегии
+                if ml_sig:
+                    save_latest_signal_to_history(ml_sig, "ML", "ML_LATEST")
+                else:
+                    if current_settings.enable_ml_strategy and current_settings.ml_model_path:
+                        _log(f"⚠️ No ml_sig to save (ML strategy enabled, but no fresh signals)", symbol)
+                
+                # ДОПОЛНИТЕЛЬНО: Сохраняем ВСЕ сигналы от всех стратегий (не только свежие)
+                # Это позволяет видеть все сигналы в истории для анализа
+                additional_saved = 0
+                for sig in main_strategy_signals:
+                    # Сохраняем все сигналы LONG/SHORT, даже если они не свежие
+                    # main_sig уже сохранен выше, поэтому пропускаем его здесь
+                    if sig != main_sig and sig.action in (Action.LONG, Action.SHORT):
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            additional_saved += 1
+                            # Убрано детальное логирование каждого сигнала для уменьшения шума в логах
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional signal to history: {e}", symbol)
+                
+                # ВАЖНО: Если main_sig был None, но есть сигналы - сохраняем их все
+                # Это гарантирует, что сигналы сохраняются даже если они не свежие
+                if not main_sig and main_strategy_signals:
+                    _log(f"💾 No fresh main_sig, but saving all {len(main_strategy_signals)} TREND/FLAT signals", symbol)
+                    for sig in main_strategy_signals:
+                        if sig.action in (Action.LONG, Action.SHORT):
+                            try:
+                                strategy_type = get_strategy_type_from_signal(sig.reason)
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                                
+                                # Проверяем свежесть для логирования
+                                is_fresh = is_signal_fresh(sig, df_ready)
+                                freshness_note = "fresh" if is_fresh else "not fresh"
+                                
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type=strategy_type,
+                                    signal_id=sig_signal_id,
+                                )
+                                additional_saved += 1
+                                # Убрано детальное логирование каждого не свежего сигнала для уменьшения шума в логах
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save signal to history: {e}", symbol)
+                                import traceback
+                                traceback.print_exc()
+                
+                # КРИТИЧЕСКИ ВАЖНО: Сохраняем ВСЕ сигналы от тренд/флэт стратегий, даже если они не свежие
+                # Это гарантирует, что сигналы попадают в историю независимо от фильтра свежести
+                if main_strategy_signals:
+                    for sig in main_strategy_signals:
+                        if sig.action in (Action.LONG, Action.SHORT):
+                            # Пропускаем только если это main_sig (уже сохранен выше)
+                            if sig == main_sig:
+                                continue
+                            try:
+                                strategy_type = get_strategy_type_from_signal(sig.reason)
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                                
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type=strategy_type,
+                                    signal_id=sig_signal_id,
+                                )
+                                additional_saved += 1
+                                # Убрано детальное логирование каждого не свежего сигнала для уменьшения шума в логах
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save signal to history: {e}", symbol)
+                                import traceback
+                                traceback.print_exc()
+                
+                for sig in ml_signals_only:
+                    if sig != ml_sig and sig.action in (Action.LONG, Action.SHORT):  # Не сохраняем дубликат и только LONG/SHORT
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            additional_saved += 1
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional ML signal to history: {e}", symbol)
+                
+                if additional_saved > 0:
+                    _log(f"💾 Saved {additional_saved} additional signals to history", symbol)
+            except Exception as e:
+                _log(f"⚠️ Warning: Failed to save latest signals to history: {e}", symbol)
+                import traceback
+                traceback.print_exc()
+            
+            # Логика обработки сигналов от разных стратегий
+            sig = None
+            should_add_to_position = False  # Флаг для добавления к позиции при подтверждении
+            
+            if main_sig and ml_sig:
+                # Есть сигналы от обеих стратегий
+                # КРИТИЧЕСКИ ВАЖНО: Приоритет имеет самый свежий сигнал по времени
+                main_sig_time = get_timestamp_for_sort(main_sig)
+                ml_sig_time = get_timestamp_for_sort(ml_sig)
+                
+                # Определяем, какой сигнал свежее
+                if ml_sig_time > main_sig_time:
+                    # ML сигнал свежее - используем его как основной
+                    fresher_sig = ml_sig
+                    older_sig = main_sig
+                    fresher_strategy = "ML"
+                    older_strategy = "TREND/FLAT"
+                    time_diff_minutes = (ml_sig_time - main_sig_time).total_seconds() / 60
+                elif main_sig_time > ml_sig_time:
+                    # TREND/FLAT сигнал свежее - используем его как основной
+                    fresher_sig = main_sig
+                    older_sig = ml_sig
+                    fresher_strategy = "TREND/FLAT"
+                    older_strategy = "ML"
+                    time_diff_minutes = (main_sig_time - ml_sig_time).total_seconds() / 60
+                else:
+                    # Timestamp'ы одинаковые - используем логику приоритета стратегий
+                    fresher_sig = None
+                    older_sig = None
+                    time_diff_minutes = 0
+                
+                if fresher_sig:
+                    # Есть более свежий сигнал - используем его
+                    if fresher_sig.action == older_sig.action:
+                        # Сигналы подтверждают друг друга (оба LONG или оба SHORT)
+                        sig = fresher_sig
+                        if position and current_position_bias == fresher_sig.action:
+                            # Позиция уже открыта в этом направлении - добавляем к позиции
+                            should_add_to_position = True
+                            print(f"[live] ✅ Signals confirm each other ({fresher_sig.action.value}): {fresher_strategy} + {older_strategy}, using {fresher_strategy} (newer by {time_diff_minutes:.1f} min), adding to position")
+                        else:
+                            print(f"[live] ✅ Signals confirm each other ({fresher_sig.action.value}): {fresher_strategy} + {older_strategy}, using {fresher_strategy} signal (newer by {time_diff_minutes:.1f} min)")
+                    else:
+                        # Сигналы противоречат друг другу - используем более свежий
+                        sig = fresher_sig
+                        print(f"[live] ⚠️ Signals conflict: {fresher_strategy}={fresher_sig.action.value}, {older_strategy}={older_sig.action.value}, using {fresher_strategy} signal (newer by {time_diff_minutes:.1f} min)")
+                else:
+                    # Timestamp'ы одинаковые - используем логику приоритета стратегий
+                    if main_sig.action == ml_sig.action:
+                        # Сигналы подтверждают друг друга (оба LONG или оба SHORT)
+                        if position and current_position_bias == main_sig.action:
+                            # Позиция уже открыта в этом направлении - добавляем к позиции
+                            sig = main_sig  # Используем основной сигнал для логирования
+                            should_add_to_position = True
+                            print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), adding to position")
+                        else:
+                            # Нет позиции или позиция в другом направлении - открываем/разворачиваем как обычно
+                            # При подтверждении используем приоритет из настроек
+                            strategy_priority = current_settings.strategy_priority
+                            if strategy_priority == "ml":
+                                sig = ml_sig
+                                print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), using ML strategy (priority)")
+                            elif strategy_priority == "hybrid":
+                                # В гибридном режиме при подтверждении используем основной сигнал (TREND/FLAT)
+                                sig = main_sig
+                                print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), using TREND/FLAT strategy (hybrid mode)")
+                            else:  # "trend" по умолчанию
+                                sig = main_sig
+                                print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), using TREND/FLAT strategy")
+                    else:
+                        # Сигналы противоречат друг другу - используем приоритет из настроек
+                        strategy_priority = current_settings.strategy_priority
+                        if strategy_priority == "ml":
+                            sig = ml_sig
+                            priority_strategy = "ML"
+                            print(f"[live] ⚠️ Signals conflict: TREND/FLAT={main_sig.action.value}, ML={ml_sig.action.value} (same timestamp), using ML strategy (priority)")
+                        elif strategy_priority == "hybrid":
+                            # В гибридном режиме при конфликте используем последний сигнал (или можно выбрать по силе)
+                            sig = ml_sig if ml_sig.timestamp > main_sig.timestamp else main_sig
+                            priority_strategy = "Hybrid (latest signal)"
+                            print(f"[live] ⚠️ Signals conflict: TREND/FLAT={main_sig.action.value}, ML={ml_sig.action.value} (same timestamp), using {sig.reason[:8]} signal (hybrid mode)")
+                        else:  # "trend" по умолчанию
+                            sig = main_sig
+                            priority_strategy = "TREND/FLAT"
+                            print(f"[live] ⚠️ Signals conflict: TREND/FLAT={main_sig.action.value}, ML={ml_sig.action.value} (same timestamp), using TREND/FLAT strategy (priority)")
+                    
+                    # Детальное логирование
+                    if main_sig.indicators_info and ml_sig.indicators_info:
+                        main_info = main_sig.indicators_info
+                        ml_info = ml_sig.indicators_info
+                        if fresher_sig:
+                            print(f"[live] 📊 Signal details:")
+                            print(f"[live]   {fresher_strategy} ({fresher_sig.action.value}): {main_info.get('indicators', 'N/A') if fresher_strategy == 'TREND/FLAT' else ml_info.get('indicators', 'N/A')}")
+                            print(f"[live]   {older_strategy} ({older_sig.action.value}): {main_info.get('indicators', 'N/A') if older_strategy == 'TREND/FLAT' else ml_info.get('indicators', 'N/A')}")
+                        else:
+                            print(f"[live] 📊 Signal details:")
+                            print(f"[live]   TREND/FLAT ({main_sig.action.value}): {main_info.get('indicators', 'N/A')}")
+                            print(f"[live]   ML ({ml_sig.action.value}): {ml_info.get('indicators', 'N/A')}")
+            elif main_sig:
+                # Только основной сигнал
+                sig = main_sig
+                # Если есть открытая позиция в том же направлении, усиливаем её
+                if position and current_position_bias == main_sig.action:
+                    should_add_to_position = True
+                    print(f"[live] ✅ Selected TREND/FLAT signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f} - adding to existing position")
+                else:
+                    print(f"[live] ✅ Selected TREND/FLAT signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
+            elif ml_sig:
+                # Только ML сигнал
+                sig = ml_sig
+                print(f"[live] ✅ Selected ML signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
+            elif all_signals:
+                # КРИТИЧЕСКИ ВАЖНО: Выбираем самый свежий сигнал из всех доступных
+                # Сортируем все сигналы по timestamp (от старых к новым) и берем последний (самый свежий)
+                all_signals_sorted = sorted(all_signals, key=get_timestamp_for_sort)
+                sig = all_signals_sorted[-1]  # Самый свежий сигнал
+                
+                # Проверяем, что это не HOLD
+                if sig.action == Action.HOLD:
+                    if bot_state:
+                        bot_state["current_status"] = "Running"
+                        bot_state["last_action"] = "HOLD signal, no action"
+                        bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                    update_worker_status(symbol, current_status="Running", last_action="HOLD signal, no action")
+                    time.sleep(current_settings.live_poll_seconds)
+                    continue
+                print(f"[live] ⚠️ Selected last signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
+            else:
+                if bot_state:
+                    bot_state["current_status"] = "Running"
+                    bot_state["last_action"] = "No signals found, waiting..."
+                    bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                update_worker_status(symbol, current_status="Running", last_action="No signals found, waiting...")
+                time.sleep(current_settings.live_poll_seconds)
+                continue
+            
+            # Проверяем свежесть выбранного сигнала (дополнительная проверка, хотя уже отфильтровано)
+            # Но на всякий случай проверяем еще раз
+            # ВАЖНО: Если сигнал был выбран как fallback (не свежий, но последний), мы все равно его обрабатываем
+            ts = sig.timestamp
+            is_fresh_check = is_signal_fresh(sig, df_ready)
+            
+            # Проверяем, является ли это fallback сигналом (не свежий, но последний из доступных)
+            is_fallback = False
+            if not is_fresh_check:
+                # Если сигнал не свежий, но он был выбран как последний из доступных - это fallback
+                if main_sig and sig == main_sig and not fresh_main_signals:
+                    is_fallback = True
+                elif ml_sig and sig == ml_sig and not fresh_ml_signals:
+                    is_fallback = True
+            
+            # Если это fallback сигнал, обрабатываем его (не фильтруем)
+            if not is_fresh_check and not is_fallback:
+                ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                
+                # Вычисляем, насколько старый сигнал для информативности
+                try:
+                    if isinstance(ts, pd.Timestamp) and not df_ready.empty:
+                        signal_ts = ts
+                        if signal_ts.tzinfo is None:
+                            signal_ts = signal_ts.tz_localize('UTC')
+                        else:
+                            signal_ts = signal_ts.tz_convert('UTC')
+                        
+                        last_candle_ts = df_ready.index[-1]
+                        if isinstance(last_candle_ts, pd.Timestamp):
+                            last_ts_utc = last_candle_ts
+                            if last_ts_utc.tzinfo is None:
+                                last_ts_utc = last_ts_utc.tz_localize('UTC')
+                            else:
+                                last_ts_utc = last_ts_utc.tz_convert('UTC')
+                            
+                            age_minutes = abs((signal_ts - last_ts_utc).total_seconds()) / 60
+                            age_hours = age_minutes / 60
+                            if age_hours >= 1:
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_hours:.1f} hours), waiting for fresh signal")
+                            else:
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_minutes:.1f} minutes), waiting for fresh signal")
+                        else:
+                            print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
+                    else:
+                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
+                except Exception as e:
+                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
+                
+                if bot_state:
+                    bot_state["current_status"] = "Running"
+                    bot_state["last_action"] = "Waiting for fresh signal..."
+                    bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal...")
+                time.sleep(current_settings.live_poll_seconds)
+                continue
+            
+            # Конвертируем timestamp сигнала в UTC для использования ниже
+            signal_time_utc = None
+            try:
+                if isinstance(ts, pd.Timestamp):
+                    if ts.tzinfo is None:
+                        signal_time_utc = ts.tz_localize('UTC').to_pydatetime()
+                    else:
+                        signal_time_utc = ts.tz_convert('UTC').to_pydatetime()
+                elif hasattr(ts, 'tzinfo'):
+                    if ts.tzinfo is None:
+                        signal_time_utc = ts.replace(tzinfo=timezone.utc)
+                    else:
+                        signal_time_utc = ts.astimezone(timezone.utc)
+            except Exception:
+                pass
+            
+            # Используем signal_id для уникальной идентификации
+            # КРИТИЧЕСКИ ВАЖНО: signal_id должен быть уникальным для каждого сигнала
+            # Если signal_id уже есть в сигнале - используем его, иначе генерируем
+            signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+            if signal_id is None:
+                # Fallback: генерируем ID на основе timestamp, action, reason и price
+                # ВАЖНО: Используем точный timestamp и price для уникальности
+                import hashlib
+                ts_str = str(ts) if hasattr(ts, 'isoformat') else str(ts)
+                # Используем больше знаков для price, чтобы избежать коллизий
+                price_str = f"{sig.price:.6f}"  # Увеличено с 4 до 6 знаков для большей точности
+                id_string = f"{ts_str}_{sig.action.value}_{sig.reason}_{price_str}_{symbol}"  # Добавлен symbol для уникальности
+                signal_id = hashlib.md5(id_string.encode()).hexdigest()[:16]
+                # Устанавливаем signal_id в сигнал для последующего использования
+                if hasattr(sig, 'signal_id'):
+                    sig.signal_id = signal_id
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Проверяем, был ли этот сигнал уже обработан
+            # Это гарантирует, что один сигнал обрабатывается только один раз
+            if signal_id in processed_signals:
+                strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - already processed (ID: {signal_id})")
+                print(f"[live]   ℹ️  This signal was already processed. Waiting for new signal...")
+                if bot_state:
+                    bot_state["current_status"] = "Running"
+                    bot_state["last_action"] = "Signal already processed, waiting for new signal..."
+                    bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                update_worker_status(symbol, current_status="Running", last_action="Signal already processed, waiting for new signal...")
+                time.sleep(current_settings.live_poll_seconds)
+                continue
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут
+            # Это гарантирует, что мы обрабатываем только актуальные сигналы
+            signal_age_minutes = None
+            try:
+                # Используем signal_time_utc, если он был вычислен выше, иначе вычисляем заново
+                signal_time_for_age = signal_time_utc
+                if not signal_time_for_age:
+                    # Fallback: вычисляем signal_time_utc заново
+                    if isinstance(ts, pd.Timestamp):
+                        signal_ts = ts
+                        if signal_ts.tzinfo is None:
+                            signal_ts = signal_ts.tz_localize('UTC')
+                        else:
+                            signal_ts = signal_ts.tz_convert('UTC')
+                        signal_time_for_age = signal_ts.to_pydatetime()
+                        if signal_time_for_age.tzinfo is None:
+                            signal_time_for_age = signal_time_for_age.replace(tzinfo=timezone.utc)
+                    elif hasattr(ts, 'tzinfo'):
+                        signal_time_for_age = ts
+                        if signal_time_for_age.tzinfo is None:
+                            signal_time_for_age = signal_time_for_age.replace(tzinfo=timezone.utc)
+                        else:
+                            signal_time_for_age = signal_time_for_age.astimezone(timezone.utc)
+                
+                if signal_time_for_age:
+                    # Получаем текущее время в UTC
+                    current_time_utc = datetime.now(timezone.utc)
+                    
+                    # Вычисляем возраст сигнала в минутах
+                    age_delta = current_time_utc - signal_time_for_age
+                    signal_age_minutes = age_delta.total_seconds() / 60
+                    
+                    # Если сигнал старше 15 минут - не обрабатываем
+                    if signal_age_minutes > 15:
+                        strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                        ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_minutes:.1f} minutes > 15 minutes limit)")
+                        print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: 15 minutes. Skipping this signal.")
+                        if bot_state:
+                            bot_state["current_status"] = "Running"
+                            bot_state["last_action"] = f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal..."
+                            bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                        update_worker_status(symbol, current_status="Running", last_action=f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal...")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+            except Exception as e:
+                # В случае ошибки при проверке возраста - логируем, но продолжаем обработку
+                print(f"[live] ⚠️ Error checking signal age: {e}, proceeding with signal processing")
+                import traceback
+                traceback.print_exc()
+            
+            # Логируем выбранный сигнал для обработки
+            strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+            ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+            age_info = f" (age: {signal_age_minutes:.1f} min)" if signal_age_minutes is not None else ""
+            print(f"[live] ✅ SELECTED for processing: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id}){age_info}")
+            print(f"[live]   ℹ️  This is a NEW signal that has NOT been processed yet. Age: {signal_age_minutes:.1f} minutes (within 15 min limit). Proceeding with execution...")
+            
+            # Ограничиваем размер processed_signals для оптимизации памяти
+            # ВАЖНО: Не удаляем слишком много, чтобы не потерять историю обработанных сигналов
+            if len(processed_signals) > 2000:  # Увеличено с 1000 до 2000 для большей истории
+                # Удаляем самые старые 1000 записей (половину)
+                processed_signals_list = list(processed_signals)
+                processed_signals = set(processed_signals_list[1000:])
+                print(f"[live]   ℹ️  Cleaned processed_signals: kept {len(processed_signals)} most recent signals")
+            
+            # Обновляем статус: найден сигнал
+            from bot.multi_symbol_manager import update_worker_status
+            if bot_state:
+                bot_state["current_status"] = "Signal Found"
+                bot_state["last_signal"] = f"{sig.action.value}: {sig.reason}"
+                if signal_time_utc:
+                    bot_state["last_signal_time"] = signal_time_utc.isoformat() if hasattr(signal_time_utc, 'isoformat') else str(signal_time_utc)
+                elif hasattr(ts, 'isoformat'):
+                    if isinstance(ts, pd.Timestamp):
+                        if ts.tzinfo is None:
+                            ts_utc = ts.tz_localize('UTC')
+                        else:
+                            ts_utc = ts.tz_convert('UTC')
+                        bot_state["last_signal_time"] = ts_utc.isoformat()
+                    else:
+                        if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+                            ts_utc = ts.replace(tzinfo=timezone.utc)
+                        elif hasattr(ts, 'astimezone'):
+                            ts_utc = ts.astimezone(timezone.utc)
+                        else:
+                            ts_utc = ts
+                        bot_state["last_signal_time"] = ts_utc.isoformat()
+                else:
+                    bot_state["last_signal_time"] = str(ts)
+                bot_state["last_action"] = f"Signal: {sig.action.value} ({sig.reason})"
+                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+            update_worker_status(symbol, current_status="Signal Found", last_signal=f"{sig.action.value}: {sig.reason}")
+            
+            # Обработка позиции (если есть)
+            if position:
+                # Обновляем отслеживание максимальной прибыли
+                _update_position_tracking(position, current_position_bias, current_price, position_max_profit, position_max_price, symbol)
+                
+                # Проверяем частичное закрытие
+                _check_partial_close(
+                    client=client,
+                    position=position,
+                    position_bias=current_position_bias,
+                    current_price=current_price,
+                    settings=current_settings,
+                    position_max_profit=position_max_profit,
+                    position_partial_closed=position_partial_closed,
+                )
+                
+                # Проверяем защиту прибыли
+                profit_protection_reason = _check_profit_protection(
+                    client=client,
+                    position=position,
+                    position_bias=current_position_bias,
+                    current_price=current_price,
+                    settings=current_settings,
+                    position_max_profit=position_max_profit,
+                    position_max_price=position_max_price,
+                )
+                
+                if profit_protection_reason:
+                    # Закрываем позицию
+                    side = "Sell" if current_position_bias == Bias.LONG else "Buy"
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side=side,
+                        qty=position["size"],
+                        reduce_only=True,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] [{symbol}] ✅ Position closed (profit protection): {profit_protection_reason}")
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                        # Используем сохраненную стратегию, которая открыла позицию
+                        strategy_type = position_strategy.pop(symbol, "unknown")
+                        # Если стратегия unknown, пытаемся определить с fallback логикой
+                        if strategy_type == "unknown":
+                            strategy_type = _determine_strategy_with_fallback(
+                                symbol,
+                                position_strategy,
+                                position,
+                                entry_time=datetime.now(timezone.utc),  # Используем текущее время как приближение
+                            )
+                        try:
+                            # Получаем orderId из ответа place_order (ID ордера закрытия)
+                            close_order_id = None
+                            result = resp.get("result", {})
+                            if result:
+                                close_order_id = result.get("orderId") or None
+                            
+                            # Получаем orderLinkId из сохраненных данных (ID открытия позиции)
+                            order_link_id = position_order_link_id.pop(symbol, None)
+                            
+                            # Если orderId не получен из ответа, пытаемся получить из истории исполненных ордеров
+                            if not close_order_id:
+                                try:
+                                    # Получаем историю исполненных ордеров за последние 5 минут
+                                    exec_start_time = int((datetime.now(timezone.utc) - timedelta(minutes=5)).timestamp() * 1000)
+                                    exec_end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+                                    exec_resp = client.get_execution_list(
+                                        symbol=symbol,
+                                        start_time=exec_start_time,
+                                        end_time=exec_end_time,
+                                        limit=50,
+                                    )
+                                    if exec_resp.get("retCode") == 0:
+                                        exec_result = exec_resp.get("result", {})
+                                        exec_list = exec_result.get("list", [])
+                                        # Ищем последний исполненный ордер для закрытия позиции (reduceOnly)
+                                        for exec_order in exec_list:
+                                            if exec_order.get("reduceOnly") and exec_order.get("execQty"):
+                                                close_order_id = exec_order.get("orderId")
+                                                if close_order_id:
+                                                    break
+                                except Exception as e:
+                                    print(f"[live] ⚠️ Error getting orderId from execution history: {e}")
+                            
+                            add_trade(
+                                entry_time=datetime.now(),
+                                exit_time=datetime.now(),
+                                side=current_position_bias.value,
+                                entry_price=position.get("avg_price", current_price),
+                                exit_price=current_price,
+                                size_usd=position["size"] * current_price,
+                                pnl=position.get("unrealised_pnl", 0),
+                                entry_reason="unknown",
+                                exit_reason=profit_protection_reason,
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=close_order_id,
+                                order_link_id=order_link_id,
+                            )
+                        except Exception as e:
+                            print(f"[live] Warning: Failed to log trade: {e}")
+                    else:
+                        print(f"[live] ⚠️ Failed to close position: {resp.get('retMsg', 'Unknown error')}")
+                
+                # Проверяем соответствие позиции текущим сигналам стратегий
+                close_reason = _check_position_strategy_alignment(
+                    client=client,
+                    position=position,
+                    position_bias=current_position_bias,
+                    all_signals=all_signals,
+                    current_price=current_price,
+                    settings=current_settings,
+                    df_ready=df_ready,
+                )
+                
+                if close_reason:
+                    # Логируем причину закрытия позиции
+                    print(f"[live] [{symbol}] 🚨 Closing {current_position_bias.value} position due to: {close_reason}")
+                    print(f"[live] [{symbol}] 📊 Current signals: {len(all_signals)} total signals")
+                    for sig in all_signals:
+                        print(f"[live] [{symbol}]   - {sig.action.value}: {sig.reason} @ ${sig.price:.2f}")
+                    
+                    # Закрываем позицию
+                    side = "Sell" if current_position_bias == Bias.LONG else "Buy"
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side=side,
+                        qty=position["size"],
+                        reduce_only=True,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] [{symbol}] ✅ Position closed (strategy alignment): {close_reason}")
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                        # Используем сохраненную стратегию, которая открыла позицию
+                        strategy_type = position_strategy.pop(symbol, "unknown")
+                        # Если стратегия unknown, пытаемся определить с fallback логикой
+                        if strategy_type == "unknown":
+                            strategy_type = _determine_strategy_with_fallback(
+                                symbol,
+                                position_strategy,
+                                position,
+                                entry_time=datetime.now(timezone.utc),  # Используем текущее время как приближение
+                            )
+                        try:
+                            # Получаем orderId из ответа place_order (ID ордера закрытия)
+                            close_order_id = None
+                            result = resp.get("result", {})
+                            if result:
+                                close_order_id = result.get("orderId") or None
+                            
+                            # Получаем orderLinkId из сохраненных данных (ID открытия позиции)
+                            order_link_id = position_order_link_id.pop(symbol, None)
+                            
+                            # Если orderId не получен из ответа, пытаемся получить из истории исполненных ордеров
+                            if not close_order_id:
+                                try:
+                                    # Получаем историю исполненных ордеров за последние 5 минут
+                                    exec_start_time = int((datetime.now(timezone.utc) - timedelta(minutes=5)).timestamp() * 1000)
+                                    exec_end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+                                    exec_resp = client.get_execution_list(
+                                        symbol=symbol,
+                                        start_time=exec_start_time,
+                                        end_time=exec_end_time,
+                                        limit=50,
+                                    )
+                                    if exec_resp.get("retCode") == 0:
+                                        exec_result = exec_resp.get("result", {})
+                                        exec_list = exec_result.get("list", [])
+                                        # Ищем последний исполненный ордер для закрытия позиции (reduceOnly)
+                                        for exec_order in exec_list:
+                                            if exec_order.get("reduceOnly") and exec_order.get("execQty"):
+                                                close_order_id = exec_order.get("orderId")
+                                                if close_order_id:
+                                                    break
+                                except Exception as e:
+                                    print(f"[live] ⚠️ Error getting orderId from execution history: {e}")
+                            
+                            add_trade(
+                                entry_time=datetime.now(),
+                                exit_time=datetime.now(),
+                                side=current_position_bias.value,
+                                entry_price=position.get("avg_price", current_price),
+                                exit_price=current_price,
+                                size_usd=position["size"] * current_price,
+                                pnl=position.get("unrealised_pnl", 0),
+                                entry_reason="unknown",
+                                exit_reason=close_reason,
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=close_order_id,
+                                order_link_id=order_link_id,
+                            )
+                        except Exception as e:
+                            print(f"[live] Warning: Failed to log trade: {e}")
+                    else:
+                        print(f"[live] ⚠️ Failed to close position: {resp.get('retMsg', 'Unknown error')}")
+                
+                # Обеспечиваем установку TP/SL
+                _ensure_tp_sl_set(
+                    client=client,
+                    position=position,
+                    settings=current_settings,
+                    position_bias=current_position_bias,
+                    current_price=current_price,
+                    position_max_profit=position_max_profit,
+                    position_max_price=position_max_price,
+                )
+            
+            # Обработка сигналов: автоматическое определение действий на основе сигнала и текущей позиции
+            # LONG сигнал
+            if sig.action == Action.LONG:
+                if not position:
+                    # Позиции нет → открываем LONG
+                    # Если сигналы подтверждают друг друга, это уже учтено в выборе сигнала
+                    
+                    strategy_type = get_strategy_type_from_signal(sig.reason)
+                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                    _log(f"📈 Opening NEW LONG position after close", symbol)
+                    _log(f"   Signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})", symbol)
+                    
+                    # Проверяем историю убыточных сделок перед открытием
+                    if current_settings.risk.enable_loss_cooldown:
+                        should_block, last_loss = check_recent_loss_trade(
+                            side="long",
+                            symbol=symbol,
+                            cooldown_minutes=current_settings.risk.loss_cooldown_minutes,
+                            max_losses=current_settings.risk.max_consecutive_losses,
+                        )
+                        if should_block:
+                            if last_loss:
+                                exit_reason = last_loss.get("exit_reason", "unknown")
+                                pnl = last_loss.get("pnl", 0)
+                                print(f"[live] ⛔ Blocking LONG: recent loss trade detected (PnL: {pnl:.2f} USDT, reason: {exit_reason})")
+                            else:
+                                print(f"[live] ⛔ Blocking LONG: too many consecutive losses")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                    
+                    # Проверяем ATR перед открытием позиции (используем ATR с 1H и 4H таймфреймов)
+                    if current_settings.risk.enable_atr_entry_filter and not df_ready.empty:
+                        try:
+                            last_row = df_ready.iloc[-1]
+                            # Используем среднее значение ATR с 1H и 4H таймфреймов для среднесрочного анализа
+                            atr_value = last_row.get("atr_avg", None)  # Среднее ATR с 1H и 4H
+                            # Fallback на 15M ATR если нет данных с высших таймфреймов
+                            if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+                                atr_value = last_row.get("atr", None)
+                            current_price = sig.price
+                            
+                            if atr_value is not None and pd.notna(atr_value) and atr_value > 0:
+                                # Получаем предыдущие свечи для анализа движения цены
+                                if len(df_ready) >= 2:
+                                    prev_row = df_ready.iloc[-2]
+                                    prev_close = prev_row.get("close", current_price)
+                                    
+                                    # Рассчитываем, какую часть ATR (среднесрочного) цена уже прошла в направлении сигнала
+                                    if pd.notna(prev_close):
+                                        price_move = current_price - prev_close
+                                        atr_progress = abs(price_move) / atr_value if atr_value > 0 else 0
+                                        
+                                        # Для LONG сигнала: если цена уже прошла вверх большую часть среднесрочного ATR - не входить
+                                        if price_move > 0 and atr_progress > current_settings.risk.max_atr_progress_pct:
+                                            atr_1h = last_row.get("atr_1h", 0)
+                                            atr_4h = last_row.get("atr_4h", 0)
+                                            print(f"[live] ⛔ Blocking LONG: price already moved {atr_progress*100:.1f}% of avg ATR(1H+4H) up (threshold: {current_settings.risk.max_atr_progress_pct*100:.1f}%)")
+                                            print(f"[live]   Current: ${current_price:.2f}, Previous: ${prev_close:.2f}, ATR avg(1H+4H): ${atr_value:.2f} (1H: ${atr_1h:.2f}, 4H: ${atr_4h:.2f}), Move: ${price_move:.2f}")
+                                            time.sleep(current_settings.live_poll_seconds)
+                                            continue
+                        except Exception as e:
+                            print(f"[live] ⚠️ Error checking ATR filter: {e}")
+                    
+                    balance = _get_balance(client)
+                    if balance is None:
+                        print(f"[live] ⚠️ Skipping LONG: failed to get balance")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                    qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping LONG: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    # Детальное логирование решения
+                    if sig.indicators_info:
+                        info = sig.indicators_info
+                        strategy_name = info.get("strategy", "UNKNOWN")
+                        indicators_str = info.get("indicators", "N/A")
+                        entry_type = info.get("entry_type", "")
+                        print(f"[live] 📈 Opening LONG position: {qty:.3f} @ ${sig.price:.2f} (${desired_usd:.2f}) [Signal ID: {signal_id}]")
+                        print(f"[live] 📊 Decision path: Strategy={strategy_name}, Entry={entry_type}, Indicators: {indicators_str}")
+                        if strategy_name == "TREND":
+                            print(f"[live]   ADX={info.get('adx', 'N/A')}, +DI={info.get('plus_di', 'N/A')}, -DI={info.get('minus_di', 'N/A')}, Bias={info.get('bias', 'N/A')}")
+                            print(f"[live]   Volume={info.get('volume', 'N/A')}, Vol_SMA={info.get('vol_sma', 'N/A')}, Vol_Ratio={info.get('vol_ratio', 'N/A')}x")
+                        elif strategy_name == "FLAT":
+                            print(f"[live]   RSI={info.get('rsi', 'N/A')}, BB_lower={info.get('bb_lower', 'N/A')}, BB_middle={info.get('bb_middle', 'N/A')}, BB_upper={info.get('bb_upper', 'N/A')}")
+                            print(f"[live]   Volume={info.get('volume', 'N/A')}, Vol_SMA={info.get('vol_sma', 'N/A')}, Vol_Ratio={info.get('vol_ratio', 'N/A')}x")
+                        elif strategy_name == "ML":
+                            print(f"[live]   ML Confidence={info.get('confidence_pct', 'N/A')}% ({info.get('strength', 'N/A')}), TP={info.get('tp_pct', 'N/A')}%, SL={info.get('sl_pct', 'N/A')}%")
+                            print(f"[live]   Volume={info.get('volume', 'N/A')}, Vol_SMA={info.get('vol_sma', 'N/A')}, Vol_Ratio={info.get('vol_ratio', 'N/A')}x")
+                    else:
+                        print(f"[live] 📈 Opening LONG position: {qty:.3f} @ ${sig.price:.2f} (${desired_usd:.2f}) [Signal ID: {signal_id}]")
+                    
+                    # Формируем уникальный order_link_id с timestamp для избежания дубликатов
+                    timestamp_ms = int(time.time() * 1000)
+                    unique_order_link_id = f"sig_{signal_id}_{timestamp_ms}"
+                    
+                    # Рассчитываем TP и SL для новой позиции
+                    take_profit, stop_loss = _calculate_tp_sl_for_signal(sig, current_settings, sig.price)
+                    if take_profit and stop_loss:
+                        print(f"[live]   TP: ${take_profit:.2f} (+{((take_profit - sig.price) / sig.price * 100):.2f}%), SL: ${stop_loss:.2f} ({((stop_loss - sig.price) / sig.price * 100):.2f}%)")
+                    
+                    # Размещаем ордер БЕЗ TP/SL (для Market ордеров Bybit не поддерживает установку TP/SL при размещении)
+                    try:
+                        resp = client.place_order(
+                            symbol=symbol,
+                            side="Buy",
+                            qty=qty,
+                            order_link_id=unique_order_link_id,
+                        )
+                    except InvalidRequestError as e:
+                        # Обрабатываем ошибки API (например, недостаточный баланс)
+                        error_msg = str(e)
+                        error_code = None
+                        if "ErrCode" in error_msg:
+                            import re
+                            code_match = re.search(r'ErrCode:\s*(\d+)', error_msg)
+                            if code_match:
+                                error_code = int(code_match.group(1))
+                        
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        if error_code == 110007:
+                            _log(f"❌ INSUFFICIENT BALANCE: Cannot open LONG position - {error_msg}", symbol)
+                            _log(f"   Signal was generated but cannot be executed. Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                        else:
+                            _log(f"❌ ORDER ERROR: Failed to open LONG position - {error_msg}", symbol)
+                            _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                        
+                        # Сохраняем сигнал в историю даже при ошибке выполнения
+                        try:
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            _log(f"💾 Signal saved to history despite order error", symbol)
+                        except Exception as save_error:
+                            _log(f"⚠️ Failed to save signal to history: {save_error}", symbol)
+                        
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    if resp.get("retCode") == 0:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] ✅ EXECUTED: {strategy_type.upper()} signal {sig.action.value} - LONG position opened successfully")
+                        print(f"[live]   Order Link ID: {unique_order_link_id}, Qty: {qty:.3f}, Price: ${sig.price:.2f}")
+                        
+                        # Устанавливаем TP/SL сразу после успешного открытия позиции
+                        if take_profit and stop_loss:
+                            try:
+                                # Небольшая задержка, чтобы позиция точно открылась
+                                import time as time_module
+                                time_module.sleep(0.5)
+                                
+                                tp_sl_resp = client.set_trading_stop(
+                                    symbol=symbol,
+                                    take_profit=take_profit,
+                                    stop_loss=stop_loss,
+                                )
+                                if tp_sl_resp.get("retCode") == 0:
+                                    # Правильно форматируем проценты в зависимости от направления позиции
+                                    if sig.action == Action.LONG:
+                                        tp_pct_str = f"+{((take_profit - sig.price) / sig.price * 100):.2f}%"
+                                        sl_pct_str = f"{((stop_loss - sig.price) / sig.price * 100):.2f}%"
+                                    else:  # SHORT
+                                        tp_pct_str = f"{((take_profit - sig.price) / sig.price * 100):.2f}%"  # Отрицательный процент (цена ниже входа)
+                                        sl_pct_str = f"+{((stop_loss - sig.price) / sig.price * 100):.2f}%"  # Положительный процент (цена выше входа)
+                                    print(f"[live] ✅ TP/SL set successfully: TP=${take_profit:.2f} ({tp_pct_str}), SL=${stop_loss:.2f} ({sl_pct_str})")
+                                else:
+                                    print(f"[live] ⚠️ Failed to set TP/SL: {tp_sl_resp.get('retMsg', 'Unknown error')} (will retry via _ensure_tp_sl_set)")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Error setting TP/SL immediately: {e} (will retry via _ensure_tp_sl_set)")
+                        
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                        # Сохраняем стратегию, которая открыла позицию
+                        position_strategy[symbol] = strategy_type
+                        # Сохраняем orderId и orderLinkId из ответа
+                        result = resp.get("result", {})
+                        if result:
+                            order_id = result.get("orderId", "")
+                            order_link_id_result = result.get("orderLinkId", unique_order_link_id)
+                            if order_id:
+                                position_order_id[symbol] = order_id
+                            if order_link_id_result:
+                                position_order_link_id[symbol] = order_link_id_result
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                    elif resp.get("retCode") == 110072:
+                        # Ошибка дубликата order_link_id - сигнал уже обработан
+                        print(f"[live] [{symbol}] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                    else:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] [{symbol}] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open LONG position: {resp.get('retMsg', 'Unknown error')} (ErrCode: {resp.get('retCode')})")
+                elif current_position_bias == Bias.LONG:
+                    # Позиция LONG и сигнал LONG → добавляем к позиции (ADD_LONG)
+                    # Это может быть подтверждение от другой стратегии или повторный сигнал от той же
+                    if should_add_to_position:
+                        print(f"[live] 📊 Adding to position: signals from different strategies confirm each other")
+                    # Проверяем smart add условие
+                    if current_settings.risk.enable_smart_add:
+                        max_price = position_max_price.get(symbol, sig.price)
+                        pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                        
+                        if pullback_pct < current_settings.risk.smart_add_pullback_pct * 100:
+                            print(f"[live] ⚠️ Skipping ADD_LONG: pullback too small ({pullback_pct:.2f}% < {current_settings.risk.smart_add_pullback_pct * 100:.2f}%)")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                    
+                    # Рассчитываем количество контрактов как половину от текущего размера позиции
+                    current_size = position.get("size", 0)
+                    if current_size <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_LONG: invalid position size ({current_size})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    qty = _calculate_add_position_qty(client, current_size, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_LONG: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    print(f"[live] 📈 Adding to LONG position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f}")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side="Buy",
+                        qty=qty,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] ✅ Added to LONG position successfully")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                    else:
+                        print(f"[live] ⚠️ Failed to add to LONG position: {resp.get('retMsg', 'Unknown error')}")
+                elif current_position_bias == Bias.SHORT:
+                    # Позиция SHORT и сигнал LONG → закрываем SHORT и открываем LONG
+                    strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                    print(f"[live] [{symbol}] 🔄 REVERSAL: Closing SHORT and opening LONG")
+                    print(f"[live] [{symbol}] 📊 Signal: {strategy_name} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})")
+                    # Детальное логирование разворота
+                    if sig.indicators_info:
+                        info = sig.indicators_info
+                        strategy_name_info = info.get("strategy", "UNKNOWN")
+                        indicators_str = info.get("indicators", "N/A")
+                        print(f"[live] [{symbol}] 📊 Reversal decision: Strategy={strategy_name_info}, Indicators: {indicators_str}")
+                        if strategy_name_info == "TREND" and info.get("reason") == "bias_flip":
+                            print(f"[live] [{symbol}]   Bias changed: {info.get('previous_bias', 'N/A')} → {info.get('bias', 'N/A')}")
+                        elif strategy_name_info == "ML":
+                            print(f"[live] [{symbol}]   ML Confidence={info.get('confidence_pct', 'N/A')}% ({info.get('strength', 'N/A')})")
+                    
+                    # Закрываем SHORT
+                    side = "Buy"
+                    print(f"[live] [{symbol}] 🔒 Closing SHORT position: qty={position['size']:.3f}, reduce_only=True")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side=side,
+                        qty=position["size"],
+                        reduce_only=True,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] [{symbol}] ✅ Closed SHORT position")
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                        
+                        # Открываем LONG
+                        balance = _get_balance(client)
+                        if balance is None:
+                            print(f"[live] ⚠️ Failed to get balance for LONG")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                        
+                        desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                        qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
+                        
+                        if qty <= 0:
+                            print(f"[live] ⚠️ Invalid qty for LONG ({qty})")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                        
+                        print(f"[live] 📈 Opening LONG position: {qty:.3f} @ ${sig.price:.2f} [Signal ID: {signal_id}]")
+                        # Формируем уникальный order_link_id с timestamp для избежания дубликатов
+                        timestamp_ms_reverse = int(time.time() * 1000)
+                        unique_order_link_id_reverse = f"sig_{signal_id}_{timestamp_ms_reverse}"
+                        
+                        # Рассчитываем TP и SL для новой позиции при реверсе
+                        take_profit, stop_loss = _calculate_tp_sl_for_signal(sig, current_settings, sig.price)
+                        if take_profit and stop_loss:
+                            print(f"[live]   TP: ${take_profit:.2f} (+{((take_profit - sig.price) / sig.price * 100):.2f}%), SL: ${stop_loss:.2f} ({((stop_loss - sig.price) / sig.price * 100):.2f}%)")
+                        
+                        # Размещаем ордер БЕЗ TP/SL (для Market ордеров Bybit не поддерживает установку TP/SL при размещении)
+                        resp = client.place_order(
+                            symbol=symbol,
+                            side="Buy",
+                            qty=qty,
+                            order_link_id=unique_order_link_id_reverse,
+                        )
+                        
+                        if resp.get("retCode") == 0:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            print(f"[live] ✅ EXECUTED: {strategy_type.upper()} signal {sig.action.value} - Reversed position (SHORT -> LONG)")
+                            print(f"[live]   Order Link ID: {unique_order_link_id_reverse}, Qty: {qty:.3f}, Price: ${sig.price:.2f}")
+                            
+                            # КРИТИЧЕСКИ ВАЖНО: Сохраняем сигнал LONG в историю при реверсе
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type=strategy_type,
+                                    signal_id=sig_signal_id,
+                                )
+                                print(f"[live] 💾 Saved LONG signal to history (reversal): {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Failed to save LONG signal to history (reversal): {e}")
+                                import traceback
+                                traceback.print_exc()
+                            
+                            # Устанавливаем TP/SL сразу после успешного открытия позиции
+                            if take_profit and stop_loss:
+                                try:
+                                    import time as time_module
+                                    time_module.sleep(0.5)
+                                    
+                                    tp_sl_resp = client.set_trading_stop(
+                                        symbol=symbol,
+                                        take_profit=take_profit,
+                                        stop_loss=stop_loss,
+                                    )
+                                    if tp_sl_resp.get("retCode") == 0:
+                                        # Правильно форматируем проценты в зависимости от направления позиции
+                                        if sig.action == Action.LONG:
+                                            tp_pct_str = f"+{((take_profit - sig.price) / sig.price * 100):.2f}%"
+                                            sl_pct_str = f"{((stop_loss - sig.price) / sig.price * 100):.2f}%"
+                                        else:  # SHORT
+                                            tp_pct_str = f"{((take_profit - sig.price) / sig.price * 100):.2f}%"  # Отрицательный процент (цена ниже входа)
+                                            sl_pct_str = f"+{((stop_loss - sig.price) / sig.price * 100):.2f}%"  # Положительный процент (цена выше входа)
+                                        print(f"[live] ✅ TP/SL set successfully: TP=${take_profit:.2f} ({tp_pct_str}), SL=${stop_loss:.2f} ({sl_pct_str})")
+                                    else:
+                                        print(f"[live] ⚠️ Failed to set TP/SL: {tp_sl_resp.get('retMsg', 'Unknown error')} (will retry via _ensure_tp_sl_set)")
+                                except Exception as e:
+                                    print(f"[live] ⚠️ Error setting TP/SL immediately: {e} (will retry via _ensure_tp_sl_set)")
+                                    import traceback
+                                    traceback.print_exc()
+                            
+                            processed_signals.add(signal_id)
+                            _save_processed_signals(processed_signals, processed_signals_file)
+                            last_handled_signal = (ts, sig.action.value)
+                            # Сохраняем стратегию, которая открыла позицию (реверс)
+                            position_strategy[symbol] = strategy_type
+                            # Сохраняем orderId и orderLinkId из ответа
+                            result = resp.get("result", {})
+                            if result:
+                                order_id = result.get("orderId", "")
+                                order_link_id_result = result.get("orderLinkId", unique_order_link_id_reverse)
+                                if order_id:
+                                    position_order_id[symbol] = order_id
+                                if order_link_id_result:
+                                    position_order_link_id[symbol] = order_link_id_result
+                        else:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            print(f"[live] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open LONG position: {resp.get('retMsg', 'Unknown error')}")
+                    else:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to close SHORT position: {resp.get('retMsg', 'Unknown error')}")
+            
+            # SHORT сигнал
+            elif sig.action == Action.SHORT:
+                if not position:
+                    # Позиции нет → открываем SHORT
+                    
+                    strategy_type = get_strategy_type_from_signal(sig.reason)
+                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                    _log(f"📉 Opening NEW SHORT position after close", symbol)
+                    _log(f"   Signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})", symbol)
+                    
+                    # Проверяем историю убыточных сделок перед открытием
+                    if current_settings.risk.enable_loss_cooldown:
+                        should_block, last_loss = check_recent_loss_trade(
+                            side="short",
+                            symbol=symbol,
+                            cooldown_minutes=current_settings.risk.loss_cooldown_minutes,
+                            max_losses=current_settings.risk.max_consecutive_losses,
+                        )
+                        if should_block:
+                            if last_loss:
+                                exit_reason = last_loss.get("exit_reason", "unknown")
+                                pnl = last_loss.get("pnl", 0)
+                                print(f"[live] ⛔ Blocking SHORT: recent loss trade detected (PnL: {pnl:.2f} USDT, reason: {exit_reason})")
+                            else:
+                                print(f"[live] ⛔ Blocking SHORT: too many consecutive losses")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                    
+                    # Проверяем ATR перед открытием позиции (используем ATR с 1H и 4H таймфреймов)
+                    if current_settings.risk.enable_atr_entry_filter and not df_ready.empty:
+                        try:
+                            last_row = df_ready.iloc[-1]
+                            # Используем среднее значение ATR с 1H и 4H таймфреймов для среднесрочного анализа
+                            atr_value = last_row.get("atr_avg", None)  # Среднее ATR с 1H и 4H
+                            # Fallback на 15M ATR если нет данных с высших таймфреймов
+                            if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+                                atr_value = last_row.get("atr", None)
+                            current_price = sig.price
+                            
+                            if atr_value is not None and pd.notna(atr_value) and atr_value > 0:
+                                # Получаем предыдущие свечи для анализа движения цены
+                                if len(df_ready) >= 2:
+                                    prev_row = df_ready.iloc[-2]
+                                    prev_close = prev_row.get("close", current_price)
+                                    
+                                    # Рассчитываем, какую часть ATR (среднесрочного) цена уже прошла в направлении сигнала
+                                    if pd.notna(prev_close):
+                                        price_move = prev_close - current_price  # Для SHORT: движение вниз
+                                        atr_progress = abs(price_move) / atr_value if atr_value > 0 else 0
+                                        
+                                        # Для SHORT сигнала: если цена уже прошла вниз большую часть среднесрочного ATR - не входить
+                                        if price_move > 0 and atr_progress > current_settings.risk.max_atr_progress_pct:
+                                            atr_1h = last_row.get("atr_1h", 0)
+                                            atr_4h = last_row.get("atr_4h", 0)
+                                            print(f"[live] ⛔ Blocking SHORT: price already moved {atr_progress*100:.1f}% of avg ATR(1H+4H) down (threshold: {current_settings.risk.max_atr_progress_pct*100:.1f}%)")
+                                            print(f"[live]   Current: ${current_price:.2f}, Previous: ${prev_close:.2f}, ATR avg(1H+4H): ${atr_value:.2f} (1H: ${atr_1h:.2f}, 4H: ${atr_4h:.2f}), Move: ${price_move:.2f}")
+                                            time.sleep(current_settings.live_poll_seconds)
+                                            continue
+                        except Exception as e:
+                            print(f"[live] ⚠️ Error checking ATR filter: {e}")
+                    
+                    balance = _get_balance(client)
+                    if balance is None:
+                        print(f"[live] ⚠️ Skipping SHORT: failed to get balance")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                    qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping SHORT: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    # Детальное логирование решения
+                    if sig.indicators_info:
+                        info = sig.indicators_info
+                        strategy_name = info.get("strategy", "UNKNOWN")
+                        indicators_str = info.get("indicators", "N/A")
+                        entry_type = info.get("entry_type", "")
+                        print(f"[live] 📉 Opening SHORT position: {qty:.3f} @ ${sig.price:.2f} (${desired_usd:.2f}) [Signal ID: {signal_id}]")
+                        print(f"[live] 📊 Decision path: Strategy={strategy_name}, Entry={entry_type}, Indicators: {indicators_str}")
+                        if strategy_name == "TREND":
+                            print(f"[live]   ADX={info.get('adx', 'N/A')}, +DI={info.get('plus_di', 'N/A')}, -DI={info.get('minus_di', 'N/A')}, Bias={info.get('bias', 'N/A')}")
+                            print(f"[live]   Volume={info.get('volume', 'N/A')}, Vol_SMA={info.get('vol_sma', 'N/A')}, Vol_Ratio={info.get('vol_ratio', 'N/A')}x")
+                        elif strategy_name == "FLAT":
+                            print(f"[live]   RSI={info.get('rsi', 'N/A')}, BB_lower={info.get('bb_lower', 'N/A')}, BB_middle={info.get('bb_middle', 'N/A')}, BB_upper={info.get('bb_upper', 'N/A')}")
+                            print(f"[live]   Volume={info.get('volume', 'N/A')}, Vol_SMA={info.get('vol_sma', 'N/A')}, Vol_Ratio={info.get('vol_ratio', 'N/A')}x")
+                        elif strategy_name == "ML":
+                            print(f"[live]   ML Confidence={info.get('confidence_pct', 'N/A')}% ({info.get('strength', 'N/A')}), TP={info.get('tp_pct', 'N/A')}%, SL={info.get('sl_pct', 'N/A')}%")
+                            print(f"[live]   Volume={info.get('volume', 'N/A')}, Vol_SMA={info.get('vol_sma', 'N/A')}, Vol_Ratio={info.get('vol_ratio', 'N/A')}x")
+                    else:
+                        print(f"[live] 📉 Opening SHORT position: {qty:.3f} @ ${sig.price:.2f} (${desired_usd:.2f}) [Signal ID: {signal_id}]")
+                    
+                    # Формируем уникальный order_link_id с timestamp для избежания дубликатов
+                    timestamp_ms = int(time.time() * 1000)
+                    unique_order_link_id = f"sig_{signal_id}_{timestamp_ms}"
+                    
+                    # Рассчитываем TP и SL для новой позиции
+                    take_profit, stop_loss = _calculate_tp_sl_for_signal(sig, current_settings, sig.price)
+                    if take_profit and stop_loss:
+                        print(f"[live]   TP: ${take_profit:.2f} ({((take_profit - sig.price) / sig.price * 100):.2f}%), SL: ${stop_loss:.2f} ({((stop_loss - sig.price) / sig.price * 100):.2f}%)")
+                    
+                    # Размещаем ордер БЕЗ TP/SL (для Market ордеров Bybit не поддерживает установку TP/SL при размещении)
+                    try:
+                        resp = client.place_order(
+                            symbol=symbol,
+                            side="Sell",
+                            qty=qty,
+                            order_link_id=unique_order_link_id,
+                        )
+                    except InvalidRequestError as e:
+                        # Обрабатываем ошибки API (например, недостаточный баланс)
+                        error_msg = str(e)
+                        error_code = None
+                        if "ErrCode" in error_msg:
+                            import re
+                            code_match = re.search(r'ErrCode:\s*(\d+)', error_msg)
+                            if code_match:
+                                error_code = int(code_match.group(1))
+                        
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        if error_code == 110007:
+                            _log(f"❌ INSUFFICIENT BALANCE: Cannot open SHORT position - {error_msg}", symbol)
+                            _log(f"   Signal was generated but cannot be executed. Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                        else:
+                            _log(f"❌ ORDER ERROR: Failed to open SHORT position - {error_msg}", symbol)
+                            _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                        
+                        # Сохраняем сигнал в историю даже при ошибке выполнения
+                        try:
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            _log(f"💾 Signal saved to history despite order error", symbol)
+                        except Exception as save_error:
+                            _log(f"⚠️ Failed to save signal to history: {save_error}", symbol)
+                        
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    if resp.get("retCode") == 0:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] ✅ EXECUTED: {strategy_type.upper()} signal {sig.action.value} - SHORT position opened successfully")
+                        print(f"[live]   Order Link ID: {unique_order_link_id}, Qty: {qty:.3f}, Price: ${sig.price:.2f}")
+                        
+                        # Устанавливаем TP/SL сразу после успешного открытия позиции
+                        if take_profit and stop_loss:
+                            try:
+                                # Небольшая задержка, чтобы позиция точно открылась
+                                import time as time_module
+                                time_module.sleep(0.5)
+                                
+                                tp_sl_resp = client.set_trading_stop(
+                                    symbol=symbol,
+                                    take_profit=take_profit,
+                                    stop_loss=stop_loss,
+                                )
+                                if tp_sl_resp.get("retCode") == 0:
+                                    # Правильно форматируем проценты в зависимости от направления позиции
+                                    if sig.action == Action.LONG:
+                                        tp_pct_str = f"+{((take_profit - sig.price) / sig.price * 100):.2f}%"
+                                        sl_pct_str = f"{((stop_loss - sig.price) / sig.price * 100):.2f}%"
+                                    else:  # SHORT
+                                        tp_pct_str = f"{((take_profit - sig.price) / sig.price * 100):.2f}%"  # Отрицательный процент (цена ниже входа)
+                                        sl_pct_str = f"+{((stop_loss - sig.price) / sig.price * 100):.2f}%"  # Положительный процент (цена выше входа)
+                                    print(f"[live] ✅ TP/SL set successfully: TP=${take_profit:.2f} ({tp_pct_str}), SL=${stop_loss:.2f} ({sl_pct_str})")
+                                else:
+                                    print(f"[live] ⚠️ Failed to set TP/SL: {tp_sl_resp.get('retMsg', 'Unknown error')} (will retry via _ensure_tp_sl_set)")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Error setting TP/SL immediately: {e} (will retry via _ensure_tp_sl_set)")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                        # Сохраняем стратегию, которая открыла позицию
+                        position_strategy[symbol] = strategy_type
+                        # Сохраняем orderId и orderLinkId из ответа
+                        result = resp.get("result", {})
+                        if result:
+                            order_id = result.get("orderId", "")
+                            order_link_id_result = result.get("orderLinkId", unique_order_link_id)
+                            if order_id:
+                                position_order_id[symbol] = order_id
+                            if order_link_id_result:
+                                position_order_link_id[symbol] = order_link_id_result
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                    elif resp.get("retCode") == 110072:
+                        # Ошибка дубликата order_link_id - сигнал уже обработан
+                        print(f"[live] [{symbol}] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                    else:
+                        print(f"[live] ⚠️ Failed to open SHORT position: {resp.get('retMsg', 'Unknown error')} (ErrCode: {resp.get('retCode')})")
+                elif current_position_bias == Bias.SHORT:
+                    # Позиция SHORT и сигнал SHORT → добавляем к позиции (ADD_SHORT)
+                    # Это может быть подтверждение от другой стратегии или повторный сигнал от той же
+                    if should_add_to_position:
+                        print(f"[live] 📊 Adding to position: signals from different strategies confirm each other")
+                    # Проверяем smart add условие
+                    if current_settings.risk.enable_smart_add:
+                        max_price = position_max_price.get(symbol, sig.price)
+                        pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                        
+                        if pullback_pct < current_settings.risk.smart_add_pullback_pct * 100:
+                            print(f"[live] ⚠️ Skipping ADD_SHORT: pullback too small ({pullback_pct:.2f}% < {current_settings.risk.smart_add_pullback_pct * 100:.2f}%)")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                    
+                    # Рассчитываем количество контрактов как половину от текущего размера позиции
+                    current_size = position.get("size", 0)
+                    if current_size <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_SHORT: invalid position size ({current_size})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    qty = _calculate_add_position_qty(client, current_size, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_SHORT: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    print(f"[live] 📉 Adding to SHORT position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f}")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side="Sell",
+                        qty=qty,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] ✅ Added to SHORT position successfully")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                    else:
+                        print(f"[live] ⚠️ Failed to add to SHORT position: {resp.get('retMsg', 'Unknown error')}")
+                elif current_position_bias == Bias.LONG:
+                    # Позиция LONG и сигнал SHORT → закрываем LONG и открываем SHORT
+                    strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                    print(f"[live] [{symbol}] 🔄 REVERSAL: Closing LONG and opening SHORT")
+                    print(f"[live] [{symbol}] 📊 Signal: {strategy_name} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})")
+                    # Детальное логирование разворота
+                    if sig.indicators_info:
+                        info = sig.indicators_info
+                        strategy_name_info = info.get("strategy", "UNKNOWN")
+                        indicators_str = info.get("indicators", "N/A")
+                        print(f"[live] [{symbol}] 📊 Reversal decision: Strategy={strategy_name_info}, Indicators: {indicators_str}")
+                        if strategy_name_info == "TREND" and info.get("reason") == "bias_flip":
+                            print(f"[live] [{symbol}]   Bias changed: {info.get('previous_bias', 'N/A')} → {info.get('bias', 'N/A')}")
+                        elif strategy_name_info == "ML":
+                            print(f"[live] [{symbol}]   ML Confidence={info.get('confidence_pct', 'N/A')}% ({info.get('strength', 'N/A')})")
+                    
+                    # Закрываем LONG
+                    side = "Sell"
+                    print(f"[live] [{symbol}] 🔒 Closing LONG position: qty={position['size']:.3f}, reduce_only=True")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side=side,
+                        qty=position["size"],
+                        reduce_only=True,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] [{symbol}] ✅ Closed LONG position")
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                        
+                        # Открываем SHORT
+                        balance = _get_balance(client)
+                        if balance is None:
+                            print(f"[live] ⚠️ Failed to get balance for SHORT")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                        
+                        desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                        qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
+                        
+                        if qty <= 0:
+                            print(f"[live] ⚠️ Invalid qty for SHORT ({qty})")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                        
+                        print(f"[live] 📉 Opening SHORT position: {qty:.3f} @ ${sig.price:.2f} [Signal ID: {signal_id}]")
+                        # Формируем уникальный order_link_id с timestamp для избежания дубликатов
+                        timestamp_ms = int(time.time() * 1000)
+                        unique_order_link_id = f"sig_{signal_id}_{timestamp_ms}"
+                        
+                        # Рассчитываем TP и SL для новой позиции при реверсе
+                        take_profit, stop_loss = _calculate_tp_sl_for_signal(sig, current_settings, sig.price)
+                        if take_profit and stop_loss:
+                            print(f"[live]   TP: ${take_profit:.2f} ({((take_profit - sig.price) / sig.price * 100):.2f}%), SL: ${stop_loss:.2f} ({((stop_loss - sig.price) / sig.price * 100):.2f}%)")
+                        
+                        # Размещаем ордер БЕЗ TP/SL (для Market ордеров Bybit не поддерживает установку TP/SL при размещении)
+                        resp = client.place_order(
+                            symbol=symbol,
+                            side="Sell",
+                            qty=qty,
+                            order_link_id=unique_order_link_id,
+                        )
+                        
+                        if resp.get("retCode") == 0:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            print(f"[live] ✅ EXECUTED: {strategy_type.upper()} signal {sig.action.value} - Reversed position (LONG -> SHORT)")
+                            print(f"[live]   Order Link ID: {unique_order_link_id}, Qty: {qty:.3f}, Price: ${sig.price:.2f}")
+                            
+                            # КРИТИЧЕСКИ ВАЖНО: Сохраняем сигнал SHORT в историю при реверсе
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type=strategy_type,
+                                    signal_id=sig_signal_id,
+                                )
+                                print(f"[live] 💾 Saved SHORT signal to history (reversal): {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Failed to save SHORT signal to history (reversal): {e}")
+                                import traceback
+                                traceback.print_exc()
+                            
+                            # Устанавливаем TP/SL сразу после успешного открытия позиции
+                            if take_profit and stop_loss:
+                                try:
+                                    import time as time_module
+                                    time_module.sleep(0.5)
+                                    
+                                    tp_sl_resp = client.set_trading_stop(
+                                        symbol=symbol,
+                                        take_profit=take_profit,
+                                        stop_loss=stop_loss,
+                                    )
+                                    if tp_sl_resp.get("retCode") == 0:
+                                        print(f"[live] ✅ TP/SL set successfully: TP=${take_profit:.2f} ({((take_profit - sig.price) / sig.price * 100):.2f}%), SL=${stop_loss:.2f} ({((stop_loss - sig.price) / sig.price * 100):.2f}%)")
+                                    else:
+                                        print(f"[live] ⚠️ Failed to set TP/SL: {tp_sl_resp.get('retMsg', 'Unknown error')} (will retry via _ensure_tp_sl_set)")
+                                except Exception as e:
+                                    print(f"[live] ⚠️ Error setting TP/SL immediately: {e} (will retry via _ensure_tp_sl_set)")
+                                    import traceback
+                                    traceback.print_exc()
+                            
+                            processed_signals.add(signal_id)
+                            _save_processed_signals(processed_signals, processed_signals_file)
+                            last_handled_signal = (ts, sig.action.value)
+                            # Сохраняем стратегию, которая открыла позицию (реверс)
+                            position_strategy[symbol] = strategy_type
+                            # Сохраняем orderId и orderLinkId из ответа
+                            result = resp.get("result", {})
+                            if result:
+                                order_id = result.get("orderId", "")
+                                order_link_id_result = result.get("orderLinkId", unique_order_link_id)
+                                if order_id:
+                                    position_order_id[symbol] = order_id
+                                if order_link_id_result:
+                                    position_order_link_id[symbol] = order_link_id_result
+                        elif resp.get("retCode") == 110072:
+                            # Ошибка дубликата order_link_id - сигнал уже обработан
+                            print(f"[live] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
+                            processed_signals.add(signal_id)
+                            _save_processed_signals(processed_signals, processed_signals_file)
+                        else:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            print(f"[live] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open SHORT position: {resp.get('retMsg', 'Unknown error')} (ErrCode: {resp.get('retCode')})")
+                    else:
+                        print(f"[live] ⚠️ Failed to close LONG position: {resp.get('retMsg', 'Unknown error')}")
+            
+            elif sig.action == Action.ADD_LONG:
+                if not position:
+                    # Если позиции нет, открываем новую
+                    balance = _get_balance(client)
+                    if balance is None:
+                        print(f"[live] ⚠️ Skipping ADD_LONG: failed to get balance")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                    qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_LONG: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    print(f"[live] 📈 Opening LONG position (from ADD_LONG): {qty:.3f} @ ${sig.price:.2f}")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side="Buy",
+                        qty=qty,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] ✅ LONG position opened (from ADD_LONG)")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                        # Сохраняем стратегию, которая открыла позицию
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        position_strategy[symbol] = strategy_type
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                    else:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] [{symbol}] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open LONG position: {resp.get('retMsg', 'Unknown error')}")
+                elif current_position_bias == Bias.LONG:
+                    # Проверяем smart add условие
+                    if current_settings.risk.enable_smart_add:
+                        max_price = position_max_price.get(symbol, sig.price)
+                        pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                        
+                        if pullback_pct < current_settings.risk.smart_add_pullback_pct * 100:
+                            print(f"[live] ⚠️ Skipping ADD_LONG: pullback too small ({pullback_pct:.2f}% < {current_settings.risk.smart_add_pullback_pct * 100:.2f}%)")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                    
+                    # Добавляем к существующей LONG позиции
+                    # Рассчитываем количество контрактов как половину от текущего размера позиции
+                    current_size = position.get("size", 0)
+                    if current_size <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_LONG: invalid position size ({current_size})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    qty = _calculate_add_position_qty(client, current_size, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_LONG: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    print(f"[live] 📈 Adding to LONG position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f}")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side="Buy",
+                        qty=qty,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] ✅ Added to LONG position successfully")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                    else:
+                        print(f"[live] ⚠️ Failed to add to LONG position: {resp.get('retMsg', 'Unknown error')}")
+                else:
+                    print(f"[live] ⚠️ Skipping ADD_LONG: position is SHORT, not LONG")
+            
+            elif sig.action == Action.ADD_SHORT:
+                if not position:
+                    # Если позиции нет, открываем новую
+                    balance = _get_balance(client)
+                    if balance is None:
+                        print(f"[live] ⚠️ Skipping ADD_SHORT: failed to get balance")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                    qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_SHORT: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    print(f"[live] 📉 Opening SHORT position (from ADD_SHORT): {qty:.3f} @ ${sig.price:.2f}")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side="Sell",
+                        qty=qty,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] ✅ EXECUTED: {strategy_type.upper()} signal {sig.action.value} - SHORT position opened (from ADD_SHORT)")
+                        print(f"[live]   Qty: {qty:.3f}, Price: ${sig.price:.2f}")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                        # Сохраняем стратегию, которая открыла позицию
+                        position_strategy[symbol] = strategy_type
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                    else:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] [{symbol}] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open SHORT position: {resp.get('retMsg', 'Unknown error')}")
+                elif current_position_bias == Bias.SHORT:
+                    # Проверяем smart add условие
+                    if current_settings.risk.enable_smart_add:
+                        max_price = position_max_price.get(symbol, sig.price)
+                        pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                        
+                        if pullback_pct < current_settings.risk.smart_add_pullback_pct * 100:
+                            print(f"[live] ⚠️ Skipping ADD_SHORT: pullback too small ({pullback_pct:.2f}% < {current_settings.risk.smart_add_pullback_pct * 100:.2f}%)")
+                            time.sleep(current_settings.live_poll_seconds)
+                            continue
+                    
+                    # Добавляем к существующей SHORT позиции
+                    # Рассчитываем количество контрактов как половину от текущего размера позиции
+                    current_size = position.get("size", 0)
+                    if current_size <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_SHORT: invalid position size ({current_size})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    qty = _calculate_add_position_qty(client, current_size, current_settings)
+                    
+                    if qty <= 0:
+                        print(f"[live] ⚠️ Skipping ADD_SHORT: invalid qty ({qty})")
+                        time.sleep(current_settings.live_poll_seconds)
+                        continue
+                    
+                    print(f"[live] 📉 Adding to SHORT position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f}")
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side="Sell",
+                        qty=qty,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] ✅ EXECUTED: {strategy_type.upper()} signal {sig.action.value} - SHORT position added successfully")
+                        print(f"[live]   Added Qty: {qty:.3f}, Price: ${sig.price:.2f}")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                    else:
+                        strategy_type = get_strategy_type_from_signal(sig.reason)
+                        print(f"[live] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to add to SHORT position: {resp.get('retMsg', 'Unknown error')}")
+                else:
+                    print(f"[live] ⚠️ Skipping ADD_SHORT: position is LONG, not SHORT")
+            
+            elif sig.action == Action.CLOSE:
+                if not position:
+                    print(f"[live] ⚠️ Skipping CLOSE: no position open")
+                else:
+                    side = "Sell" if current_position_bias == Bias.LONG else "Buy"
+                    resp = client.place_order(
+                        symbol=symbol,
+                        side=side,
+                        qty=position["size"],
+                        reduce_only=True,
+                    )
+                    
+                    if resp.get("retCode") == 0:
+                        print(f"[live] ✅ Position closed: {sig.reason}")
+                        processed_signals.add(signal_id)
+                        _save_processed_signals(processed_signals, processed_signals_file)
+                        last_handled_signal = (ts, sig.action.value)
+                        position_max_profit.pop(symbol, None)
+                        position_max_price.pop(symbol, None)
+                        position_partial_closed.pop(symbol, None)
+                        # Используем сохраненную стратегию, которая открыла позицию
+                        strategy_type = position_strategy.pop(symbol, "unknown")
+                        # Если стратегия unknown, пытаемся определить с fallback логикой
+                        if strategy_type == "unknown":
+                            strategy_type = _determine_strategy_with_fallback(
+                                symbol,
+                                position_strategy,
+                                position,
+                                entry_time=datetime.now(timezone.utc),  # Используем текущее время как приближение
+                            )
+                        try:
+                            # Получаем orderId из ответа place_order (ID ордера закрытия)
+                            close_order_id = None
+                            result = resp.get("result", {})
+                            if result:
+                                close_order_id = result.get("orderId") or None
+                            
+                            # Получаем orderLinkId из сохраненных данных (ID открытия позиции)
+                            order_link_id = position_order_link_id.pop(symbol, None)
+                            
+                            # Если orderId не получен из ответа, пытаемся получить из истории исполненных ордеров
+                            if not close_order_id:
+                                try:
+                                    # Получаем историю исполненных ордеров за последние 5 минут
+                                    exec_start_time = int((datetime.now(timezone.utc) - timedelta(minutes=5)).timestamp() * 1000)
+                                    exec_end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+                                    exec_resp = client.get_execution_list(
+                                        symbol=symbol,
+                                        start_time=exec_start_time,
+                                        end_time=exec_end_time,
+                                        limit=50,
+                                    )
+                                    if exec_resp.get("retCode") == 0:
+                                        exec_result = exec_resp.get("result", {})
+                                        exec_list = exec_result.get("list", [])
+                                        # Ищем последний исполненный ордер для закрытия позиции (reduceOnly)
+                                        for exec_order in exec_list:
+                                            if exec_order.get("reduceOnly") and exec_order.get("execQty"):
+                                                close_order_id = exec_order.get("orderId")
+                                                if close_order_id:
+                                                    break
+                                except Exception as e:
+                                    print(f"[live] ⚠️ Error getting orderId from execution history: {e}")
+                            
+                            add_trade(
+                                entry_time=datetime.now(),
+                                exit_time=datetime.now(),
+                                side=current_position_bias.value,
+                                entry_price=position.get("avg_price", current_price),
+                                exit_price=current_price,
+                                size_usd=position["size"] * current_price,
+                                pnl=position.get("unrealised_pnl", 0),
+                                entry_reason="unknown",
+                                exit_reason=sig.reason,
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=close_order_id,
+                                order_link_id=order_link_id,
+                            )
+                        except Exception as e:
+                            print(f"[live] Warning: Failed to log trade: {e}")
+                    else:
+                        print(f"[live] ⚠️ Failed to close position: {resp.get('retMsg', 'Unknown error')}")
+            
+            # Обновляем статус обратно на "Running" после обработки сигнала
+            if bot_state:
+                bot_state["current_status"] = "Running"
+                bot_state["last_action"] = "Signal processed, waiting..."
+                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+            update_worker_status(symbol, current_status="Running", last_action="Signal processed, waiting...")
+            
+            # Пауза перед следующей итерацией
+            time.sleep(current_settings.live_poll_seconds)
+        
+        except KeyboardInterrupt:
+            print(f"[live] Bot stopped by user")
+            if bot_state:
+                bot_state["is_running"] = False
+                bot_state["current_status"] = "Stopped"
+            break
+        except Exception as e:
+            print(f"[live] Error in main loop: {e}")
+            import traceback
+            traceback.print_exc()
+            if bot_state:
+                bot_state["current_status"] = "Error"
+                bot_state["last_error"] = str(e)
+                bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
+            time.sleep(current_settings.live_poll_seconds)

@@ -1,0 +1,15 @@
+pandas>=2.2.0
+numpy>=1.26.0
+pandas-ta>=0.3.14b
+numba>=0.59.0
+pybit==5.6.2
+python-dotenv>=1.0.0
+flask>=3.0.0
+flask-cors>=4.0.0
+plotly>=5.18.0
+pytz>=2024.1
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+gunicorn>=21.2.0
+waitress>=2.1.2
+
