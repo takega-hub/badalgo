@@ -28,6 +28,14 @@ MATPLOTLIB_AVAILABLE = False
 
 from bot.config import load_settings, AppSettings, StrategyParams, RiskParams
 from bot.exchange.bybit_client import BybitClient
+
+# Конфигурация логирования
+WEB_VERBOSE_LOGGING = os.getenv("WEB_VERBOSE_LOGGING", "false").lower() == "true"
+
+def _web_log(message: str, always_show: bool = False):
+    """Логирование веб-интерфейса с фильтром."""
+    if always_show or WEB_VERBOSE_LOGGING:
+        print(message)
 from bot.live import _get_balance, _get_position, _get_open_orders, _timeframe_to_bybit_interval, run_live_from_api
 from bot.web.history import get_trades, get_signals, get_strategy_stats, get_smc_history
 from bot.indicators import prepare_with_indicators
@@ -2836,7 +2844,7 @@ def api_chart_data():
         if df_raw.empty:
             return jsonify({"error": "No raw data received from exchange"}), 500
         
-        print(f"[web] Raw data: {len(df_raw)} candles for {symbol}")
+        _web_log(f"[web] Raw data: {len(df_raw)} candles for {symbol}")
         
         # Вычисляем индикаторы
         try:

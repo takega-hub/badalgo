@@ -96,17 +96,12 @@ class MLStrategy:
         if "ensemble" in model_type_str.lower():
             self.is_ensemble = True
         
-        print(f"[ml_strategy] ML model loaded from {model_path}")
-        print(f"[ml_strategy] Model symbol: {symbol_from_model}")
-        print(f"[ml_strategy] Model type: {'🎯 ENSEMBLE (RF + XGBoost)' if self.is_ensemble else 'Single Model'}")
-        if self.is_ensemble:
-            ensemble_metrics = self.model_data.get("metrics", {})
-            print(f"[ml_strategy]   Ensemble CV Accuracy: {ensemble_metrics.get('cv_mean', 0):.4f}")
-            print(f"[ml_strategy]   Ensemble F1-Score: {ensemble_metrics.get('f1_score', 0):.4f}")
-        print(f"[ml_strategy] Confidence threshold: {confidence_threshold}")
-        print(f"[ml_strategy] Min signal strength: {min_signal_strength} (threshold: {self.min_strength_threshold:.0%})")
-        print(f"[ml_strategy] Stability filter: {stability_filter}")
-        print(f"[ml_strategy] Features: {len(self.feature_names)}")
+        # Компактный лог загрузки модели (только при первой загрузке)
+        if not hasattr(self, '_model_loaded_logged'):
+            model_type = '🎯 ENSEMBLE' if self.is_ensemble else 'Single'
+            cv_acc = self.model_data.get("metrics", {}).get('cv_mean', 0) if self.is_ensemble else 0
+            print(f"[ml] {symbol_from_model}: {model_type} (CV:{cv_acc:.3f}, conf:{confidence_threshold}, stab:{stability_filter})")
+            self._model_loaded_logged = True
     
     def _load_model(self) -> Dict[str, Any]:
         """Загружает модель из файла."""
@@ -717,11 +712,9 @@ def build_ml_signals(
     
     # ОПТИМИЗАЦИЯ: Вычисляем фичи один раз для всего DataFrame вместо пересчета для каждого бара
     # Это значительно ускоряет работу, так как создание индикаторов - самая затратная операция
-    print(f"[ml_strategy] Preparing features for entire DataFrame ({len(df_work)} rows)...")
+    # Подготовка фичей (без verbose логирования)
     try:
-        # Вычисляем фичи для всего DataFrame один раз
         df_with_features = strategy.feature_engineer.create_technical_indicators(df_work)
-        print(f"[ml_strategy] Features prepared: {len(df_with_features)} rows, {len(df_with_features.columns)} columns")
     except Exception as e:
         print(f"[ml_strategy] Error preparing features: {e}")
         # Возвращаем пустые сигналы при ошибке
