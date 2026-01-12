@@ -4,7 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Crypto Bot Admin</title>
-    <script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        .chart-container {
+            width: 100%;
+            height: 500px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            margin-top: 15px;
+            position: relative;
+        }
+    </style>
     <style>
         * {
             margin: 0;
@@ -1087,6 +1097,80 @@
     </div>
     
     <script>
+        let lwChart = null;
+        let candleSeries = null;
+        let volumeSeries = null;
+
+        async function loadChartLW() {
+            try {
+                const container = document.getElementById('chart-container');
+                const symbolSelect = document.getElementById('chart-symbol-select');
+                const symbol = symbolSelect ? symbolSelect.value : 'BTCUSDT';
+                
+                if (lwChart) { lwChart.remove(); lwChart = null; }
+                container.innerHTML = '';
+
+                const response = await fetch(`/api/chart/data?symbol=${encodeURIComponent(symbol)}`);
+                const data = await response.json();
+                
+                if (data.error || !data.candles || data.candles.length === 0) {
+                    container.innerHTML = `<p style="color: #ff4444; padding: 20px;">${data.error || 'No data'}</p>`;
+                    return;
+                }
+
+                lwChart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth, height: 500,
+                    layout: { background: { type: 'solid', color: '#1a1a1a' }, textColor: '#d1d4dc' },
+                    grid: { vertLines: { color: 'rgba(42, 46, 57, 0.1)' }, horzLines: { color: 'rgba(42, 46, 57, 0.1)' } },
+                    timeScale: { timeVisible: true, secondsVisible: false },
+                });
+
+                candleSeries = lwChart.addCandlestickSeries({
+                    upColor: '#00ff88', downColor: '#ff4444', borderVisible: false,
+                    wickUpColor: '#00ff88', wickDownColor: '#ff4444',
+                });
+
+                candleSeries.setData(data.candles.map((c, i) => ({
+                    time: data.times[i] / 1000,
+                    open: c.open, high: c.high, low: c.low, close: c.close
+                })));
+
+                volumeSeries = lwChart.addHistogramSeries({
+                    color: '#26a69a', priceFormat: { type: 'volume' },
+                    priceScaleId: '', scaleMargins: { top: 0.8, bottom: 0 },
+                });
+
+                volumeSeries.setData(data.candles.map((c, i) => ({
+                    time: data.times[i] / 1000, value: c.volume,
+                    color: c.close >= c.open ? 'rgba(0, 255, 136, 0.2)' : 'rgba(255, 68, 68, 0.2)',
+                })));
+
+                if (document.getElementById('show-ema')?.checked && data.indicators.ema_fast) {
+                    const emaLine = lwChart.addLineSeries({ color: '#2962FF', lineWidth: 1 });
+                    emaLine.setData(data.indicators.ema_fast.map((v, i) => ({ time: data.times[i]/1000, value: v })));
+                }
+
+                if (document.getElementById('show-signals')?.checked && data.signals) {
+                    candleSeries.setMarkers(data.signals.map(sig => ({
+                        time: new Date(sig.timestamp).getTime() / 1000,
+                        position: sig.action === 'LONG' ? 'belowBar' : 'aboveBar',
+                        color: sig.action === 'LONG' ? '#00ff88' : '#ff4444',
+                        shape: sig.action === 'LONG' ? 'arrowUp' : 'arrowDown',
+                        text: sig.action
+                    })));
+                }
+
+                lwChart.timeScale().fitContent();
+                window.addEventListener('resize', () => lwChart && lwChart.applyOptions({ width: container.clientWidth }));
+
+            } catch (e) {
+                console.error('LW Chart error:', e);
+                document.getElementById('chart-container').innerHTML = `<p style="color: #ff4444;">${e.message}</p>`;
+            }
+        }
+        
+        // Старый код...
+
         // КРИТИЧЕСКИ ВАЖНО: Определяем функции СРАЗУ в самом начале скрипта
         // Это гарантирует их доступность для onclick атрибутов
         try {
@@ -2797,7 +2881,7 @@
                 
                 // Перезагружаем график с новым символом
                 if (typeof loadChart !== 'undefined') {
-                    loadChart();
+                    loadChartLW();
                 }
                 
                 // Обновляем статус
@@ -4020,7 +4104,7 @@
                     // Обновляем график если он открыт
                     if (typeof loadChart !== 'undefined') {
                         setTimeout(() => {
-                            loadChart();
+                            loadChartLW();
                         }, 1200);
                     }
                     
@@ -4946,7 +5030,7 @@
         scheduleNextUpdate();
         
         // Загружаем график при открытии дашборда
-        loadChart();
+        loadChartLW();
         
         // Автоматически обновляем график каждую минуту
         // Экспортируем функции в глобальную область видимости
