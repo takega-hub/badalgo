@@ -2006,160 +2006,47 @@ def api_ml_model_retrain_all():
         return jsonify({"error": "Settings not loaded"}), 500
     
     try:
-        # Запускаем переобучение в отдельном потоке
-        import threading
+        data = request.json or {}
+        mode = data.get("mode", "optimal")  # 'optimal' или 'aggressive'
         
-        def train_all_models():
-            global settings
+        script_name = "retrain_ml_optimized.py" if mode == "optimal" else "retrain_ultra_aggressive.py"
+        mode_display = "Оптимальный" if mode == "optimal" else "Агрессивный"
+        
+        # Проверяем, не запущен ли уже какой-либо процесс обучения
+        import subprocess
+        import sys
+        
+        # Определяем, какой процесс искать
+        current_script = os.path.basename(script_name)
+
+        def run_retrain_script():
             try:
-                # Импортируем необходимые модули внутри потока
-                try:
-                    from bot.ml.data_collector import DataCollector
-                    from bot.ml.feature_engineering import FeatureEngineer
-                    from bot.ml.model_trainer import ModelTrainer
-                except Exception as import_error:
-                    print(f"[web] Error importing modules in train_all_models thread: {import_error}")
-                    return
+                print(f"[web] 🚀 Запуск {mode_display} переобучения всех моделей...")
+                import sys
+                import os
                 
-                print(f"[web] 🚀 Starting ML model retraining for ALL pairs (BTCUSDT, ETHUSDT, SOLUSDT)...")
-                
-                symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-                interval = "15"
-                
-                for symbol in symbols:
-                    print(f"\n[web] {'='*60}")
-                    print(f"[web] Training models for {symbol}")
-                    print(f"[web] {'='*60}")
-                    
-                    try:
-                        # Сбор данных
-                        collector = DataCollector(settings.api)
-                        df_raw = collector.collect_klines(
-                            symbol=symbol,
-                            interval=interval,
-                            start_date=None,
-                            end_date=None,
-                            limit=200,
-                        )
-                        
-                        if df_raw.empty:
-                            print(f"[web] ❌ No data collected for {symbol}. Skipping.")
-                            continue
-                        
-                        print(f"[web] ✅ Collected {len(df_raw)} candles for {symbol}")
-                        
-                        # Feature Engineering
-                        feature_engineer = FeatureEngineer()
-                        df_features = feature_engineer.create_technical_indicators(df_raw)
-                        print(f"[web] ✅ Created {len(feature_engineer.get_feature_names())} features for {symbol}")
-                        
-                        # Используем новые параметры (как в train_ml_model.py)
-                        threshold_pct = 0.2
-                        df_with_target = feature_engineer.create_target_variable(
-                            df_features,
-                            forward_periods=4,
-                            threshold_pct=threshold_pct,
-                            use_atr_threshold=True,
-                            use_risk_adjusted=True,
-                            min_risk_reward_ratio=1.5,
-                        )
-                        print(f"[web] ✅ Created target variable for {symbol}")
-                        print(f"[web]   Target distribution: {df_with_target['target'].value_counts().to_dict()}")
-                        
-                        X, y = feature_engineer.prepare_features_for_ml(df_with_target)
-                        
-                        # Обучение
-                        trainer = ModelTrainer()
-                        
-                        # Обучаем Random Forest
-                        print(f"[web] --- Training Random Forest for {symbol} ---")
-                        rf_model, rf_metrics = trainer.train_random_forest_classifier(
-                            X, y,
-                            n_estimators=100,
-                            max_depth=10,
-                        )
-                        trainer.save_model(
-                            rf_model,
-                            trainer.scaler,
-                            feature_engineer.get_feature_names(),
-                            rf_metrics,
-                            f"rf_{symbol}_{interval}.pkl",
-                            symbol=symbol,
-                            interval=interval,
-                        )
-                        print(f"[web] ✅ Saved RF model for {symbol}")
-                        
-                        # Обучаем XGBoost
-                        print(f"[web] --- Training XGBoost for {symbol} ---")
-                        xgb_model, xgb_metrics = trainer.train_xgboost_classifier(
-                            X, y,
-                            n_estimators=100,
-                            max_depth=6,
-                            learning_rate=0.1,
-                        )
-                        trainer.save_model(
-                            xgb_model,
-                            trainer.scaler,
-                            feature_engineer.get_feature_names(),
-                            xgb_metrics,
-                            f"xgb_{symbol}_{interval}.pkl",
-                            symbol=symbol,
-                            interval=interval,
-                        )
-                        print(f"[web] ✅ Saved XGB model for {symbol}")
-                        
-                        # Обучаем Ensemble
-                        print(f"[web] --- Training Ensemble for {symbol} ---")
-                        ensemble_model, ensemble_metrics = trainer.train_ensemble(
-                            X, y,
-                            rf_n_estimators=100,
-                            rf_max_depth=10,
-                            xgb_n_estimators=100,
-                            xgb_max_depth=6,
-                            xgb_learning_rate=0.1,
-                            ensemble_method="weighted_average",
-                        )
-                        trainer.save_model(
-                            ensemble_model,
-                            trainer.scaler,
-                            feature_engineer.get_feature_names(),
-                            ensemble_metrics,
-                            f"ensemble_{symbol}_{interval}.pkl",
-                            symbol=symbol,
-                            interval=interval,
-                            model_type="ensemble_weighted",
-                        )
-                        print(f"[web] ✅ Saved Ensemble model for {symbol}")
-                        print(f"[web]   Ensemble CV Accuracy: {ensemble_metrics['cv_mean']:.4f}")
-                        print(f"[web]   Ensemble F1-Score: {ensemble_metrics['f1_score']:.4f}")
-                        
-                    except Exception as e:
-                        print(f"[web] ❌ Error training models for {symbol}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
-                
-                print(f"\n[web] {'='*60}")
-                print(f"[web] ✅ Model retraining completed for ALL pairs!")
-                print(f"[web] {'='*60}")
+                # Запускаем скрипт через текущий интерпретатор (venv)
+                # Передаем --mode если скрипт это поддерживает, или просто запускаем нужный файл
+                subprocess.run([sys.executable, script_name], check=True)
+                print(f"[web] ✅ {mode_display} переобучение завершено!")
                 
             except Exception as e:
-                print(f"[web] ❌ Error during model retraining: {e}")
-                import traceback
-                traceback.print_exc()
-        
+                print(f"[web] ❌ Ошибка при выполнении {script_name}: {e}")
+
         # Запускаем в отдельном потоке
-        thread = threading.Thread(target=train_all_models, daemon=True)
+        import threading
+        thread = threading.Thread(target=run_retrain_script, daemon=True)
         thread.start()
         
         return jsonify({
             "success": True,
-            "message": "Model retraining started for all pairs (BTCUSDT, ETHUSDT, SOLUSDT)",
+            "message": f"Запущено {mode_display} переобучение для всех пар (BTCUSDT, ETHUSDT, SOLUSDT)",
             "status": "training",
+            "mode": mode
         })
         
     except Exception as e:
-        return jsonify({"error": f"Failed to start retraining: {e}"}), 500
+        return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
 
 
 @app.route("/api/signals")
@@ -3647,6 +3534,11 @@ def api_update_bybit_settings():
 def run_web_server(host="127.0.0.1", port=5000, debug=False):
     """Запустить веб-сервер."""
     init_app()
+    
+    # Отключаем мусорные логи waitress (Task queue depth is X)
+    import logging
+    logging.getLogger('waitress.queue').setLevel(logging.ERROR)
+    
     if debug:
         # В режиме отладки используем встроенный сервер Flask
         app.run(host=host, port=port, debug=debug)

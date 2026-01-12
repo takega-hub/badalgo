@@ -887,15 +887,21 @@
                     
                     <!-- Переобучение всех моделей -->
                     <div style="margin-bottom: 20px; padding: 15px; background: #1a1a1a; border: 1px solid #444; border-radius: 4px;">
-                        <h4 style="color: #00ff88; margin-top: 0; margin-bottom: 10px;">🔄 Retrain All Models</h4>
-                        <p style="color: #aaa; margin-bottom: 15px; font-size: 0.9em;">
-                            Retrain ML models for all trading pairs (BTCUSDT, ETHUSDT, SOLUSDT). 
-                            This will train RF, XGBoost, and Ensemble models for each pair. 
-                            This process may take 10-20 minutes.
-                        </p>
-                        <button class="btn success" onclick="retrainAllMLModels()" id="retrain-all-btn" style="width: 100%;">
-                            Retrain All ML Models
-                        </button>
+                        <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 15px;">🚀 Retrain All ML Models</h4>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                            <!-- Optimal Mode Card -->
+                            <div style="padding: 12px; background: rgba(0, 255, 136, 0.05); border: 1px solid rgba(0, 255, 136, 0.2); border-radius: 4px;">
+                                <h5 style="color: #00ff88; margin-top: 0; margin-bottom: 8px;">🟢 Optimal Mode</h5>
+                                <p style="font-size: 0.8em; color: #aaa; margin-bottom: 12px;">High Win Rate (70%+). Balanced signals.</p>
+                                <button class="btn success" onclick="retrainAllMLModels('optimal')" id="retrain-all-optimal-btn" style="width: 100%; font-size: 0.9em;">Retrain Optimal</button>
+                            </div>
+                            <!-- Aggressive Mode Card -->
+                            <div style="padding: 12px; background: rgba(255, 68, 68, 0.05); border: 1px solid rgba(255, 68, 68, 0.2); border-radius: 4px;">
+                                <h5 style="color: #ff4444; margin-top: 0; margin-bottom: 8px;">🔥 Aggressive Mode</h5>
+                                <p style="font-size: 0.8em; color: #aaa; margin-bottom: 12px;">Maximum Signals (100+). Lower Win Rate.</p>
+                                <button class="btn danger" onclick="retrainAllMLModels('aggressive')" id="retrain-all-aggressive-btn" style="width: 100%; font-size: 0.9em;">Retrain Aggressive</button>
+                            </div>
+                        </div>
                         <div id="retrain-all-status" style="margin-top: 10px; color: #aaa;"></div>
                     </div>
                     
@@ -4676,57 +4682,54 @@
         }
         window.retrainMLModel = retrainMLModel;
         
-        async function retrainAllMLModels() {
+        async function retrainAllMLModels(mode = 'optimal') {
             try {
-                const retrainAllBtn = document.getElementById('retrain-all-btn');
+                const optimalBtn = document.getElementById('retrain-all-optimal-btn');
+                const aggressiveBtn = document.getElementById('retrain-all-aggressive-btn');
                 const statusDiv = document.getElementById('retrain-all-status');
                 
-                if (!retrainAllBtn || !statusDiv) {
-                    alert('Error: Could not find retrain elements');
+                const modeName = mode === 'optimal' ? 'OPTIMAL' : 'AGGRESSIVE';
+                
+                if (!confirm(`Are you sure you want to retrain ALL ML models in ${modeName} mode?\n\nThis will retrain models for:\n- BTCUSDT\n- ETHUSDT\n- SOLUSDT\n\nThis process may take 10-20 minutes.`)) {
                     return;
                 }
                 
-                if (!confirm(`Are you sure you want to retrain ALL ML models?\n\nThis will retrain models for:\n- BTCUSDT\n- ETHUSDT\n- SOLUSDT\n\nEach pair will train RF, XGBoost, and Ensemble models.\n\nThis process may take 10-20 minutes.`)) {
-                    return;
-                }
+                if (optimalBtn) optimalBtn.disabled = true;
+                if (aggressiveBtn) aggressiveBtn.disabled = true;
                 
-                retrainAllBtn.disabled = true;
-                retrainAllBtn.textContent = 'Training All Models...';
-                statusDiv.innerHTML = '<span style="color: #ffaa00;">⏳ Starting model retraining for all pairs... This may take 10-20 minutes. Check the console for progress.</span>';
+                if (statusDiv) {
+                    statusDiv.innerHTML = `<span style="color: #ffaa00;">⏳ Starting ${modeName} model retraining... This may take 10-20 minutes.</span>`;
+                }
                 
                 const response = await fetch('/api/ml/model/retrain-all', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
+                    body: JSON.stringify({ mode: mode })
                 });
-                
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || 'Failed to start retraining');
-                }
                 
                 const data = await response.json();
                 
                 if (data.success) {
-                    statusDiv.innerHTML = '<span style="color: #00ff88;">✅ Model retraining started for all pairs! Check the console for progress. The models will be updated when training completes.</span>';
-                    console.log('Model retraining started for all pairs:', data.message);
+                    if (statusDiv) {
+                        statusDiv.innerHTML = `<span style="color: #00ff88;">✅ ${modeName} model retraining started! The models will be updated when training completes.</span>`;
+                    }
                 } else {
                     throw new Error(data.error || 'Failed to start retraining');
                 }
             } catch (error) {
                 console.error('Error retraining all ML models:', error);
                 const statusDiv = document.getElementById('retrain-all-status');
-                const retrainAllBtn = document.getElementById('retrain-all-btn');
+                const optimalBtn = document.getElementById('retrain-all-optimal-btn');
+                const aggressiveBtn = document.getElementById('retrain-all-aggressive-btn');
                 
                 if (statusDiv) {
                     statusDiv.innerHTML = `<span style="color: #ff4444;">❌ Error: ${error.message}</span>`;
                 }
                 
-                if (retrainAllBtn) {
-                    retrainAllBtn.disabled = false;
-                    retrainAllBtn.textContent = 'Retrain All ML Models';
-                }
+                if (optimalBtn) optimalBtn.disabled = false;
+                if (aggressiveBtn) aggressiveBtn.disabled = false;
             }
         }
         
