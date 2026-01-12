@@ -498,93 +498,74 @@ class MLStrategy:
             # Проверяем согласованность сигнала с индикаторами
             indicators_agree = True
             if prediction == 1:  # LONG сигнал
-                # Для LONG: RSI не должен быть сильно перекуплен, MACD должен быть выше сигнала (или близок)
-                if np.isfinite(rsi) and rsi > 80:  # Сильно перекуплен
+                # Для LONG: RSI не должен быть экстремально перекуплен, MACD должен быть выше сигнала (смягчено)
+                if np.isfinite(rsi) and rsi > 85:  # Был 80
                     indicators_agree = False
-                if np.isfinite(macd) and np.isfinite(macd_signal) and macd < macd_signal * 0.95:  # MACD значительно ниже сигнала
+                if np.isfinite(macd) and np.isfinite(macd_signal) and macd < macd_signal * 0.90:  # Был 0.95
                     indicators_agree = False
             elif prediction == -1:  # SHORT сигнал
-                # Для SHORT: RSI не должен быть сильно перепродан, MACD должен быть ниже сигнала (или близок)
-                if np.isfinite(rsi) and rsi < 20:  # Сильно перепродан
+                # Для SHORT: RSI не должен быть экстремально перепродан, MACD должен быть ниже сигнала (смягчено)
+                if np.isfinite(rsi) and rsi < 15:  # Был 20
                     indicators_agree = False
-                if np.isfinite(macd) and np.isfinite(macd_signal) and macd > macd_signal * 1.05:  # MACD значительно выше сигнала
+                if np.isfinite(macd) and np.isfinite(macd_signal) and macd > macd_signal * 1.10:  # Был 1.05
                     indicators_agree = False
             
-            # Проверяем объемное подтверждение для сильных сигналов
+            # Проверяем объемное подтверждение (смягчено для агрессивной модели)
             volume_confirmation = True
             if np.isfinite(volume) and np.isfinite(vol_sma) and vol_sma > 0:
                 volume_ratio = volume / vol_sma
-                # Для очень сильных сигналов (confidence > 0.8) желателен повышенный объем
-                if confidence > 0.8 and volume_ratio < 0.8:
-                    volume_confirmation = False  # Низкий объем для сильного сигнала - подозрительно
+                # Только для ОЧЕНЬ сильных сигналов (>85%) проверяем объем (был 80%)
+                if confidence > 0.85 and volume_ratio < 0.7: # Был 0.8
+                    volume_confirmation = False
             
             # === Дополнительная фильтрация на основе контекста рынка ===
             
-            # Динамический порог на основе рыночных условий (без привязки к ADX)
-            # Смягченная версия: меньшие изменения порога для более активной работы
+            # Динамический порог на основе рыночных условий
             dynamic_threshold = self.confidence_threshold
-            if self.use_dynamic_threshold:
-                # В условиях низкой волатильности слегка повышаем порог
-                if "atr_pct" in row and np.isfinite(row.get("atr_pct", np.nan)):
-                    atr_pct = row.get("atr_pct", 1.0)
-                    if atr_pct < 0.5:  # Низкая волатильность
-                        dynamic_threshold = self.confidence_threshold * 1.05  # +5% порог (было +10%)
-                # В условиях высокой волатильности снижаем порог
-                elif "atr_pct" in row and np.isfinite(row.get("atr_pct", np.nan)):
-                    atr_pct = row.get("atr_pct", 1.0)
-                    if atr_pct > 2.0:  # Высокая волатильность
-                        dynamic_threshold = self.confidence_threshold * 0.9  # -10% порог (было -5%)
             
-            # Ослабленные фильтры: применяем только для очень слабых сигналов (confidence < 0.6)
-            # Это позволяет модели работать более активно, полагаясь на свои предсказания
-            if prediction != 0 and not indicators_agree and confidence < 0.6:
-                return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_{strength}_{confidence_pct}%", current_price)
-            
-            # Ослабленный фильтр объема: применяем только для очень слабых сигналов (confidence < 0.6)
-            if prediction != 0 and not volume_confirmation and confidence < 0.6:
-                return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+            # МЯГКИЕ ФИЛЬТРЫ: Применяем ТОЛЬКО для сигналов ниже основного порога
+            # Если сигнал выше dynamic_threshold, мы доверяем модели!
+            if prediction != 0 and confidence < dynamic_threshold:
+                if not indicators_agree:
+                    return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_{strength}_{confidence_pct}%", current_price)
+                if not volume_confirmation:
+                    return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+
             
             # УБРАНО: Фильтр по силе тренда (ADX) - ML стратегия должна работать на всех стадиях рынка
             # if prediction != 0 and confidence < 0.75 and not adx_strong:
             #     return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_{strength}_{confidence_pct}%", current_price)
             
-            # Дополнительная проверка: если цена находится в экстремальных зонах (RSI > 80 или < 20),
-            # требуем более высокую уверенность (но смягченную)
+            # Дополнительная проверка: если цена находится в экстремальных зонах (RSI > 85 или < 15),
+            # требуем более высокую уверенность (смягчено с 80/20)
             if prediction != 0 and np.isfinite(rsi):
-                if (prediction == 1 and rsi > 80) or (prediction == -1 and rsi < 20):
-                    # В экстремальных зонах требуем уверенность на 10% выше (было 15%)
-                    extreme_threshold = dynamic_threshold * 1.10
+                if (prediction == 1 and rsi > 85) or (prediction == -1 and rsi < 15):
+                    # В экстремальных зонах требуем уверенность на 5% выше (было 10%)
+                    extreme_threshold = dynamic_threshold * 1.05
                     if confidence < extreme_threshold:
-                        return Signal(row.name, Action.HOLD, f"ml_экстремальная_зона_RSI_{int(rsi)}_{strength}_{confidence_pct}%_требуется_{int(extreme_threshold*100)}%", current_price)
+                        return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_RSI_{int(rsi)}_{strength}_{confidence_pct}%", current_price)
             
             # Генерируем сигналы на основе предсказания
             # Возвращаем только LONG, SHORT или HOLD
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
-                # Дополнительная проверка: уверенность должна быть >= min_strength_threshold
-                # Это гарантирует, что слабые сигналы не проходят
-                if confidence < self.min_strength_threshold:
-                    return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(self.min_strength_threshold*100)}%", current_price)
-                
-                # Используем динамический порог для дополнительной проверки уверенности модели
-                # Смягченная проверка: если уверенность близка к порогу (в пределах 10%), все равно пропускаем
-                effective_threshold = max(dynamic_threshold * 0.9, self.min_strength_threshold)  # Минимум 90% от порога или min_strength_threshold
+                # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
+                effective_threshold = max(dynamic_threshold * 0.85, self.min_strength_threshold)  # Минимум 85% от порога
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
-                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_сила_{strength}_{confidence_pct}%_порог_{int(effective_threshold*100)}%", current_price)
+                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Но используем более мягкий порог (60% вместо 70%)
                 if self.stability_filter and has_position == Bias.SHORT:
-                    stability_threshold = max(self.confidence_threshold * 0.9, 0.5)  # 90% от основного порога или минимум 50%
+                    stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
                     if confidence < stability_threshold:
-                        return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%_для_смены_SHORT_на_LONG_текущая_{confidence_pct}%", current_price)
+                        return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 
-                # Проверяем, что объем подтверждает движение вверх
-                if not volume_ok:
-                    return Signal(row.name, Action.HOLD, f"ml_LONG_объем_не_подтверждает_{confidence_pct}%", current_price)
+                # Проверяем объем (смягчено: если уверенность высокая, объем менее важен)
+                if not volume_ok and confidence < dynamic_threshold * 1.2:
+                    return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                 # Сигнал LONG
-                reason = f"ml_LONG_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%_прибыль_{profit_pct}%"
+                reason = f"ml_LONG_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%"
                 
                 # Собираем информацию о показателях для ML
                 indicators_info = {
@@ -607,30 +588,23 @@ class MLStrategy:
                 return Signal(row.name, Action.LONG, reason, current_price, indicators_info=indicators_info)
             
             elif prediction == -1:  # SHORT
-                # Дополнительная проверка: уверенность должна быть >= min_strength_threshold
-                # Это гарантирует, что слабые сигналы не проходят
-                if confidence < self.min_strength_threshold:
-                    return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(self.min_strength_threshold*100)}%", current_price)
-                
-                # Используем динамический порог для дополнительной проверки уверенности модели
-                # Смягченная проверка: если уверенность близка к порогу (в пределах 10%), все равно пропускаем
-                effective_threshold = max(dynamic_threshold * 0.9, self.min_strength_threshold)  # Минимум 90% от порога или min_strength_threshold
+                # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
+                effective_threshold = max(dynamic_threshold * 0.85, self.min_strength_threshold)  # Минимум 85% от порога
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
-                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_сила_{strength}_{confidence_pct}%_порог_{int(effective_threshold*100)}%", current_price)
+                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Но используем более мягкий порог (60% вместо 70%)
                 if self.stability_filter and has_position == Bias.LONG:
-                    stability_threshold = max(self.confidence_threshold * 0.9, 0.5)  # 90% от основного порога или минимум 50%
+                    stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
                     if confidence < stability_threshold:
-                        return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%_для_смены_LONG_на_SHORT_текущая_{confidence_pct}%", current_price)
+                        return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 
-                # Проверяем, что объем подтверждает движение вниз
-                if not volume_ok:
-                    return Signal(row.name, Action.HOLD, f"ml_SHORT_объем_не_подтверждает_{confidence_pct}%", current_price)
+                # Проверяем объем (смягчено: если уверенность высокая, объем менее важен)
+                if not volume_ok and confidence < dynamic_threshold * 1.2:
+                    return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                 # Сигнал SHORT
-                reason = f"ml_SHORT_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%_прибыль_{profit_pct}%"
+                reason = f"ml_SHORT_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%"
                 
                 # Собираем информацию о показателях для ML
                 indicators_info = {

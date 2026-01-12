@@ -148,6 +148,7 @@ def main():
             class_weight=class_weight_dict,  # Балансировка классов!
         )
         
+        # Сохраняем модель с полными метаданными
         trainer.save_model(
             rf_model,
             trainer.scaler,
@@ -156,6 +157,15 @@ def main():
             f"rf_{symbol}_{interval}.pkl",
             symbol=symbol,
             interval=interval,
+            class_weights=class_weight_dict,
+            class_distribution=target_dist.to_dict(),
+            training_params={
+                "n_estimators": 150,
+                "max_depth": 12,
+                "forward_periods": 5,
+                "threshold_pct": 1.0,
+                "min_risk_reward_ratio": 1.5,
+            },
         )
         print(f"      ✅ Accuracy: {rf_metrics['accuracy']:.4f}")
         print(f"      ✅ CV Accuracy: {rf_metrics['cv_mean']:.4f} ± {rf_metrics['cv_std']*2:.4f}")
@@ -173,6 +183,7 @@ def main():
             class_weight=class_weight_dict,  # Балансировка классов!
         )
         
+        # Сохраняем модель с полными метаданными
         trainer.save_model(
             xgb_model,
             trainer.scaler,
@@ -181,6 +192,16 @@ def main():
             f"xgb_{symbol}_{interval}.pkl",
             symbol=symbol,
             interval=interval,
+            class_weights=class_weight_dict,
+            class_distribution=target_dist.to_dict(),
+            training_params={
+                "n_estimators": 150,
+                "max_depth": 8,
+                "learning_rate": 0.05,
+                "forward_periods": 5,
+                "threshold_pct": 1.0,
+                "min_risk_reward_ratio": 1.5,
+            },
         )
         print(f"      ✅ Accuracy: {xgb_metrics['accuracy']:.4f}")
         print(f"      ✅ CV Accuracy: {xgb_metrics['cv_mean']:.4f} ± {xgb_metrics['cv_std']*2:.4f}")
@@ -198,6 +219,7 @@ def main():
             class_weight=class_weight_dict,  # Балансировка классов!
         )
         
+        # Сохраняем модель с полными метаданными
         trainer.save_model(
             ensemble_model,
             trainer.scaler,
@@ -207,6 +229,19 @@ def main():
             symbol=symbol,
             interval=interval,
             model_type="ensemble_weighted",
+            class_weights=class_weight_dict,
+            class_distribution=target_dist.to_dict(),
+            training_params={
+                "rf_n_estimators": 150,
+                "rf_max_depth": 12,
+                "xgb_n_estimators": 150,
+                "xgb_max_depth": 8,
+                "xgb_learning_rate": 0.05,
+                "ensemble_method": "weighted_average",
+                "forward_periods": 5,
+                "threshold_pct": 1.0,
+                "min_risk_reward_ratio": 1.5,
+            },
         )
         
         # Итоговые метрики

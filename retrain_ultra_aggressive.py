@@ -1,0 +1,178 @@
+"""
+Экстремально агрессивное переобучение ML модели.
+Параметры настроены на МАКСИМАЛЬНОЕ количество сигналов.
+"""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from bot.ml.data_collector import DataCollector
+from bot.ml.feature_engineering import FeatureEngineer
+from bot.ml.model_trainer import ModelTrainer
+from bot.config import load_settings
+import warnings
+warnings.filterwarnings('ignore')
+
+def main():
+    print("=" * 80)
+    print("🔥 ЭКСТРЕМАЛЬНО АГРЕССИВНОЕ ПЕРЕОБУЧЕНИЕ ML")
+    print("=" * 80)
+    print("\n⚠️  ВНИМАНИЕ: Эти параметры максимально агрессивны!")
+    print("   Цель: МАКСИМУМ торговых сигналов")
+    print("   Ожидается: 100-200 сигналов за 14 дней")
+    print("\n" + "=" * 80)
+    
+    settings = load_settings()
+    symbols = ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
+    interval = "15"
+    
+    for symbol in symbols:
+        print(f"\n{'='*80}")
+        print(f"🎯 ПЕРЕОБУЧЕНИЕ: {symbol}")
+        print(f"{'='*80}")
+        
+        # === Шаг 1: Сбор данных ===
+        print(f"\n[1/5] 📊 Сбор исторических данных...")
+        collector = DataCollector(settings.api)
+        
+        # Собираем данные за 6 месяцев (по умолчанию start_date = 180 дней назад)
+        df_raw = collector.collect_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=200,
+            save_to_file=False,  # Не сохраняем в файл
+        )
+        
+        print(f"✅ Собрано {len(df_raw)} свечей")
+        
+        # === Шаг 2: Создание признаков ===
+        print(f"\n[2/5] 🔧 Создание технических признаков...")
+        feature_engineer = FeatureEngineer()
+        df_features = feature_engineer.create_technical_indicators(df_raw)
+        feature_names = feature_engineer.get_feature_names()
+        
+        print(f"✅ Создано {len(feature_names)} признаков")
+        
+        # === Шаг 3: Создание АГРЕССИВНОГО таргета ===
+        print(f"\n[3/5] 🔥 Создание ЭКСТРЕМАЛЬНО агрессивной целевой переменной...")
+        print("   🔥 НОВЫЕ параметры (экстремально агрессивные):")
+        print("   • Forward periods: 3 (45 минут, было 75)")
+        print("   • Threshold: 0.6% (было 1.0%)")
+        print("   • Risk/Reward: 1.2:1 (было 1.5:1)")
+        print("   • Цель: Ловить даже слабые движения!")
+        
+        df_with_target = feature_engineer.create_target_variable(
+            df_features,
+            forward_periods=3,  # 3 * 15m = 45 минут (короче!)
+            threshold_pct=0.6,  # 0.6% (мягче!)
+            use_atr_threshold=True,
+            use_risk_adjusted=True,
+            min_risk_reward_ratio=1.2,  # Меньше требования!
+        )
+        
+        # Анализ распределения классов
+        target_dist = df_with_target['target'].value_counts()
+        print(f"\n✅ Целевая переменная создана")
+        print(f"   Распределение классов:")
+        for label, count in target_dist.items():
+            pct = count / len(df_with_target) * 100
+            emoji = "🟢" if label == 1 else ("🔴" if label == -1 else "⚪")
+            label_name = "LONG" if label == 1 else ("SHORT" if label == -1 else "HOLD")
+            print(f"   {emoji} {label_name:5s}: {count:5d} ({pct:5.1f}%)")
+        
+        # === Шаг 4: Подготовка данных ===
+        print(f"\n[4/5] 📦 Подготовка данных для обучения...")
+        X, y = feature_engineer.prepare_features_for_ml(df_with_target)
+        
+        print(f"✅ Данные подготовлены:")
+        print(f"   Features: {X.shape[0]} samples × {X.shape[1]} features")
+        print(f"   Target: {y.shape[0]} labels")
+        
+        # === Шаг 5: Обучение с ЭКСТРЕМАЛЬНОЙ балансировкой ===
+        print(f"\n[5/5] 🔥 Обучение с ЭКСТРЕМАЛЬНОЙ балансировкой классов...")
+        trainer = ModelTrainer()
+        
+        # ЭКСТРЕМАЛЬНЫЕ веса классов
+        from sklearn.utils.class_weight import compute_class_weight
+        import numpy as np
+        
+        classes = np.unique(y)
+        base_weights = compute_class_weight('balanced', classes=classes, y=y)
+        
+        # МАКСИМАЛЬНО усиливаем LONG/SHORT, МИНИМИЗИРУЕМ HOLD
+        class_weight_dict = {}
+        for i, cls in enumerate(classes):
+            if cls == 0:  # HOLD
+                class_weight_dict[cls] = base_weights[i] * 0.05  # 🔥 В 60 раз меньше! (было 0.3)
+            else:  # LONG or SHORT
+                class_weight_dict[cls] = base_weights[i] * 3.0  # 🔥 Очень высокий вес!
+        
+        print(f"\n   🔥 ЭКСТРЕМАЛЬНЫЕ веса классов:")
+        for cls, weight in class_weight_dict.items():
+            label_name = "LONG" if cls == 1 else ("SHORT" if cls == -1 else "HOLD")
+            multiplier = weight / base_weights[list(classes).index(cls)]
+            print(f"      {label_name}: {weight:.3f} (x{multiplier:.1f})")
+        
+        # Обучаем Ensemble
+        print(f"\n   🎯 Обучение Ensemble (RF + XGBoost)...")
+        ensemble_model, ensemble_metrics = trainer.train_ensemble(
+            X, y,
+            rf_n_estimators=150,
+            rf_max_depth=12,
+            xgb_n_estimators=150,
+            xgb_max_depth=8,
+            xgb_learning_rate=0.05,
+            ensemble_method="weighted_average",
+            class_weight=class_weight_dict,  # 🔥 ЭКСТРЕМАЛЬНАЯ балансировка!
+        )
+        
+        # Сохраняем модель с метаданными
+        trainer.save_model(
+            ensemble_model,
+            trainer.scaler,
+            feature_names,
+            ensemble_metrics,
+            f"ensemble_{symbol}_{interval}.pkl",
+            symbol=symbol,
+            interval=interval,
+            model_type="ensemble_ultra_aggressive",
+            class_weights=class_weight_dict,
+            class_distribution=target_dist.to_dict(),
+            training_params={
+                "rf_n_estimators": 150,
+                "rf_max_depth": 12,
+                "xgb_n_estimators": 150,
+                "xgb_max_depth": 8,
+                "xgb_learning_rate": 0.05,
+                "ensemble_method": "weighted_average",
+                "forward_periods": 3,  # 🔥 Короче!
+                "threshold_pct": 0.6,  # 🔥 Мягче!
+                "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
+                "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
+            },
+        )
+        
+        print(f"\n   ✅ Метрики:")
+        print(f"      CV Accuracy:  {ensemble_metrics['cv_mean']:.4f} ± {ensemble_metrics['cv_std']*2:.4f}")
+        print(f"      F1-Score:     {ensemble_metrics['f1_score']:.4f}")
+    
+    # Финальное сообщение
+    print("\n" + "=" * 80)
+    print("🎉 ЭКСТРЕМАЛЬНО АГРЕССИВНОЕ ПЕРЕОБУЧЕНИЕ ЗАВЕРШЕНО!")
+    print("=" * 80)
+    print("\n📦 Обновлены модели:")
+    print("   • ml_models/ensemble_SOLUSDT_15.pkl")
+    print("   • ml_models/ensemble_BTCUSDT_15.pkl")
+    print("   • ml_models/ensemble_ETHUSDT_15.pkl")
+    print("\n🔥 ОЖИДАЕМОЕ УЛУЧШЕНИЕ:")
+    print("   • Сигналов: 15 → 100-200 (в 10+ раз больше!)")
+    print("   • LONG:  4 → 50-100")
+    print("   • SHORT: 11 → 50-100")
+    print("\n🧪 СЛЕДУЮЩИЙ ШАГ:")
+    print("   python test_ml_strategy.py --symbol SOLUSDT --days 14 --confidence 0.4 --strength слабое --no-stability")
+    print("\n⚠️  Win Rate может снизиться (это нормально для агрессивной модели)")
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()

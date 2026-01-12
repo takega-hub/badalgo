@@ -361,6 +361,9 @@ class ModelTrainer:
         symbol: str = "ETHUSDT",
         interval: str = "15",
         model_type: Optional[str] = None,
+        class_weights: Optional[Dict[int, float]] = None,
+        class_distribution: Optional[Dict[int, int]] = None,
+        training_params: Optional[Dict[str, Any]] = None,
     ):
         """Сохраняет модель, scaler, метрики и метаданные в файл."""
         filepath = self.model_dir / filename
@@ -374,11 +377,26 @@ class ModelTrainer:
             else:
                 model_type = "unknown"
         
+        # Подготовка данных о распределении классов
+        data_info = {}
+        if class_distribution:
+            data_info['class_distribution'] = class_distribution
+            total = sum(class_distribution.values())
+            data_info['total_rows'] = total
+            data_info['class_percentages'] = {
+                cls: (count / total * 100) for cls, count in class_distribution.items()
+            } if total > 0 else {}
+        
         model_data = {
             "model": model,
             "scaler": scaler,
             "feature_names": feature_names,
             "metrics": metrics,
+            "model_type": model_type,  # Для обратной совместимости (старый формат)
+            "timestamp": datetime.now().isoformat(),  # Для обратной совместимости
+            "data_info": data_info,  # Информация о данных обучения
+            "class_weights": class_weights,  # Веса классов, использованные при обучении
+            "training_params": training_params,  # Параметры обучения
             "metadata": {
                 "symbol": symbol,
                 "interval": interval,
