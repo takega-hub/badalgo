@@ -14,16 +14,18 @@ import warnings
 warnings.filterwarnings('ignore')
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", type=str, help="Торговая пара для переобучения")
+    args = parser.parse_all()[0] if hasattr(parser, 'parse_all') else parser.parse_known_args()[0]
+    
     print("=" * 80)
     print("🔥 ЭКСТРЕМАЛЬНО АГРЕССИВНОЕ ПЕРЕОБУЧЕНИЕ ML")
     print("=" * 80)
-    print("\n⚠️  ВНИМАНИЕ: Эти параметры максимально агрессивны!")
-    print("   Цель: МАКСИМУМ торговых сигналов")
-    print("   Ожидается: 100-200 сигналов за 14 дней")
-    print("\n" + "=" * 80)
     
     settings = load_settings()
-    symbols = ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
+    # Если символ передан через аргументы, используем его, иначе все три
+    symbols = [args.symbol] if args.symbol else ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
     interval = "15"
     
     for symbol in symbols:

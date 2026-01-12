@@ -913,10 +913,13 @@
                             <select id="ml-symbol-select" style="width: 100%; max-width: 300px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
                                 <option value="BTCUSDT">BTC/USDT</option>
                                 <option value="ETHUSDT">ETH/USDT</option>
-                                <option value="SOLUSDT">SOL/USDT</option>
+                                <option value="SOLUSDT" selected>SOL/USDT</option>
                             </select>
                         </label>
-                        <button class="btn success" onclick="retrainMLModel()" id="retrain-btn">Retrain ML Model</button>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn success" onclick="retrainMLModel('optimal')">Retrain Optimal</button>
+                            <button class="btn danger" onclick="retrainMLModel('aggressive')">Retrain Aggressive</button>
+                        </div>
                         <div id="retrain-status" style="margin-top: 10px; color: #aaa;"></div>
                     </div>
                 </div>
@@ -4602,81 +4605,47 @@
         
         window.saveMLModelTypeForAll = saveMLModelTypeForAll;
         
-        async function retrainMLModel() {
+        async function retrainMLModel(mode = 'optimal') {
             try {
                 const symbolSelect = document.getElementById('ml-symbol-select');
-                const retrainBtn = document.getElementById('retrain-btn');
                 const statusDiv = document.getElementById('retrain-status');
                 
-                if (!symbolSelect || !retrainBtn || !statusDiv) {
+                if (!symbolSelect || !statusDiv) {
                     alert('Error: Could not find retrain elements');
                     return;
                 }
                 
                 const symbol = symbolSelect.value;
-                if (!symbol) {
-                    statusDiv.textContent = 'Please select a trading pair';
-                    statusDiv.style.color = '#ff4444';
-                    return;
-                }
+                const modeDisplay = mode === 'optimal' ? 'оптимальное' : 'агрессивное';
                 
                 // Подтверждение
-                if (!confirm(`Are you sure you want to retrain the ML model for ${symbol}?\n\nThis will take several minutes and will replace the existing model.`)) {
+                if (!confirm(`Вы уверены, что хотите запустить ${modeDisplay} переобучение для ${symbol}?`)) {
                     return;
                 }
                 
-                // Отключаем кнопку
-                retrainBtn.disabled = true;
-                retrainBtn.textContent = 'Training...';
-                statusDiv.textContent = 'Starting model retraining... This may take several minutes.';
-                statusDiv.style.color = '#ffaa00';
+                statusDiv.textContent = `🚀 Запуск ${modeDisplay} переобучения...`;
+                statusDiv.style.color = '#aaa';
                 
                 const response = await fetch('/api/ml/model/retrain', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        symbol: symbol,
-                        interval: '15'
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, mode: mode })
                 });
                 
                 const result = await response.json();
-                
                 if (response.ok && result.success) {
-                    statusDiv.textContent = '✅ Model retraining started! Check the console for progress. The model will be updated when training completes.';
+                    statusDiv.textContent = `✅ ${result.message}`;
                     statusDiv.style.color = '#00ff88';
-                    
-                    // Обновляем список моделей через некоторое время
-                    setTimeout(() => {
-                        if (typeof loadMLModelsList !== 'undefined') {
-                            loadMLModelsList();
-                        }
-                        if (typeof loadMLModelInfo !== 'undefined') {
-                            setTimeout(loadMLModelInfo, 10000); // Обновляем через 10 секунд
-                        }
-                        if (typeof loadAllPairsModelsInfo !== 'undefined') {
-                            setTimeout(loadAllPairsModelsInfo, 10000); // Обновляем через 10 секунд
-                        }
-                    }, 5000);
                 } else {
-                    statusDiv.textContent = `❌ Error: ${result.error || 'Unknown error'}`;
+                    statusDiv.textContent = `❌ Ошибка: ${result.error || 'Неизвестная ошибка'}`;
                     statusDiv.style.color = '#ff4444';
-                    retrainBtn.disabled = false;
-                    retrainBtn.textContent = 'Retrain ML Model';
                 }
             } catch (error) {
-                console.error('Error retraining ML model:', error);
+                console.error('Retrain error:', error);
                 const statusDiv = document.getElementById('retrain-status');
-                const retrainBtn = document.getElementById('retrain-btn');
                 if (statusDiv) {
-                    statusDiv.textContent = `❌ Error: ${error.message}`;
+                    statusDiv.textContent = `❌ Ошибка сети: ${error.message}`;
                     statusDiv.style.color = '#ff4444';
-                }
-                if (retrainBtn) {
-                    retrainBtn.disabled = false;
-                    retrainBtn.textContent = 'Retrain ML Model';
                 }
             }
         }

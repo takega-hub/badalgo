@@ -1853,149 +1853,43 @@ def api_ml_model_retrain():
     if not settings:
         return jsonify({"error": "Settings not loaded"}), 500
     
-    data = request.json or {}
-    symbol = data.get("symbol", settings.symbol)
-    interval = data.get("interval", "15")
-    
-    # Проверяем доступные пары
-    available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-    if symbol not in available_symbols:
-        return jsonify({"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}), 400
-    
     try:
-        from bot.ml.data_collector import DataCollector
-        from bot.ml.feature_engineering import FeatureEngineer
-        from pathlib import Path
+        data = request.json or {}
+        symbol = data.get("symbol", settings.symbol)
+        mode = data.get("mode", "optimal")
         
-        # Запускаем переобучение в отдельном потоке
-        import threading
+        # Проверяем доступные пары
+        available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        if symbol not in available_symbols:
+            return jsonify({"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}), 400
+
+        script_name = "retrain_ml_optimized.py" if mode == "optimal" else "retrain_ultra_aggressive.py"
+        mode_display = "Оптимальный" if mode == "optimal" else "Агрессивный"
         
-        def train_model():
-            global settings
+        def run_single_retrain():
             try:
-                # Импортируем ModelTrainer внутри потока для избежания deadlock
-                try:
-                    from bot.ml.model_trainer import ModelTrainer
-                except Exception as import_error:
-                    print(f"[web] Error importing ModelTrainer in train_model thread: {import_error}")
-                    return
-                
-                print(f"[web] Starting ML model retraining for {symbol}...")
-                
-                # Сбор данных
-                collector = DataCollector(settings.api)
-                df_raw = collector.collect_klines(
-                    symbol=symbol,
-                    interval=interval,
-                    start_date=None,
-                    end_date=None,
-                    limit=200,
-                )
-                
-                if df_raw.empty:
-                    return
-                
-                # Feature Engineering
-                feature_engineer = FeatureEngineer()
-                df_features = feature_engineer.create_technical_indicators(df_raw)
-                print(f"[web] ✅ Created {len(feature_engineer.get_feature_names())} features for {symbol}")
-                
-                # Используем новые параметры (как в train_ml_model.py)
-                threshold_pct = 0.2
-                df_with_target = feature_engineer.create_target_variable(
-                    df_features,
-                    forward_periods=4,
-                    threshold_pct=threshold_pct,
-                    use_atr_threshold=True,
-                    use_risk_adjusted=True,
-                    min_risk_reward_ratio=1.5,
-                )
-                print(f"[web] ✅ Created target variable for {symbol}")
-                print(f"[web]   Target distribution: {df_with_target['target'].value_counts().to_dict()}")
-                
-                X, y = feature_engineer.prepare_features_for_ml(df_with_target)
-                
-                # Обучение
-                trainer = ModelTrainer()
-                
-                # Обучаем все три модели (RF, XGB, Ensemble)
-                print(f"[web] --- Training Random Forest for {symbol} ---")
-                rf_model, rf_metrics = trainer.train_random_forest_classifier(
-                    X, y,
-                    n_estimators=100,
-                    max_depth=10,
-                )
-                trainer.save_model(
-                    rf_model,
-                    trainer.scaler,
-                    feature_engineer.get_feature_names(),
-                    rf_metrics,
-                    f"rf_{symbol}_{interval}.pkl",
-                    symbol=symbol,
-                    interval=interval,
-                )
-                print(f"[web] ✅ Saved RF model for {symbol}")
-                
-                print(f"[web] --- Training XGBoost for {symbol} ---")
-                xgb_model, xgb_metrics = trainer.train_xgboost_classifier(
-                    X, y,
-                    n_estimators=100,
-                    max_depth=6,
-                    learning_rate=0.1,
-                )
-                trainer.save_model(
-                    xgb_model,
-                    trainer.scaler,
-                    feature_engineer.get_feature_names(),
-                    xgb_metrics,
-                    f"xgb_{symbol}_{interval}.pkl",
-                    symbol=symbol,
-                    interval=interval,
-                )
-                print(f"[web] ✅ Saved XGB model for {symbol}")
-                
-                print(f"[web] --- Training Ensemble for {symbol} ---")
-                ensemble_model, ensemble_metrics = trainer.train_ensemble(
-                    X, y,
-                    rf_n_estimators=100,
-                    rf_max_depth=10,
-                    xgb_n_estimators=100,
-                    xgb_max_depth=6,
-                    xgb_learning_rate=0.1,
-                    ensemble_method="weighted_average",
-                )
-                trainer.save_model(
-                    ensemble_model,
-                    trainer.scaler,
-                    feature_engineer.get_feature_names(),
-                    ensemble_metrics,
-                    f"ensemble_{symbol}_{interval}.pkl",
-                    symbol=symbol,
-                    interval=interval,
-                    model_type="ensemble_weighted",
-                )
-                print(f"[web] ✅ Saved Ensemble model for {symbol}")
-                print(f"[web]   Ensemble CV Accuracy: {ensemble_metrics['cv_mean']:.4f}")
-                print(f"[web]   Ensemble F1-Score: {ensemble_metrics['f1_score']:.4f}")
-                print(f"[web] ✅ Model retraining completed for {symbol}")
-                
+                import subprocess
+                import sys
+                print(f"[web] 🚀 Запуск {mode_display} переобучения для {symbol}...")
+                subprocess.run([sys.executable, script_name, "--symbol", symbol], check=True)
+                print(f"[web] ✅ {mode_display} переобучение {symbol} завершено!")
             except Exception as e:
-                print(f"[web] Error during model retraining: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # Запускаем в отдельном потоке
-        thread = threading.Thread(target=train_model, daemon=True)
+                print(f"[web] ❌ Ошибка {symbol} ({mode_display}): {e}")
+
+        import threading
+        thread = threading.Thread(target=run_single_retrain, daemon=True)
         thread.start()
         
         return jsonify({
             "success": True,
-            "message": f"Model retraining started for {symbol}",
+            "message": f"Запущено {mode_display} переобучение для {symbol}",
             "status": "training",
+            "symbol": symbol,
+            "mode": mode
         })
         
     except Exception as e:
-        return jsonify({"error": f"Failed to start retraining: {e}"}), 500
+        return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
 
 
 @app.route("/api/ml/model/retrain-all", methods=["POST"])
@@ -2873,7 +2767,7 @@ def api_chart_data():
             if settings.enable_trend_strategy:
                 use_momentum = settings.enable_momentum_strategy
                 trend_signals = build_signals(df_ready, settings.strategy, use_momentum=use_momentum, use_liquidity=False)
-                print(f"[web] Trend strategy generated {len(trend_signals)} signals")
+                _web_log(f"[web] Strategy processed")
                 for sig in trend_signals:
                     # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
                     if sig.reason.startswith("trend_") and sig.action in (Action.LONG, Action.SHORT):
@@ -2903,7 +2797,7 @@ def api_chart_data():
             # Flat стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_flat_strategy:
                 flat_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=False)
-                print(f"[web] Flat strategy generated {len(flat_signals)} signals")
+                _web_log(f"[web] Strategy processed")
                 for sig in flat_signals:
                     # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
                     if sig.reason.startswith("range_") and sig.action in (Action.LONG, Action.SHORT):
@@ -3026,7 +2920,7 @@ def api_chart_data():
             if settings.enable_momentum_strategy:
                 try:
                     momentum_signals = build_signals(df_ready, settings.strategy, use_momentum=True, use_liquidity=False)
-                    print(f"[web] Momentum strategy generated {len(momentum_signals)} signals")
+                    _web_log(f"[web] Strategy processed")
                     for sig in momentum_signals:
                         # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
                         if sig.reason.startswith("momentum_") and sig.action in (Action.LONG, Action.SHORT):
@@ -3059,7 +2953,7 @@ def api_chart_data():
             if settings.enable_liquidity_sweep_strategy:
                 try:
                     liquidity_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=True)
-                    print(f"[web] Liquidity strategy generated {len(liquidity_signals)} signals")
+                    _web_log(f"[web] Strategy processed")
                     for sig in liquidity_signals:
                         # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
                         if sig.reason.startswith("liquidity_") and sig.action in (Action.LONG, Action.SHORT):

@@ -21,6 +21,11 @@ warnings.filterwarnings('ignore', message='.*should be used with.*')
 warnings.filterwarnings('ignore', message='.*propagate the scikit-learn configuration.*')
 # Специфичное предупреждение из терминала
 warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.delayed.*')
+# Подавляем предупреждения XGBoost про pickle и версии
+warnings.filterwarnings('ignore', message='.*loading a serialized model.*')
+warnings.filterwarnings('ignore', message='.*XGBoost.*')
+os.environ['XGB_SILENT'] = '1'
+os.environ['PYTHONWARNINGS'] = 'ignore'
 
 import pickle
 from pathlib import Path
