@@ -558,5 +558,10 @@ def diagnose_signals(symbol: str = None):
 
 
 if __name__ == "__main__":
-    symbol = sys.argv[1] if len(sys.argv) > 1 else None
-    diagnose_signals(symbol)
+    import argparse
+    parser = argparse.ArgumentParser(description="Диагностика сигналов")
+    parser.add_argument("--symbol", type=str, help="Символ для проверки (например, BTCUSDT)")
+    parser.add_argument("--limit", type=int, default=1000, help="Количество свечей для анализа")
+    args = parser.parse_known_args()[0]
+    
+    diagnose_signals(args.symbol)

@@ -98,6 +98,10 @@ class MultiSymbolManager:
                 print(f"[MultiSymbol] ⚙️  Worker created for {symbol}")
             else:
                 print(f"[MultiSymbol] ⚙️  Worker already exists for {symbol}")
+                # СБРОС СОБЫТИЯ ОСТАНОВКИ (ВАЖНО для перезапуска!)
+                if hasattr(self.workers[symbol], 'stop_event'):
+                    self.workers[symbol].stop_event.clear()
+                    print(f"[MultiSymbol] ⚙️  Stop event cleared for {symbol}")
     
     def _create_settings_for_symbol(self, symbol: str) -> AppSettings:
         """
