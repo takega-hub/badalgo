@@ -153,6 +153,7 @@ class ModelTrainer:
         max_depth: Optional[int] = None,
         min_samples_split: int = 2,
         random_state: int = 42,
+        class_weight: Optional[Dict[int, float]] = None,
     ) -> Tuple[RandomForestClassifier, Dict[str, Any]]:
         """
         Обучает Random Forest классификатор.
@@ -164,6 +165,7 @@ class ModelTrainer:
             max_depth: Максимальная глубина дерева
             min_samples_split: Минимальное количество образцов для разделения
             random_state: Seed для воспроизводимости
+            class_weight: Кастомные веса классов (если None, используется автоматическая балансировка)
         
         Returns:
             (model, metrics) - обученная модель и метрики
@@ -175,20 +177,27 @@ class ModelTrainer:
         # Нормализуем фичи
         X_scaled = self.scaler.fit_transform(X)
         
-        # Вычисляем веса классов для более агрессивного обучения на LONG/SHORT
-        # Увеличиваем вес для LONG и SHORT классов относительно HOLD
-        unique_classes, class_counts = np.unique(y, return_counts=True)
-        total_samples = len(y)
-        class_weights = {}
-        
-        for cls, count in zip(unique_classes, class_counts):
-            if count > 0:
-                # Используем обратную частоту, но с дополнительным весом для LONG/SHORT
-                base_weight = total_samples / (len(unique_classes) * count)
-                if cls != 0:  # LONG (1) или SHORT (-1) получают дополнительный вес
-                    class_weights[int(cls)] = base_weight * 1.5  # +50% вес для торговых сигналов
-                else:  # HOLD (0) - базовый вес
-                    class_weights[int(cls)] = base_weight * 0.8  # -20% вес для HOLD
+        # Определяем веса классов
+        if class_weight is not None:
+            # Используем переданные кастомные веса
+            class_weights = class_weight
+            print(f"  Using custom class weights: {class_weights}")
+        else:
+            # Вычисляем веса классов для более агрессивного обучения на LONG/SHORT
+            # Увеличиваем вес для LONG и SHORT классов относительно HOLD
+            unique_classes, class_counts = np.unique(y, return_counts=True)
+            total_samples = len(y)
+            class_weights = {}
+            
+            for cls, count in zip(unique_classes, class_counts):
+                if count > 0:
+                    # Используем обратную частоту, но с дополнительным весом для LONG/SHORT
+                    base_weight = total_samples / (len(unique_classes) * count)
+                    if cls != 0:  # LONG (1) или SHORT (-1) получают дополнительный вес
+                        class_weights[int(cls)] = base_weight * 1.5  # +50% вес для торговых сигналов
+                    else:  # HOLD (0) - базовый вес
+                        class_weights[int(cls)] = base_weight * 0.8  # -20% вес для HOLD
+            print(f"  Using auto-balanced class weights: {class_weights}")
         
         # Создаем и обучаем модель
         model = RandomForestClassifier(
@@ -241,6 +250,7 @@ class ModelTrainer:
         max_depth: int = 6,
         learning_rate: float = 0.1,
         random_state: int = 42,
+        class_weight: Optional[Dict[int, float]] = None,
     ) -> Tuple[xgb.XGBClassifier, Dict[str, Any]]:
         """
         Обучает XGBoost классификатор.
@@ -252,6 +262,7 @@ class ModelTrainer:
             max_depth: Максимальная глубина дерева
             learning_rate: Скорость обучения
             random_state: Seed для воспроизводимости
+            class_weight: Кастомные веса классов (если None, используется автоматическая балансировка)
         
         Returns:
             (model, metrics) - обученная модель и метрики
@@ -265,20 +276,31 @@ class ModelTrainer:
         # Преобразуем y для XGBoost (нужны индексы 0,1,2 вместо -1,0,1)
         y_xgb = y + 1  # -1,0,1 -> 0,1,2
         
-        # Вычисляем веса классов для XGBoost (для классов 0,1,2)
-        unique_classes, class_counts = np.unique(y_xgb, return_counts=True)
-        total_samples = len(y_xgb)
+        # Вычисляем веса образцов для XGBoost
         sample_weights = np.zeros(len(y_xgb))
         
-        for cls, count in zip(unique_classes, class_counts):
-            if count > 0:
-                base_weight = total_samples / (len(unique_classes) * count)
-                # Класс 1 (HOLD) - индекс 1 в XGBoost формате
-                if cls == 1:  # HOLD - уменьшаем вес
-                    weight = base_weight * 0.8
-                else:  # LONG (2) или SHORT (0) - увеличиваем вес
-                    weight = base_weight * 1.5
-                sample_weights[y_xgb == cls] = weight
+        if class_weight is not None:
+            # Используем переданные кастомные веса
+            # Конвертируем класс-веса в веса образцов
+            for orig_cls, weight in class_weight.items():
+                xgb_cls = orig_cls + 1  # Преобразуем -1,0,1 -> 0,1,2
+                sample_weights[y_xgb == xgb_cls] = weight
+            print(f"  Using custom class weights (converted to sample_weights)")
+        else:
+            # Вычисляем веса классов для XGBoost (для классов 0,1,2)
+            unique_classes, class_counts = np.unique(y_xgb, return_counts=True)
+            total_samples = len(y_xgb)
+            
+            for cls, count in zip(unique_classes, class_counts):
+                if count > 0:
+                    base_weight = total_samples / (len(unique_classes) * count)
+                    # Класс 1 (HOLD) - индекс 1 в XGBoost формате
+                    if cls == 1:  # HOLD - уменьшаем вес
+                        weight = base_weight * 0.8
+                    else:  # LONG (2) или SHORT (0) - увеличиваем вес
+                        weight = base_weight * 1.5
+                    sample_weights[y_xgb == cls] = weight
+            print(f"  Using auto-balanced sample weights")
         
         # Создаем и обучаем модель
         # Примечание: scale_pos_weight работает только для бинарной классификации,
@@ -414,6 +436,7 @@ class ModelTrainer:
         xgb_learning_rate: float = 0.1,
         ensemble_method: str = "voting",  # "voting" или "weighted_average"
         random_state: int = 42,
+        class_weight: Optional[Dict[int, float]] = None,
     ) -> Tuple[Any, Dict[str, Any]]:
         """
         Обучает ансамбль из RandomForest и XGBoost.
@@ -428,6 +451,7 @@ class ModelTrainer:
             xgb_learning_rate: Скорость обучения для XGBoost
             ensemble_method: Метод ансамбля ("voting" или "weighted_average")
             random_state: Seed для воспроизводимости
+            class_weight: Кастомные веса классов (передаются в обе модели)
         
         Returns:
             (ensemble_model, metrics) - обученный ансамбль и метрики
@@ -446,6 +470,7 @@ class ModelTrainer:
             n_estimators=rf_n_estimators,
             max_depth=rf_max_depth,
             random_state=random_state,
+            class_weight=class_weight,  # Передаем веса классов
         )
         
         print(f"\n  [2/2] Training XGBoost...")
@@ -455,6 +480,7 @@ class ModelTrainer:
             max_depth=xgb_max_depth,
             learning_rate=xgb_learning_rate,
             random_state=random_state,
+            class_weight=class_weight,  # Передаем веса классов
         )
         
         # Вычисляем веса на основе CV метрик для обоих методов
