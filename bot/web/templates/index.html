@@ -1280,32 +1280,75 @@
 
                 // === СИГНАЛЫ (МАРКЕРЫ) ===
                 const showSignals = document.getElementById('show-signals')?.checked;
+                console.log("Show signals:", showSignals, "Signals count:", data.signals?.length || 0);
+                
                 if (showSignals && data.signals && data.signals.length > 0) {
-                    const markers = data.signals
-                        .filter(sig => sig.action === 'LONG' || sig.action === 'SHORT')
-                        .map(sig => {
-                            let sigTime;
-                            try {
-                                sigTime = Math.floor(new Date(sig.timestamp).getTime() / 1000);
-                            } catch(e) {
-                                return null;
+                    // Получаем диапазон времени свечей
+                    const candleTimes = candleData.map(c => c.time);
+                    const minTime = Math.min(...candleTimes);
+                    const maxTime = Math.max(...candleTimes);
+                    
+                    const markers = [];
+                    for (const sig of data.signals) {
+                        // API возвращает action в нижнем регистре: "long", "short"
+                        const action = (sig.action || '').toLowerCase();
+                        if (action !== 'long' && action !== 'short') continue;
+                        
+                        let sigTime;
+                        try {
+                            // API возвращает время в поле "time" как ISO строку
+                            const timeField = sig.time || sig.timestamp;
+                            if (!timeField) {
+                                console.warn("Signal has no time field:", sig);
+                                continue;
                             }
-                            return {
-                                time: sigTime,
-                                position: sig.action === 'LONG' ? 'belowBar' : 'aboveBar',
-                                color: sig.action === 'LONG' ? '#00ff88' : '#ff4444',
-                                shape: sig.action === 'LONG' ? 'arrowUp' : 'arrowDown',
-                                text: sig.action.toLowerCase(),
-                                size: 1.5,
-                            };
-                        })
-                        .filter(m => m !== null);
+                            const sigDate = new Date(timeField);
+                            sigTime = Math.floor(sigDate.getTime() / 1000);
+                        } catch(e) {
+                            console.error("Error parsing signal time:", sig, e);
+                            continue;
+                        }
+                        
+                        // Находим ближайшую свечу для сигнала
+                        let closestTime = candleTimes[0];
+                        let minDiff = Math.abs(sigTime - candleTimes[0]);
+                        for (const ct of candleTimes) {
+                            const diff = Math.abs(sigTime - ct);
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                closestTime = ct;
+                            }
+                        }
+                        
+                        // Если сигнал в пределах 30 минут от свечи, привязываем к ней
+                        if (minDiff <= 30 * 60) {
+                            markers.push({
+                                time: closestTime,
+                                position: action === 'long' ? 'belowBar' : 'aboveBar',
+                                color: action === 'long' ? '#00ff88' : '#ff4444',
+                                shape: action === 'long' ? 'arrowUp' : 'arrowDown',
+                                text: action,
+                                size: 2,
+                            });
+                        }
+                    }
                     
                     if (markers.length > 0) {
-                        // Сортируем по времени (требование LightweightCharts)
+                        // Сортируем по времени
                         markers.sort((a, b) => a.time - b.time);
-                        window.activeTVCandleSeries.setMarkers(markers);
-                        console.log("Added", markers.length, "signal markers");
+                        
+                        // Удаляем дубликаты по времени
+                        const uniqueMarkers = [];
+                        const seenTimes = new Set();
+                        for (let i = markers.length - 1; i >= 0; i--) {
+                            if (!seenTimes.has(markers[i].time)) {
+                                seenTimes.add(markers[i].time);
+                                uniqueMarkers.unshift(markers[i]);
+                            }
+                        }
+                        
+                        window.activeTVCandleSeries.setMarkers(uniqueMarkers);
+                        console.log("✅ Added", uniqueMarkers.length, "signal markers");
                     }
                 }
 
