@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Crypto Bot Admin</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         .chart-container {
             width: 100%;
@@ -708,7 +708,7 @@
                     <label><input type="checkbox" id="show-rsi"> RSI</label>
                     <label><input type="checkbox" id="show-macd" checked> MACD</label>
                     <label><input type="checkbox" id="show-signals" checked> Entry Signals</label>
-                    <button class="btn" onclick="loadChart()" style="margin-left: auto;">Refresh Chart</button>
+                    <button class="btn" onclick="loadChartLW()" style="margin-left: auto;">Refresh Chart</button>
                 </div>
                 <div id="chart-container" class="chart-container">
                     <div class="loading">Loading chart...</div>
@@ -1097,75 +1097,239 @@
     </div>
     
     <script>
-        let lwChart = null;
-        let candleSeries = null;
-        let volumeSeries = null;
+        // Глобальные переменные для графиков (с уникальными именами)
+        window.activeTVChart = null;
+        window.activeTVCandleSeries = null;
+        window.activeTVVolumeSeries = null;
 
-        async function loadChartLW() {
+        window.loadChartLW = async function() {
             try {
+                console.log("Starting loadChartLW...");
                 const container = document.getElementById('chart-container');
-                const symbolSelect = document.getElementById('chart-symbol-select');
+                if (!container) {
+                    console.error("Chart container not found");
+                    return;
+                }
+
+                const symbolSelect = document.getElementById('primary-symbol-select');
                 const symbol = symbolSelect ? symbolSelect.value : 'BTCUSDT';
+                console.log("Loading chart for:", symbol);
                 
-                if (lwChart) { lwChart.remove(); lwChart = null; }
-                container.innerHTML = '';
+                // Очистка старого графика
+                if (window.activeTVChart) {
+                    try {
+                        window.activeTVChart.remove();
+                        console.log("Previous chart removed");
+                    } catch(e) {
+                        console.error("Error removing previous chart:", e);
+                    }
+                    window.activeTVChart = null;
+                }
+                container.innerHTML = '<div class="loading">Loading chart data...</div>';
 
                 const response = await fetch(`/api/chart/data?symbol=${encodeURIComponent(symbol)}`);
                 const data = await response.json();
                 
                 if (data.error || !data.candles || data.candles.length === 0) {
-                    container.innerHTML = `<p style="color: #ff4444; padding: 20px;">${data.error || 'No data'}</p>`;
+                    container.innerHTML = `<p style="color: #ff4444; padding: 20px;">${data.error || 'No data available for ' + symbol}</p>`;
+                    return;
+                }
+                console.log("Data received, candles:", data.candles.length);
+
+                // Проверка библиотеки
+                if (typeof LightweightCharts === 'undefined') {
+                    console.error("LightweightCharts library is not loaded!");
+                    container.innerHTML = `<p style="color: #ff4444; padding: 20px;">Error: Chart library not loaded. Please refresh the page.</p>`;
                     return;
                 }
 
-                lwChart = LightweightCharts.createChart(container, {
-                    width: container.clientWidth, height: 500,
-                    layout: { background: { type: 'solid', color: '#1a1a1a' }, textColor: '#d1d4dc' },
-                    grid: { vertLines: { color: 'rgba(42, 46, 57, 0.1)' }, horzLines: { color: 'rgba(42, 46, 57, 0.1)' } },
-                    timeScale: { timeVisible: true, secondsVisible: false },
+                container.innerHTML = '';
+
+                // Создание графика
+                const chart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth,
+                    height: 500,
+                    layout: {
+                        background: { type: 'solid', color: '#1a1a1a' },
+                        textColor: '#d1d4dc',
+                    },
+                    grid: {
+                        vertLines: { color: '#2b2b2b' },
+                        horzLines: { color: '#2b2b2b' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: '#2b2b2b',
+                    },
+                    timeScale: {
+                        borderColor: '#2b2b2b',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
                 });
 
-                candleSeries = lwChart.addCandlestickSeries({
-                    upColor: '#00ff88', downColor: '#ff4444', borderVisible: false,
-                    wickUpColor: '#00ff88', wickDownColor: '#ff4444',
+                window.activeTVChart = chart;
+
+                // === СВЕЧИ ===
+                window.activeTVCandleSeries = chart.addCandlestickSeries({
+                    upColor: '#00ff88',
+                    downColor: '#ff4444',
+                    borderVisible: false,
+                    wickUpColor: '#00ff88',
+                    wickDownColor: '#ff4444',
                 });
 
-                candleSeries.setData(data.candles.map((c, i) => ({
-                    time: data.times[i] / 1000,
-                    open: c.open, high: c.high, low: c.low, close: c.close
-                })));
+                const candleData = data.candles.map((c, i) => ({
+                    time: Math.floor(data.times[i] / 1000),
+                    open: parseFloat(c.open),
+                    high: parseFloat(c.high),
+                    low: parseFloat(c.low),
+                    close: parseFloat(c.close)
+                }));
+                window.activeTVCandleSeries.setData(candleData);
 
-                volumeSeries = lwChart.addHistogramSeries({
-                    color: '#26a69a', priceFormat: { type: 'volume' },
-                    priceScaleId: '', scaleMargins: { top: 0.8, bottom: 0 },
-                });
+                // === ОБЪЕМ ===
+                const showVolume = document.getElementById('show-volume')?.checked;
+                if (showVolume) {
+                    window.activeTVVolumeSeries = chart.addHistogramSeries({
+                        color: '#26a69a',
+                        priceFormat: { type: 'volume' },
+                        priceScaleId: '',
+                        scaleMargins: { top: 0.85, bottom: 0 },
+                    });
 
-                volumeSeries.setData(data.candles.map((c, i) => ({
-                    time: data.times[i] / 1000, value: c.volume,
-                    color: c.close >= c.open ? 'rgba(0, 255, 136, 0.2)' : 'rgba(255, 68, 68, 0.2)',
-                })));
-
-                if (document.getElementById('show-ema')?.checked && data.indicators.ema_fast) {
-                    const emaLine = lwChart.addLineSeries({ color: '#2962FF', lineWidth: 1 });
-                    emaLine.setData(data.indicators.ema_fast.map((v, i) => ({ time: data.times[i]/1000, value: v })));
+                    const volumeData = data.candles.map((c, i) => ({
+                        time: Math.floor(data.times[i] / 1000),
+                        value: parseFloat(c.volume),
+                        color: parseFloat(c.close) >= parseFloat(c.open) ? 'rgba(0, 255, 136, 0.3)' : 'rgba(255, 68, 68, 0.3)',
+                    }));
+                    window.activeTVVolumeSeries.setData(volumeData);
                 }
 
-                if (document.getElementById('show-signals')?.checked && data.signals) {
-                    candleSeries.setMarkers(data.signals.map(sig => ({
-                        time: new Date(sig.timestamp).getTime() / 1000,
-                        position: sig.action === 'LONG' ? 'belowBar' : 'aboveBar',
-                        color: sig.action === 'LONG' ? '#00ff88' : '#ff4444',
-                        shape: sig.action === 'LONG' ? 'arrowUp' : 'arrowDown',
-                        text: sig.action
-                    })));
+                // === SMA20 ===
+                const showSMA = document.getElementById('show-sma')?.checked;
+                if (showSMA && data.indicators?.sma) {
+                    const smaLine = chart.addLineSeries({ 
+                        color: '#2962FF', 
+                        lineWidth: 2, 
+                        title: 'SMA20',
+                        lastValueVisible: true,
+                        priceLineVisible: false,
+                    });
+                    const smaData = data.indicators.sma
+                        .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
+                        .filter(d => d.value && !isNaN(d.value));
+                    if (smaData.length > 0) {
+                        smaLine.setData(smaData);
+                    }
                 }
 
-                lwChart.timeScale().fitContent();
-                window.addEventListener('resize', () => lwChart && lwChart.applyOptions({ width: container.clientWidth }));
+                // === BOLLINGER BANDS ===
+                const showBB = document.getElementById('show-bb')?.checked;
+                if (showBB && data.indicators?.bb_upper && data.indicators?.bb_lower) {
+                    // Upper Band
+                    const bbUpperLine = chart.addLineSeries({ 
+                        color: 'rgba(173, 216, 230, 0.6)', 
+                        lineWidth: 1, 
+                        title: 'BB Upper',
+                        lastValueVisible: false,
+                        priceLineVisible: false,
+                    });
+                    const bbUpperData = data.indicators.bb_upper
+                        .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
+                        .filter(d => d.value && !isNaN(d.value));
+                    if (bbUpperData.length > 0) {
+                        bbUpperLine.setData(bbUpperData);
+                    }
+
+                    // Middle Band (SMA of BB)
+                    if (data.indicators.bb_middle) {
+                        const bbMiddleLine = chart.addLineSeries({ 
+                            color: 'rgba(173, 216, 230, 0.4)', 
+                            lineWidth: 1, 
+                            lineStyle: 2, // Dashed
+                            title: 'BB Middle',
+                            lastValueVisible: false,
+                            priceLineVisible: false,
+                        });
+                        const bbMiddleData = data.indicators.bb_middle
+                            .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
+                            .filter(d => d.value && !isNaN(d.value));
+                        if (bbMiddleData.length > 0) {
+                            bbMiddleLine.setData(bbMiddleData);
+                        }
+                    }
+
+                    // Lower Band
+                    const bbLowerLine = chart.addLineSeries({ 
+                        color: 'rgba(173, 216, 230, 0.6)', 
+                        lineWidth: 1, 
+                        title: 'BB Lower',
+                        lastValueVisible: false,
+                        priceLineVisible: false,
+                    });
+                    const bbLowerData = data.indicators.bb_lower
+                        .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
+                        .filter(d => d.value && !isNaN(d.value));
+                    if (bbLowerData.length > 0) {
+                        bbLowerLine.setData(bbLowerData);
+                    }
+                }
+
+                // === СИГНАЛЫ (МАРКЕРЫ) ===
+                const showSignals = document.getElementById('show-signals')?.checked;
+                if (showSignals && data.signals && data.signals.length > 0) {
+                    const markers = data.signals
+                        .filter(sig => sig.action === 'LONG' || sig.action === 'SHORT')
+                        .map(sig => {
+                            let sigTime;
+                            try {
+                                sigTime = Math.floor(new Date(sig.timestamp).getTime() / 1000);
+                            } catch(e) {
+                                return null;
+                            }
+                            return {
+                                time: sigTime,
+                                position: sig.action === 'LONG' ? 'belowBar' : 'aboveBar',
+                                color: sig.action === 'LONG' ? '#00ff88' : '#ff4444',
+                                shape: sig.action === 'LONG' ? 'arrowUp' : 'arrowDown',
+                                text: sig.action.toLowerCase(),
+                                size: 1.5,
+                            };
+                        })
+                        .filter(m => m !== null);
+                    
+                    if (markers.length > 0) {
+                        // Сортируем по времени (требование LightweightCharts)
+                        markers.sort((a, b) => a.time - b.time);
+                        window.activeTVCandleSeries.setMarkers(markers);
+                        console.log("Added", markers.length, "signal markers");
+                    }
+                }
+
+                // Авто-масштабирование
+                chart.timeScale().fitContent();
+
+                // Обработчик ресайза
+                const handleResize = () => {
+                    if (window.activeTVChart && container) {
+                        window.activeTVChart.applyOptions({ width: container.clientWidth });
+                    }
+                };
+                window.removeEventListener('resize', handleResize);
+                window.addEventListener('resize', handleResize);
+
+                console.log("Chart loaded successfully!");
 
             } catch (e) {
-                console.error('LW Chart error:', e);
-                document.getElementById('chart-container').innerHTML = `<p style="color: #ff4444;">${e.message}</p>`;
+                console.error('Chart Error:', e);
+                document.getElementById('chart-container').innerHTML = `
+                    <div style="color: #ff4444; padding: 20px; border: 1px solid #ff4444; border-radius: 8px; background: rgba(255,68,68,0.1);">
+                        <h3>Chart Error</h3>
+                        <p>${e.message}</p>
+                    </div>`;
             }
         }
         
@@ -1233,12 +1397,12 @@
                 localStorage.setItem('adminPanelMode', 'mobile');
             }
             
-            // Перерисовываем график Plotly при изменении размера
-            if (typeof Plotly !== 'undefined') {
+            // Перерисовываем график при изменении размера
+            if (window.activeTVChart) {
                 setTimeout(() => {
                     const chartContainer = document.getElementById('chart-container');
-                    if (chartContainer && chartContainer.querySelector('.plotly')) {
-                        Plotly.Plots.resize(chartContainer);
+                    if (chartContainer) {
+                        window.activeTVChart.applyOptions({ width: chartContainer.clientWidth });
                     }
                 }, 100);
             }
@@ -1288,10 +1452,10 @@
             window.addEventListener('resize', () => {
                 clearTimeout(resizeTimer);
                 resizeTimer = setTimeout(() => {
-                    if (typeof Plotly !== 'undefined') {
+                    if (window.activeTVChart) {
                         const chartContainer = document.getElementById('chart-container');
-                        if (chartContainer && chartContainer.querySelector('.plotly')) {
-                            Plotly.Plots.resize(chartContainer);
+                        if (chartContainer) {
+                            window.activeTVChart.applyOptions({ width: chartContainer.clientWidth });
                         }
                     }
                 }, 250);
@@ -2328,8 +2492,13 @@
         function convertToMSK(isoString) {
             if (!isoString) return '-';
             try {
-                // Нормализуем строку: если нет timezone, считаем UTC
+                // Нормализуем строку
                 let dateStr = isoString.trim();
+                
+                // Если строка уже содержит MSK - возвращаем как есть (уже в нужном формате)
+                if (dateStr.includes('MSK')) {
+                    return dateStr;
+                }
                 
                 // Проверяем, есть ли уже timezone в строке
                 const hasTimezone = dateStr.includes('Z') || dateStr.match(/[+-]\d{2}:?\d{2}$/);
@@ -2348,10 +2517,8 @@
                     } else if (dateStr.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)) {
                         // Формат без T и секунд
                         dateStr = dateStr.replace(' ', 'T') + ':00Z';
-                    } else {
-                        // Пробуем добавить Z в конец
-                        dateStr = dateStr + (dateStr.endsWith('Z') ? '' : 'Z');
                     }
+                    // Если не подходит ни один формат - оставляем как есть
                 }
                 
                 // Создаем Date объект (автоматически парсит timezone)
@@ -3071,6 +3238,9 @@
         let currentSymbol = null;
         
         async function loadChart() {
+            if (typeof window.loadChartLW === 'function') {
+                return await window.loadChartLW();
+            }
             try {
                 document.getElementById('chart-container').innerHTML = '<div class="loading">Loading chart...</div>';
                 
@@ -5066,12 +5236,12 @@
         }, 100);
         
         // Обновляем график при переключении чекбоксов
-        document.getElementById('show-sma').addEventListener('change', loadChart);
-        document.getElementById('show-bb').addEventListener('change', loadChart);
-        document.getElementById('show-volume').addEventListener('change', loadChart);
-        document.getElementById('show-signals').addEventListener('change', loadChart);
-        document.getElementById('show-rsi').addEventListener('change', loadChart);
-        document.getElementById('show-macd').addEventListener('change', loadChart);
+        document.getElementById('show-sma').addEventListener('change', loadChartLW);
+        document.getElementById('show-bb').addEventListener('change', loadChartLW);
+        document.getElementById('show-volume').addEventListener('change', loadChartLW);
+        document.getElementById('show-signals').addEventListener('change', loadChartLW);
+        document.getElementById('show-rsi').addEventListener('change', loadChartLW);
+        document.getElementById('show-macd').addEventListener('change', loadChartLW);
         
         // Функции для работы с настройками API Bybit
         async function loadBybitApiSettings() {

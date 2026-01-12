@@ -2995,7 +2995,7 @@ def api_chart_data():
         times = []
         for idx, row in df_ready.iterrows():
             try:
-                # Конвертируем индекс времени в МСК
+                # Конвертируем индекс времени в Unix timestamp (миллисекунды)
                 if isinstance(idx, pd.Timestamp):
                     # Если время без таймзоны, считаем его UTC (как приходит от Bybit)
                     if idx.tzinfo is None:
@@ -3004,10 +3004,8 @@ def api_chart_data():
                     else:
                         # Конвертируем в UTC
                         utc_time = idx.astimezone(utc_tz)
-                    # Конвертируем в МСК
-                    msk_time = utc_time.astimezone(msk_tz)
-                    # Сохраняем в ISO формате с timezone для правильной обработки на клиенте
-                    time_str = msk_time.isoformat()
+                    # Unix timestamp в миллисекундах
+                    time_ms = int(utc_time.timestamp() * 1000)
                 else:
                     # Если не Timestamp, пытаемся преобразовать
                     try:
@@ -3018,22 +3016,21 @@ def api_chart_data():
                                 utc_time = utc_tz.localize(dt)
                             else:
                                 utc_time = dt.astimezone(utc_tz)
-                            msk_time = utc_time.astimezone(msk_tz)
-                            time_str = msk_time.isoformat()
+                            time_ms = int(utc_time.timestamp() * 1000)
                         else:
-                            time_str = str(idx)
+                            time_ms = int(idx) if isinstance(idx, (int, float)) else 0
                     except:
-                        time_str = str(idx)
+                        time_ms = 0
                 
                 candles.append({
-                    "time": time_str,
+                    "time": time_ms,  # Unix timestamp в миллисекундах
                     "open": float(row["open"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),
                     "close": float(row["close"]),
                     "volume": float(row["volume"]),
                 })
-                times.append(time_str)
+                times.append(time_ms)
             except Exception as e:
                 print(f"[web] Error processing candle: {e}")
                 continue
