@@ -1,0 +1,366 @@
+"""
+Smart Money Concepts (SMC) стратегия для торгового бота.
+
+SMC основана на концепции, что рынок двигают крупные капиталы (Smart Money),
+которые оставляют следы на графике. Стратегия ищет эти следы и входит в сделки вместе с ними.
+
+Особенности реализации:
+1. Высокая производительность через NumPy.
+2. Фильтр глобального тренда (EMA 200).
+3. Проверка Mitigation (смягчения) зон.
+4. Динамический расчет SL/TP на основе границ зон.
+"""
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+import numpy as np
+import pandas as pd
+
+from bot.strategy import Action, Signal
+
+
+@dataclass
+class SMCZone:
+    """Универсальный класс для зон SMC (FVG или Order Block)."""
+    bar_index: int
+    timestamp: pd.Timestamp
+    upper: float
+    lower: float
+    direction: str  # "bullish" или "bearish"
+    zone_type: str   # "FVG" или "OB"
+
+
+class SMCStrategy:
+    """Класс стратегии Smart Money Concepts."""
+    
+    def __init__(self, params):
+        self.params = params
+
+    def get_signals(self, df: pd.DataFrame, symbol: str = "Unknown") -> List[Signal]:
+        """
+        Основной метод получения сигналов.
+        
+        Args:
+            df: DataFrame с данными OHLCV
+            symbol: Торговая пара для логирования
+            
+        Returns:
+            Список сигналов SMC
+        """
+        if len(df) < 200:  # Минимум для EMA 200
+            return []
+
+        # 1. Подготовка данных в NumPy для скорости
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+        opens = df['open'].values
+        
+        # Безопасно получаем время
+        if 'timestamp' in df.columns:
+            times = df['timestamp'].values
+        else:
+            times = df.index.values
+            
+        # Рассчитываем индикаторы
+        # EMA 200 для определения тренда
+        ema_200 = df['close'].ewm(span=200, adjust=False).mean().values
+        
+        current_idx = len(df) - 1
+        last_row = df.iloc[-1]
+        
+        # Безопасно получаем timestamp последней свечи
+        last_ts = last_row.get('timestamp', last_row.name)
+        if not isinstance(last_ts, pd.Timestamp):
+            last_ts = pd.to_datetime(last_ts)
+            
+        close_price = closes[current_idx]
+        curr_ema = ema_200[current_idx]
+        
+        # Определяем контекст тренда
+        is_bullish_context = close_price > curr_ema
+        is_bearish_context = close_price < curr_ema
+
+        # 2. Поиск зон
+        fvg_zones = self._find_fvg(df, highs, lows, opens, closes, times)
+        ob_zones = self._find_ob(df, highs, lows, opens, closes, times)
+        all_zones = fvg_zones + ob_zones
+
+        signals = []
+
+        # 3. Обработка зон и генерация сигналов
+        for zone in all_zones:
+            # А) Фильтр по возрасту
+            max_age = self.params.smc_max_fvg_age_bars if zone.zone_type == "FVG" else self.params.smc_max_ob_age_bars
+            if (current_idx - zone.bar_index) > max_age:
+                continue
+
+            # Б) Фильтр по тренду (EMA 200)
+            if zone.direction == "bullish" and not is_bullish_context:
+                continue
+            if zone.direction == "bearish" and not is_bearish_context:
+                continue
+
+            # В) Проверка на Mitigation (была ли зона пробита ранее)
+            if self._is_mitigated(zone, highs, lows, current_idx):
+                continue
+
+            # Г) Фильтр торговой сессии (только для входа)
+            if getattr(self.params, 'smc_enable_session_filter', True):
+                if not self._is_trading_session(last_ts):
+                    continue
+
+            # Д) Логика входа при касании
+            signal = self._check_entry(zone, last_row, close_price)
+            if signal:
+                signals.append(signal)
+                # Логируем сигнал в CSV для последующего анализа
+                self._log_signal_to_csv(signal, symbol)
+
+        return signals
+
+    def _find_fvg(self, df, highs, lows, opens, closes, times) -> List[SMCZone]:
+        """Поиск зон Fair Value Gap."""
+        zones = []
+        atrs = df['atr'].values if 'atr' in df.columns else np.zeros(len(df))
+        min_gap = self.params.smc_fvg_min_gap_pct
+        atr_mult = getattr(self.params, 'smc_fvg_atr_multiplier', 1.5)
+        use_atr = getattr(self.params, 'smc_fvg_use_atr_filter', True)
+        
+        for i in range(2, len(df)):
+            # Bullish FVG (Разрыв между High i-2 и Low i)
+            if lows[i] > highs[i-2]:
+                gap_pct = (lows[i] - highs[i-2]) / highs[i-2] if highs[i-2] > 0 else 0
+                if gap_pct >= min_gap:
+                    # Фильтр по импульсу (тело свечи i-1)
+                    body_size = abs(closes[i-1] - opens[i-1])
+                    if not use_atr or body_size >= (atrs[i-1] * atr_mult):
+                        zones.append(SMCZone(
+                            bar_index=i,
+                            timestamp=pd.Timestamp(times[i]),
+                            upper=lows[i],
+                            lower=highs[i-2],
+                            direction="bullish",
+                            zone_type="FVG"
+                        ))
+            
+            # Bearish FVG (Разрыв между Low i-2 и High i)
+            elif highs[i] < lows[i-2]:
+                gap_pct = (lows[i-2] - highs[i]) / lows[i-2] if lows[i-2] > 0 else 0
+                if gap_pct >= min_gap:
+                    body_size = abs(closes[i-1] - opens[i-1])
+                    if not use_atr or body_size >= (atrs[i-1] * atr_mult):
+                        zones.append(SMCZone(
+                            bar_index=i,
+                            timestamp=pd.Timestamp(times[i]),
+                            upper=lows[i-2],
+                            lower=highs[i],
+                            direction="bearish",
+                            zone_type="FVG"
+                        ))
+        return zones
+
+    def _find_ob(self, df, highs, lows, opens, closes, times) -> List[SMCZone]:
+        """Поиск зон Order Block на основе BOS."""
+        zones = []
+        lookback = self.params.smc_ob_lookback
+        min_move = self.params.smc_ob_min_move_pct
+        require_fvg = getattr(self.params, 'smc_ob_require_fvg', True)
+        
+        # Быстрый поиск экстремумов
+        window = lookback * 2 + 1
+        if window >= len(df): window = 3
+        
+        is_max = df['high'] == df['high'].rolling(window, center=True).max()
+        is_min = df['low'] == df['low'].rolling(window, center=True).min()
+        
+        max_indices = np.where(is_max)[0]
+        min_indices = np.where(is_min)[0]
+
+        for i in range(max(lookback, 1), len(df)):
+            # BOS Up -> Ищем Bullish OB (последняя медвежья свеча перед ростом)
+            valid_max_idxs = max_indices[max_indices < i]
+            if len(valid_max_idxs) > 0:
+                last_max_idx = valid_max_idxs[-1]
+                if highs[i] > highs[last_max_idx]:
+                    # Нашли BOS! Ищем OB в диапазоне
+                    for j in range(i-1, last_max_idx-1, -1):
+                        if closes[j] < opens[j]: # Медвежья свеча
+                            move = (highs[i] - lows[j]) / lows[j] if lows[j] > 0 else 0
+                            if move >= min_move:
+                                # Проверка FVG подтверждения
+                                has_fvg = True
+                                if require_fvg:
+                                    has_fvg = False
+                                    for k in range(j + 1, min(j + 11, i + 1)):
+                                        if k < 2: continue
+                                        if lows[k] > highs[k-2]:
+                                            has_fvg = True
+                                            break
+                                if has_fvg:
+                                    zones.append(SMCZone(j, pd.Timestamp(times[j]), highs[j], lows[j], "bullish", "OB"))
+                            break
+
+            # BOS Down -> Ищем Bearish OB (последняя бычья свеча перед падением)
+            valid_min_idxs = min_indices[min_indices < i]
+            if len(valid_min_idxs) > 0:
+                last_min_idx = valid_min_idxs[-1]
+                if lows[i] < lows[last_min_idx]:
+                    for j in range(i-1, last_min_idx-1, -1):
+                        if closes[j] > opens[j]: # Бычья свеча
+                            move = (highs[j] - lows[i]) / highs[j] if highs[j] > 0 else 0
+                            if move >= min_move:
+                                has_fvg = True
+                                if require_fvg:
+                                    has_fvg = False
+                                    for k in range(j + 1, min(j + 11, i + 1)):
+                                        if k < 2: continue
+                                        if highs[k] < lows[k-2]:
+                                            has_fvg = True
+                                            break
+                                if has_fvg:
+                                    zones.append(SMCZone(j, pd.Timestamp(times[j]), highs[j], lows[j], "bearish", "OB"))
+                            break
+        return zones
+
+    def _is_mitigated(self, zone, highs, lows, current_idx) -> bool:
+        """Проверка: была ли зона пробита ценой после создания."""
+        check_start = zone.bar_index + 1
+        if check_start >= current_idx:
+            return False
+            
+        if zone.direction == "bullish":
+            # Бычья зона смягчена, если цена ушла ниже её границы
+            return np.any(lows[check_start:current_idx] <= zone.lower)
+        else:
+            # Медвежья зона смягчена, если цена ушла выше её границы
+            return np.any(highs[check_start:current_idx] >= zone.upper)
+
+    def _is_trading_session(self, timestamp: pd.Timestamp) -> bool:
+        """
+        Проверяет, входит ли время свечи в активные торговые сессии (UTC).
+        """
+        hour = timestamp.hour
+        weekday = timestamp.weekday()
+        
+        # В выходные волатильность низкая, SMC работает хуже
+        if weekday >= 5:
+            return False
+            
+        london_start = getattr(self.params, 'smc_session_london_start', 7)
+        london_end = getattr(self.params, 'smc_session_london_end', 10)
+        ny_start = getattr(self.params, 'smc_session_ny_start', 12)
+        ny_end = getattr(self.params, 'smc_session_ny_end', 15)
+        
+        is_london = london_start <= hour <= london_end
+        is_ny = ny_start <= hour <= ny_end
+        
+        return is_london or is_ny
+
+    def _check_entry(self, zone, last_row, close_price) -> Optional[Signal]:
+        """Проверка условий входа и расчет уровней SL/TP."""
+        tolerance = zone.upper * self.params.smc_touch_tolerance_pct
+        rr_ratio = getattr(self.params, 'smc_rr_ratio', 3.0)
+        
+        # Безопасно получаем время последней свечи
+        last_ts = last_row.get('timestamp', last_row.name)
+        if not isinstance(last_ts, pd.Timestamp):
+            last_ts = pd.to_datetime(last_ts)
+
+        if zone.direction == "bullish":
+            # Вход при касании верхней границы сверху вниз
+            if last_row['low'] <= (zone.upper + tolerance) and close_price > zone.lower:
+                sl = zone.lower - (close_price * 0.0005)
+                # Защита от слишком узкого стопа
+                if (close_price - sl) < close_price * 0.001:
+                    sl = close_price * 0.999
+                
+                tp = close_price + (close_price - sl) * rr_ratio
+                return Signal(
+                    timestamp=last_ts,
+                    action=Action.LONG,
+                    reason=f"SMC_{zone.zone_type}_TREND_ENTRY",
+                    price=close_price,
+                    stop_loss=round(sl, 2),
+                    take_profit=round(tp, 2)
+                )
+        
+        elif zone.direction == "bearish":
+            # Вход при касании нижней границы снизу вверх
+            if last_row['high'] >= (zone.lower - tolerance) and close_price < zone.upper:
+                sl = zone.upper + (close_price * 0.0005)
+                if (sl - close_price) < close_price * 0.001:
+                    sl = close_price * 1.001
+                    
+                tp = close_price - (sl - close_price) * rr_ratio
+                return Signal(
+                    timestamp=last_ts,
+                    action=Action.SHORT,
+                    reason=f"SMC_{zone.zone_type}_TREND_ENTRY",
+                    price=close_price,
+                    stop_loss=round(sl, 2),
+                    take_profit=round(tp, 2)
+                )
+        
+        return None
+    
+    def _log_signal_to_csv(self, signal: Signal, symbol: str):
+        """
+        Записывает сигнал в CSV файл для истории и анализа.
+        
+        Args:
+            signal: Сигнал для записи
+            symbol: Торговая пара
+        """
+        import csv
+        import os
+        from pathlib import Path
+        
+        file_path = Path(__file__).parent.parent / "smc_trade_history.csv"
+        file_exists = file_path.exists()
+        
+        # Подготовка заголовков
+        headers = [
+            "timestamp", "symbol", "action", "price", 
+            "stop_loss", "take_profit", "reason", "rr_ratio"
+        ]
+        
+        # Форматируем timestamp в читаемый вид
+        ts_str = signal.timestamp.isoformat() if hasattr(signal.timestamp, 'isoformat') else str(signal.timestamp)
+        
+        # Данные для записи
+        row = {
+            "timestamp": ts_str,
+            "symbol": symbol,
+            "action": signal.action.value if hasattr(signal.action, 'value') else str(signal.action),
+            "price": signal.price,
+            "stop_loss": signal.stop_loss if signal.stop_loss else 0.0,
+            "take_profit": signal.take_profit if signal.take_profit else 0.0,
+            "reason": signal.reason,
+            "rr_ratio": getattr(self.params, 'smc_rr_ratio', 2.5)
+        }
+        
+        try:
+            with open(file_path, mode='a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(row)
+            print(f"📝 SMC signal logged to {file_path.name}: {signal.action.value} {symbol} @ ${signal.price:.2f}")
+        except Exception as e:
+            print(f"❌ Error logging SMC signal: {e}")
+
+
+def build_smc_signals(df: pd.DataFrame, params, symbol: str = "Unknown") -> List[Signal]:
+    """
+    Точка входа для бота. Использует класс SMCStrategy для генерации сигналов.
+    
+    Args:
+        df: DataFrame с данными OHLCV
+        params: Параметры стратегии
+        symbol: Торговая пара для логирования
+        
+    Returns:
+        Список сигналов SMC
+    """
+    strategy = SMCStrategy(params)
+    return strategy.get_signals(df, symbol=symbol)

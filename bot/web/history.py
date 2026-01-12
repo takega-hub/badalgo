@@ -758,3 +758,38 @@ def get_strategy_stats(strategy_type: Optional[str] = None) -> Dict[str, Any]:
         "avg_loss": avg_loss,
     }
 
+
+def get_smc_history(limit: int = 100) -> List[Dict[str, Any]]:
+    """
+    Получить историю сигналов SMC из CSV файла.
+    
+    Args:
+        limit: Максимальное количество записей
+        
+    Returns:
+        Список словарей с данными сигналов
+    """
+    import csv
+    file_path = Path(__file__).parent.parent.parent / "smc_trade_history.csv"
+    
+    if not file_path.exists():
+        return []
+        
+    history = []
+    try:
+        with open(file_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                history.append(row)
+                
+        # Сортируем от новых к старым (последние записи в конце файла)
+        history.reverse()
+        
+        if limit:
+            history = history[:limit]
+            
+        return history
+    except Exception as e:
+        print(f"[history] Error reading SMC history: {e}")
+        return []
+

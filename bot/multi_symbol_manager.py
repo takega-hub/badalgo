@@ -51,6 +51,7 @@ class WorkerStatus:
     restart_count: int = 0  # Количество рестартов этого воркера
     last_restart_time: Optional[float] = None  # Время последнего рестарта
     consecutive_failures: int = 0  # Количество последовательных падений
+    stop_event: threading.Event = field(default_factory=threading.Event)  # Событие для остановки воркера
 
 
 class MultiSymbolManager:
@@ -68,10 +69,13 @@ class MultiSymbolManager:
         self.running = False
         self.lock = threading.Lock()
         self.monitor_thread: Optional[threading.Thread] = None
-        self.monitor_interval: float = 30.0  # Интервал проверки состояния воркеров (секунды)
-        self.max_restarts: int = 5  # Максимальное количество рестартов для одного воркера
-        self.restart_delay: float = 10.0  # Задержка перед рестартом (секунды)
-        self.worker_timeout: float = 120.0  # Таймаут для определения "упавшего" воркера (секунды)
+        self.monitor_interval = 30.0  # Интервал проверки состояния воркеров (секунды)
+        self.max_restarts = 5  # Максимальное количество рестартов для одного воркера
+        self.restart_delay = 10.0  # Задержка перед рестартом (секунды)
+        self.worker_timeout = 300.0  # Увеличиваем таймаут до 5 минут (для тяжелых вычислений ML/SMC)
+        # Кэш для моделей (чтобы не искать каждый раз)
+        self._model_cache: Dict[str, Optional[str]] = {}
+        self._model_cache_keys: Dict[str, str] = {}  # Ключи кэша для отслеживания изменений
         # Инициализируем воркеры при создании (lock не нужен, так как объект еще не используется)
         with self.lock:
             self._initialize_workers()
@@ -88,7 +92,8 @@ class MultiSymbolManager:
                 self.workers[symbol] = WorkerStatus(
                     symbol=symbol,
                     running=False,
-                    settings=self._create_settings_for_symbol(symbol)
+                    settings=self._create_settings_for_symbol(symbol),
+                    stop_event=threading.Event()
                 )
                 print(f"[MultiSymbol] ⚙️  Worker created for {symbol}")
             else:
@@ -124,42 +129,116 @@ class MultiSymbolManager:
             symbol_settings.primary_symbol = symbol
         
         # Автоматически находим ML модель для символа, если ML стратегия включена
-        # ВАЖНО: Всегда переопределяем ml_model_path для каждого символа, даже если он уже установлен
+                # ВАЖНО: Всегда переопределяем ml_model_path для каждого символа, даже если он уже установлен
         if symbol_settings.enable_ml_strategy:
             import pathlib
             models_dir = pathlib.Path(__file__).parent.parent / "ml_models"
             print(f"[MultiSymbol] 🔍 Searching for ML model for {symbol} in {models_dir}")
             
             if models_dir.exists():
-                # Ищем модель для символа (кэшируем результаты поиска)
-                if not hasattr(self, '_model_cache'):
-                    self._model_cache = {}
+                
+                # ВАЖНО: Всегда проверяем предпочтение типа модели из глобальных настроек
+                # и очищаем кэш, если настройка изменилась
+                model_type_preference = getattr(self.settings, 'ml_model_type_for_all', None)
+                
+                # Формируем ключ кэша с учетом предпочтения типа модели и явно выбранной модели
+                explicit_model_path = getattr(self.settings, 'ml_model_path', None)
+                cache_key = f"{symbol}_{model_type_preference or 'auto'}_{explicit_model_path or 'none'}"
+                if not hasattr(self, '_model_cache_keys'):
+                    self._model_cache_keys = {}
+                
+                # Если ключ кэша изменился, очищаем кэш для этого символа
+                if symbol in self._model_cache_keys and self._model_cache_keys.get(symbol) != cache_key:
+                    print(f"[MultiSymbol] 🔄 Model selection changed for {symbol}, clearing cache")
+                    print(f"[MultiSymbol]    Old key: {self._model_cache_keys.get(symbol)}")
+                    print(f"[MultiSymbol]    New key: {cache_key}")
+                    if symbol in self._model_cache:
+                        del self._model_cache[symbol]
                 
                 if symbol not in self._model_cache:
-                    # Ищем модель для символа (предпочитаем rf_ перед xgb_)
+                    # Ищем модель для символа с учетом предпочтения типа модели
                     found_model = None
-                    rf_pattern = f"rf_{symbol}_*.pkl"
-                    print(f"[MultiSymbol] 🔍 Looking for RF models matching: {rf_pattern}")
-                    for model_file in sorted(models_dir.glob(rf_pattern)):
-                        if model_file.is_file():
-                            found_model = str(model_file)
-                            print(f"[MultiSymbol] ✅ Found RF model: {found_model}")
-                            break
                     
-                    # Если rf_ модель не найдена, пробуем xgb_
+                    # СНАЧАЛА: Проверяем, есть ли явно выбранная модель в settings.ml_model_path
+                    # и соответствует ли она текущему символу И типу модели (если ml_model_type_for_all задан)
+                    if self.settings.ml_model_path:
+                        explicit_model_path = pathlib.Path(self.settings.ml_model_path)
+                        if explicit_model_path.exists():
+                            # Извлекаем символ и тип модели из имени файла
+                            model_filename = explicit_model_path.name
+                            # Формат: ensemble_BTCUSDT_15.pkl или rf_ETHUSDT_15.pkl
+                            if "_" in model_filename:
+                                parts = model_filename.replace('.pkl', '').split('_')
+                                if len(parts) >= 2 and parts[1] == symbol:
+                                    # Модель соответствует текущему символу
+                                    # Теперь проверяем, соответствует ли она типу модели из ml_model_type_for_all
+                                    model_type_from_filename = parts[0].lower()  # ensemble, rf, xgb
+                                    
+                                    # Если ml_model_type_for_all задан, проверяем соответствие
+                                    if model_type_preference:
+                                        if model_type_from_filename == model_type_preference.lower():
+                                            # Модель соответствует и символу, и типу - используем её
+                                            found_model = str(explicit_model_path)
+                                            print(f"[MultiSymbol] ✅ Using explicitly selected model for {symbol}: {found_model} (matches type: {model_type_preference})")
+                                        else:
+                                            # Модель соответствует символу, но не типу - игнорируем её
+                                            print(f"[MultiSymbol] ⚠️  Explicitly selected model for {symbol} ({model_type_from_filename}) doesn't match global preference ({model_type_preference}), ignoring it")
+                                    else:
+                                        # ml_model_type_for_all не задан - используем явно выбранную модель
+                                        found_model = str(explicit_model_path)
+                                        print(f"[MultiSymbol] ✅ Using explicitly selected model for {symbol}: {found_model}")
+                    
+                    # ЕСЛИ явно выбранная модель не найдена или не соответствует символу/типу, ищем автоматически
                     if not found_model:
-                        xgb_pattern = f"xgb_{symbol}_*.pkl"
-                        print(f"[MultiSymbol] 🔍 RF model not found, looking for XGB models matching: {xgb_pattern}")
-                        for model_file in sorted(models_dir.glob(xgb_pattern)):
-                            if model_file.is_file():
-                                found_model = str(model_file)
-                                print(f"[MultiSymbol] ✅ Found XGB model: {found_model}")
-                                break
+                        if model_type_preference:
+                            # Если задан тип модели, ищем только этот тип
+                            pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                            print(f"[MultiSymbol] 🔍 Looking for {model_type_preference.upper()} models matching: {pattern} (user preference: {model_type_preference})")
+                            for model_file in sorted(models_dir.glob(pattern), reverse=True):  # Новые модели первыми
+                                if model_file.is_file():
+                                    found_model = str(model_file)
+                                    print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} model: {found_model}")
+                                    break
+                        else:
+                            # Автоматический выбор: предпочитаем ensemble > rf > xgb
+                            # Сначала ищем ensemble
+                            ensemble_pattern = f"ensemble_{symbol}_*.pkl"
+                            print(f"[MultiSymbol] 🔍 Auto-selection: Looking for Ensemble models matching: {ensemble_pattern}")
+                            for model_file in sorted(models_dir.glob(ensemble_pattern), reverse=True):  # Новые модели первыми
+                                if model_file.is_file():
+                                    found_model = str(model_file)
+                                    print(f"[MultiSymbol] ✅ Found Ensemble model: {found_model}")
+                                    break
+                            
+                            # Если ensemble не найден, пробуем rf_
+                            if not found_model:
+                                rf_pattern = f"rf_{symbol}_*.pkl"
+                                print(f"[MultiSymbol] 🔍 Ensemble not found, looking for RF models matching: {rf_pattern}")
+                                for model_file in sorted(models_dir.glob(rf_pattern), reverse=True):  # Новые модели первыми
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        print(f"[MultiSymbol] ✅ Found RF model: {found_model}")
+                                        break
+                            
+                            # Если rf_ модель не найдена, пробуем xgb_
+                            if not found_model:
+                                xgb_pattern = f"xgb_{symbol}_*.pkl"
+                                print(f"[MultiSymbol] 🔍 RF model not found, looking for XGB models matching: {xgb_pattern}")
+                                for model_file in sorted(models_dir.glob(xgb_pattern), reverse=True):  # Новые модели первыми
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        print(f"[MultiSymbol] ✅ Found XGB model: {found_model}")
+                                        break
                     
                     if not found_model:
-                        print(f"[MultiSymbol] ❌ No ML model found for {symbol} (searched for rf_{symbol}_*.pkl and xgb_{symbol}_*.pkl)")
+                        print(f"[MultiSymbol] ❌ No ML model found for {symbol}")
+                        if model_type_preference:
+                            print(f"[MultiSymbol]    Searched for: {model_type_preference}_{symbol}_*.pkl")
+                        else:
+                            print(f"[MultiSymbol]    Searched for: ensemble_{symbol}_*.pkl, rf_{symbol}_*.pkl, xgb_{symbol}_*.pkl")
                     
                     self._model_cache[symbol] = found_model
+                    self._model_cache_keys[symbol] = cache_key
                 
                 if self._model_cache.get(symbol):
                     symbol_settings.ml_model_path = self._model_cache[symbol]
@@ -197,7 +276,7 @@ class MultiSymbolManager:
         try:
             print(f"[MultiSymbol] 🚀 Starting worker for {symbol}")
             print(f"[MultiSymbol]   Settings: symbol={settings.symbol}, active_symbols={settings.active_symbols if hasattr(settings, 'active_symbols') else 'N/A'}")
-            print(f"[MultiSymbol]   Strategies: Trend={settings.enable_trend_strategy}, Flat={settings.enable_flat_strategy}, ML={settings.enable_ml_strategy}")
+            print(f"[MultiSymbol]   Strategies: Trend={settings.enable_trend_strategy}, Flat={settings.enable_flat_strategy}, ML={settings.enable_ml_strategy}, Momentum={settings.enable_momentum_strategy}, Liquidity={settings.enable_liquidity_sweep_strategy}")
             
             worker.running = True
             worker.last_update = time.time()
@@ -213,7 +292,8 @@ class MultiSymbolManager:
                 initial_settings=settings,
                 bot_state=None,
                 signal_max_age_seconds=60,
-                symbol=symbol  # Явно передаем symbol для этого воркера
+                symbol=symbol,  # Явно передаем symbol для этого воркера
+                stop_event=worker.stop_event  # Передаем событие остановки
             )
             print(f"[MultiSymbol] 🛑 run_live_from_api returned for {symbol} (should not happen - infinite loop)")
         except KeyboardInterrupt:
@@ -384,13 +464,20 @@ class MultiSymbolManager:
                 if worker.running:
                     print(f"[MultiSymbol] Stopping worker for {symbol}...")
                     worker.running = False
+                    # Устанавливаем событие остановки
+                    if worker.stop_event:
+                        worker.stop_event.set()
+                        print(f"[MultiSymbol] Stop event set for {symbol}")
             
             # Ждем завершения потоков (с таймаутом)
             for symbol, worker in self.workers.items():
                 if worker.thread and worker.thread.is_alive():
-                    worker.thread.join(timeout=5.0)
+                    print(f"[MultiSymbol] Waiting for worker thread {symbol} to stop...")
+                    worker.thread.join(timeout=10.0)  # Увеличиваем таймаут до 10 секунд
                     if worker.thread.is_alive():
-                        print(f"[MultiSymbol] ⚠️ Worker thread for {symbol} did not stop in time")
+                        print(f"[MultiSymbol] ⚠️ Worker thread for {symbol} did not stop in time (10s timeout)")
+                    else:
+                        print(f"[MultiSymbol] ✅ Worker thread for {symbol} stopped successfully")
             
             # Останавливаем мониторинг
             self._stop_monitor()
@@ -567,6 +654,18 @@ class MultiSymbolManager:
                 print(f"[MultiSymbol] ⚙️  Lock acquired, updating settings...")
                 sys.stdout.flush()
                 
+                # Проверяем, изменился ли ml_model_type_for_all
+                old_model_type = getattr(self.settings, 'ml_model_type_for_all', None)
+                new_model_type = getattr(new_settings, 'ml_model_type_for_all', None)
+                
+                # Если тип модели изменился, очищаем кэш
+                if old_model_type != new_model_type:
+                    print(f"[MultiSymbol] 🔄 ML model type changed from {old_model_type} to {new_model_type}, clearing cache")
+                    if hasattr(self, '_model_cache'):
+                        self._model_cache.clear()
+                    if hasattr(self, '_model_cache_keys'):
+                        self._model_cache_keys.clear()
+                
                 self.settings = new_settings
                 print(f"[MultiSymbol] ⚙️  Settings object updated")
                 sys.stdout.flush()
@@ -697,8 +796,14 @@ class MultiSymbolManager:
                         
                         # Если воркер упал, пытаемся его перезапустить
                         if is_dead:
-                            print(f"[MultiSymbol] ⚠️ Detected dead worker for {symbol}: {reason}")
-                            self._restart_worker(symbol, reason)
+                            # Проверяем, не достигнут ли лимит рестартов, чтобы не спамить
+                            if worker.restart_count < self.max_restarts:
+                                print(f"[MultiSymbol] ⚠️ Detected dead worker for {symbol}: {reason}")
+                                self._restart_worker(symbol, reason)
+                            elif not getattr(worker, '_max_restarts_logged', False):
+                                print(f"[MultiSymbol] ❌ Max restarts reached for {symbol}. Manual intervention required.")
+                                worker._max_restarts_logged = True
+                                worker.running = False
             
             except Exception as e:
                 print(f"[MultiSymbol] ❌ Error in monitor thread: {e}")
@@ -708,6 +813,25 @@ class MultiSymbolManager:
                 time.sleep(self.monitor_interval)
         
         print("[MultiSymbol] 🔍 Monitor thread stopped")
+    
+    def clear_model_cache(self, symbol: Optional[str] = None):
+        """
+        Очищает кэш моделей для указанного символа или для всех символов.
+        
+        Args:
+            symbol: Символ для очистки кэша (если None, очищает для всех)
+        """
+        with self.lock:
+            if symbol:
+                if symbol in self._model_cache:
+                    del self._model_cache[symbol]
+                if symbol in self._model_cache_keys:
+                    del self._model_cache_keys[symbol]
+                print(f"[MultiSymbol] 🗑️  Cleared model cache for {symbol}")
+            else:
+                self._model_cache.clear()
+                self._model_cache_keys.clear()
+                print(f"[MultiSymbol] 🗑️  Cleared model cache for all symbols")
     
     def _restart_worker(self, symbol: str, reason: str = "Unknown"):
         """
@@ -738,17 +862,28 @@ class MultiSymbolManager:
         print(f"[MultiSymbol] 🔄 Restarting worker for {symbol} (attempt {worker.restart_count + 1}/{self.max_restarts}, delay: {restart_delay:.1f}s)")
         print(f"[MultiSymbol]    Reason: {reason}")
         
+        # Сигнализируем старому потоку о необходимости остановки
+        if worker.stop_event:
+            worker.stop_event.set()
+            print(f"[MultiSymbol] Stop event set for old worker {symbol}")
+        
         # Останавливаем старый поток, если он еще жив
         if worker.thread and worker.thread.is_alive():
             try:
                 worker.running = False
-                worker.thread.join(timeout=5.0)
+                worker.thread.join(timeout=2.0) # Небольшой таймаут, не будем ждать долго
                 if worker.thread.is_alive():
-                    print(f"[MultiSymbol] ⚠️ Old thread for {symbol} did not stop in time, continuing anyway...")
+                    print(f"[MultiSymbol] ⚠️ Old thread for {symbol} still alive, it should stop soon...")
             except Exception as e:
                 print(f"[MultiSymbol] ⚠️ Error stopping old thread for {symbol}: {e}")
         
-        # Ждем перед рестартом
+        # Создаем НОВОЕ событие остановки для нового воркера
+        worker.stop_event = threading.Event()
+        
+        # Ждем перед рестартом (в отдельном потоке, чтобы не блокировать монитор?)
+        # Нет, монитор сам спит 30 секунд, но restart_delay может быть больше.
+        # Для простоты пока оставим sleep здесь, но это заблокирует монитор для других символов.
+        # В идеале рестарт должен быть асинхронным.
         time.sleep(restart_delay)
         
         # Проверяем, что менеджер все еще запущен

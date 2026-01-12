@@ -206,6 +206,178 @@ def compute_15m_features(
     return df
 
 
+def compute_vwap(df: pd.DataFrame, anchor: str = "D") -> pd.DataFrame:
+    """
+    Вычисляет VWAP (Volume Weighted Average Price) с ежедневным сбросом.
+    
+    Args:
+        df: DataFrame с OHLCV данными и DatetimeIndex
+        anchor: Период сброса VWAP ("D" = ежедневно, "W" = еженедельно, "M" = ежемесячно)
+    
+    Returns:
+        DataFrame с добавленной колонкой vwap
+    """
+    df = df.copy()
+    
+    # Проверяем, что индекс - DatetimeIndex
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame must have DatetimeIndex for VWAP calculation")
+    
+    # Вычисляем VWAP с помощью pandas_ta
+    # anchor="D" означает ежедневный сброс
+    vwap_result = ta.vwap(
+        high=df["high"],
+        low=df["low"],
+        close=df["close"],
+        volume=df["volume"],
+        anchor=anchor
+    )
+    
+    if isinstance(vwap_result, pd.Series):
+        df["vwap"] = vwap_result
+    elif isinstance(vwap_result, pd.DataFrame):
+        # Если вернулся DataFrame, берем первую колонку (обычно это VWAP_D)
+        df["vwap"] = vwap_result.iloc[:, 0]
+    else:
+        df["vwap"] = pd.Series(index=df.index, dtype=float)
+    
+    return df
+
+
+def compute_donchian_channels(df: pd.DataFrame, length: int = 20) -> pd.DataFrame:
+    """
+    Вычисляет Donchian Channels (каналы Дончиана).
+    Показывают максимумы и минимумы за период.
+    
+    Args:
+        df: DataFrame с OHLCV данными
+        length: Период для вычисления каналов (по умолчанию 20)
+    
+    Returns:
+        DataFrame с добавленными колонками donchian_upper, donchian_lower, donchian_middle
+    """
+    df = df.copy()
+    
+    # Donchian Channels: верхняя граница = максимум high за период, нижняя = минимум low за период
+    df["donchian_upper"] = df["high"].rolling(window=length).max()
+    df["donchian_lower"] = df["low"].rolling(window=length).min()
+    df["donchian_middle"] = (df["donchian_upper"] + df["donchian_lower"]) / 2
+    
+    return df
+
+
+def compute_ema_indicators(df: pd.DataFrame, ema_fast_length: int = 20, ema_slow_length: int = 50) -> pd.DataFrame:
+    """
+    Вычисляет EMA индикаторы для стратегии импульсного пробоя.
+    EMA вычисляются на текущем таймфрейме (15m), но для трендовой стратегии
+    рекомендуется использовать данные с более высокого таймфрейма (1h или 4h).
+    
+    Args:
+        df: DataFrame с данными свечей
+        ema_fast_length: Период быстрой EMA (по умолчанию 20)
+        ema_slow_length: Период медленной EMA (по умолчанию 50)
+    
+    Returns:
+        DataFrame с добавленными колонками ema_fast и ema_slow
+    """
+    df = df.copy()
+    df["ema_fast"] = ta.ema(df["close"], length=ema_fast_length)
+    df["ema_slow"] = ta.ema(df["close"], length=ema_slow_length)
+    return df
+
+
+def compute_higher_timeframe_ema(
+    df_15m: pd.DataFrame,
+    timeframe: str = "1h",
+    ema_fast_length: int = 20,
+    ema_slow_length: int = 50,
+) -> pd.DataFrame:
+    """
+    Вычисляет EMA на более высоком таймфрейме (1h или 4h) для стратегии импульсного пробоя.
+    Затем маппит значения обратно на 15m индекс.
+    
+    Args:
+        df_15m: DataFrame с 15m свечами
+        timeframe: Таймфрейм для вычисления EMA ("1h" или "4h")
+        ema_fast_length: Период быстрой EMA
+        ema_slow_length: Период медленной EMA
+    
+    Returns:
+        DataFrame с добавленными колонками ema_fast_htf и ema_slow_htf (higher timeframe)
+    """
+    df_15m = df_15m.copy()
+    
+    # Resample на более высокий таймфрейм
+    ohlcv = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }
+    df_htf = df_15m.resample(timeframe).agg(ohlcv).dropna()
+    
+    # Вычисляем EMA на высоком таймфрейме
+    df_htf["ema_fast"] = ta.ema(df_htf["close"], length=ema_fast_length)
+    df_htf["ema_slow"] = ta.ema(df_htf["close"], length=ema_slow_length)
+    
+    # Map обратно на 15m индекс, используя forward fill
+    mapped = df_htf.reindex(df_15m.index, method="ffill")
+    df_15m[f"ema_fast_{timeframe}"] = mapped["ema_fast"]
+    df_15m[f"ema_slow_{timeframe}"] = mapped["ema_slow"]
+    
+    return df_15m
+
+
+def compute_support_resistance_levels(df: pd.DataFrame, lookback: int = 20, min_touches: int = 2) -> pd.DataFrame:
+    """
+    Вычисляет уровни поддержки и сопротивления на основе локальных максимумов и минимумов.
+    Использует упрощенный подход: ищет локальные экстремумы и группирует близкие уровни.
+    
+    Args:
+        df: DataFrame с OHLCV данными
+        lookback: Период для поиска локальных экстремумов (по умолчанию 20)
+        min_touches: Минимальное количество касаний для подтверждения уровня (по умолчанию 2)
+    
+    Returns:
+        DataFrame с добавленными колонками:
+        - nearest_support: Ближайший уровень поддержки снизу
+        - nearest_resistance: Ближайший уровень сопротивления сверху
+    """
+    df = df.copy()
+    
+    # Упрощенный подход: используем recent_high и recent_low как базовые уровни
+    # и дополняем их Donchian Channels и Bollinger Bands
+    
+    # Инициализируем колонки
+    df["nearest_resistance"] = None
+    df["nearest_support"] = None
+    
+    # Используем recent_high и recent_low как базовые уровни сопротивления/поддержки
+    if "recent_high" in df.columns:
+        df["nearest_resistance"] = df["recent_high"]
+    if "recent_low" in df.columns:
+        df["nearest_support"] = df["recent_low"]
+    
+    # Дополняем уровнями из Donchian Channels (более надежные)
+    if "donchian_upper" in df.columns:
+        # Используем Donchian верх как сопротивление, если он выше recent_high
+        df["nearest_resistance"] = df[["nearest_resistance", "donchian_upper"]].max(axis=1, skipna=True)
+        df["donchian_resistance"] = df["donchian_upper"]
+    if "donchian_lower" in df.columns:
+        # Используем Donchian низ как поддержку, если он ниже recent_low
+        df["nearest_support"] = df[["nearest_support", "donchian_lower"]].min(axis=1, skipna=True)
+        df["donchian_support"] = df["donchian_lower"]
+    
+    # Дополняем уровнями из Bollinger Bands (для флэта)
+    if "bb_upper" in df.columns:
+        df["bb_resistance"] = df["bb_upper"]
+    if "bb_lower" in df.columns:
+        df["bb_support"] = df["bb_lower"]
+    
+    return df
+
+
 def prepare_with_indicators(
     df_raw: pd.DataFrame,
     adx_length: int,
@@ -216,6 +388,9 @@ def prepare_with_indicators(
     bb_length: int = 20,
     bb_std: float = 2.0,
     atr_length: int = 14,
+    ema_fast_length: int = 20,
+    ema_slow_length: int = 50,
+    ema_timeframe: str = "1h",
 ) -> pd.DataFrame:
     df = add_time_index(df_raw)
     df = compute_4h_context(df, adx_length=adx_length)  # ADX на 4H для фильтра тренда
@@ -231,6 +406,35 @@ def prepare_with_indicators(
     )
     # Вычисляем ATR на 1H и 4H таймфреймах для анализа среднесрочной волатильности
     df = compute_atr_higher_timeframes(df, atr_length=atr_length)
-    df.dropna(inplace=True)
+    # Вычисляем EMA на более высоком таймфрейме для стратегии импульсного пробоя
+    df = compute_higher_timeframe_ema(df, timeframe=ema_timeframe, ema_fast_length=ema_fast_length, ema_slow_length=ema_slow_length)
+    # Вычисляем VWAP для стратегии институционального тренда (ежедневный сброс)
+    df = compute_vwap(df, anchor="D")
+    # Вычисляем Donchian Channels для стратегии снятия ликвидности
+    df = compute_donchian_channels(df, length=20)
+    # Вычисляем уровни поддержки и сопротивления
+    df = compute_support_resistance_levels(df, lookback=breakout_lookback, min_touches=2)
+    
+    # Удаляем только строки, где все ключевые колонки NaN (более мягкая обработка)
+    # Сохраняем строки, где хотя бы основные данные (OHLCV) присутствуют
+    key_columns = ["open", "high", "low", "close", "volume"]
+    if all(col in df.columns for col in key_columns):
+        # Проверяем, что основные колонки не все NaN
+        df = df[df[key_columns].notna().any(axis=1)]
+    
+    # Удаляем только строки, где все значения NaN (не удаляем строки с частичными NaN)
+    # Это важно, так как индикаторы (rolling, shift) создают NaN в начале, но основные данные (OHLCV) есть
+    df = df.dropna(how='all')
+    
+    # Если после обработки DataFrame пуст, это критическая ошибка
+    if len(df) == 0:
+        print(f"[indicators] ⚠️ Warning: All rows removed after processing, but this should not happen")
+        # Попробуем вернуть исходные данные с минимальной обработкой
+        df_fallback = add_time_index(df_raw)
+        if all(col in df_fallback.columns for col in key_columns):
+            df_fallback = df_fallback[df_fallback[key_columns].notna().any(axis=1)]
+        if len(df_fallback) > 0:
+            print(f"[indicators] ⚠️ Returning fallback data with {len(df_fallback)} rows")
+            return df_fallback
+    
     return df
-

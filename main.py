@@ -40,6 +40,10 @@ def run_backtest(data_path: str):
         breakout_lookback=settings.strategy.breakout_lookback,
         bb_length=settings.strategy.bb_length,
         bb_std=settings.strategy.bb_std,
+        atr_length=14,
+        ema_fast_length=settings.strategy.ema_fast_length,
+        ema_slow_length=settings.strategy.ema_slow_length,
+        ema_timeframe=settings.strategy.momentum_ema_timeframe,
     )
     df_ready = enrich_for_strategy(df_ind, settings.strategy)
     signals = build_signals(df_ready, settings.strategy)
@@ -81,6 +85,10 @@ def run_backtest_from_api(limit: int = 500):
         breakout_lookback=settings.strategy.breakout_lookback,
         bb_length=settings.strategy.bb_length,
         bb_std=settings.strategy.bb_std,
+        atr_length=14,
+        ema_fast_length=settings.strategy.ema_fast_length,
+        ema_slow_length=settings.strategy.ema_slow_length,
+        ema_timeframe=settings.strategy.momentum_ema_timeframe,
     )
     df_ready = enrich_for_strategy(df_ind, settings.strategy)
     signals = build_signals(df_ready, settings.strategy)

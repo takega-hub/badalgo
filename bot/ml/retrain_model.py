@@ -91,6 +91,8 @@ def main():
         forward_periods=4,  # 4 * 15m = 1 час
         threshold_pct=threshold_pct,  # Сниженный порог для большего количества сигналов
         use_atr_threshold=True,  # Использовать динамический порог на основе ATR
+        use_risk_adjusted=True,  # Использовать риск-скорректированную целевую переменную (новое улучшение)
+        min_risk_reward_ratio=2.0,  # Минимальное соотношение риск/прибыль 2:1
     )
     print(f"  Using threshold: {threshold_pct}% (optimized for {symbol})")
     print(f"  Dynamic ATR threshold: enabled")

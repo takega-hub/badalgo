@@ -507,6 +507,7 @@
             <button class="tab" onclick="showTab('risk', event)">Risk</button>
             <button class="tab" onclick="showTab('trades', event)">Trades</button>
             <button class="tab" onclick="showTab('signals', event)">Signals</button>
+            <button class="tab" onclick="showTab('smc_history', event)">SMC History</button>
             <div style="margin-left: auto; display: flex; gap: 10px;">
                 <button class="tab" onclick="showTab('settings', event)">Settings</button>
                 <button class="tab" onclick="logout()" style="color: #ff6666;">Logout</button>
@@ -632,6 +633,14 @@
                     <div class="stat-item">
                         <span class="stat-label">Stop Loss:</span>
                         <span class="stat-value" id="position-sl">-</span>
+                    </div>
+                    <div class="stat-item" id="position-strategy-container" style="display: none;">
+                        <span class="stat-label">Strategy:</span>
+                        <span class="stat-value" id="position-strategy">-</span>
+                    </div>
+                    <div class="stat-item" id="position-entry-signal-container" style="display: none;">
+                        <span class="stat-label">Entry Signal:</span>
+                        <span class="stat-value" id="position-entry-signal" style="font-size: 0.9em; word-break: break-word;">-</span>
                     </div>
                     <div class="stat-item" id="position-close-button-container" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #333;">
                         <button class="btn danger" id="close-position-btn" onclick="closePosition()" style="width: 100%;">
@@ -765,7 +774,7 @@
                     <label style="display: flex; align-items: center; cursor: pointer;">
                         <input type="checkbox" id="enable-flat-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
                         <span style="font-size: 1.1em; font-weight: bold; color: #ffaa00;">Flat Strategy</span>
-                        <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Flat strategy - Mean Reversion)</span>
+                        <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Flat strategy)</span>
                     </label>
                 </div>
                 
@@ -777,24 +786,41 @@
                     </label>
                 </div>
                 
-                <div class="form-group" style="margin-top: 20px;">
-                    <label for="symbol-select" style="display: block; margin-bottom: 5px; color: #aaa;">Trading Symbol:</label>
-                    <select id="symbol-select" style="width: 150px; padding: 8px; border-radius: 4px; background-color: #333; color: #e0e0e0; border: 1px solid #555;">
-                        <option value="BTCUSDT">BTCUSDT</option>
-                        <option value="ETHUSDT">ETHUSDT</option>
-                        <option value="SOLUSDT">SOLUSDT</option>
-                    </select>
+                <div class="stat-item" style="margin-bottom: 15px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="enable-momentum-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
+                        <span style="font-size: 1.1em; font-weight: bold; color: #00d4ff;">Momentum Breakout</span>
+                        <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Импульсный пробой для тренда)</span>
+                    </label>
+                </div>
+                
+                
+                <div class="stat-item" style="margin-bottom: 15px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="enable-liquidity-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
+                        <span style="font-size: 1.1em; font-weight: bold; color: #ffd93d;">Liquidity Sweep</span>
+                    </div>
+                    <div class="stat-item">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" id="smcCheckbox" style="width: 20px; height: 20px; cursor: pointer;">
+                            <span style="font-size: 1.1em; font-weight: bold; color: #9d4edd;">Smart Money Concepts (SMC)</span>
+                            <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Fair Value Gaps, Order Blocks)</span>
+                    </label>
                 </div>
                 
                 <div class="form-group" style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #444;">
                     <label for="strategy-priority-select" style="display: block; margin-bottom: 10px; color: #aaa; font-weight: bold;">Strategy Priority (при конфликте сигналов):</label>
                     <select id="strategy-priority-select" style="width: 100%; max-width: 400px; padding: 8px; border-radius: 4px; background-color: #333; color: #e0e0e0; border: 1px solid #555; font-size: 1em;">
-                        <option value="trend">TREND/FLAT Priority (TREND/FLAT приоритет при конфликте)</option>
-                        <option value="ml">ML Priority (ML приоритет при конфликте)</option>
-                        <option value="hybrid">Hybrid (обе стратегии равноправны, при конфликте используем последний сигнал)</option>
+                        <option value="trend">Trend Strategy Priority</option>
+                        <option value="flat">Flat Strategy Priority</option>
+                        <option value="ml">ML Strategy Priority</option>
+                        <option value="momentum">Momentum Breakout Priority</option>
+                        <option value="liquidity">Liquidity Sweep Priority</option>
+                        <option value="smc">Smart Money Concepts Priority</option>
+                        <option value="hybrid">Hybrid (все стратегии равноправны, при конфликте используем самый свежий сигнал)</option>
                     </select>
                     <p style="color: #888; font-size: 0.85em; margin-top: 8px; margin-bottom: 0;">
-                        Приоритетная стратегия используется когда сигналы от разных стратегий противоречат друг другу.
+                        Приоритетная стратегия используется когда сигналы от разных стратегий противоречат друг другу. В режиме Hybrid выбирается самый свежий сигнал.
                     </p>
                 </div>
                 
@@ -807,8 +833,32 @@
             <div class="card" style="grid-column: 1 / -1; margin-top: 20px;">
                 <h2>ML Model Management</h2>
                 
-                <!-- Выбор модели -->
-                <div style="margin-bottom: 20px;">
+                <!-- Выбор типа модели для всех пар -->
+                <div style="margin-bottom: 30px; padding: 20px; background: #1a2a2a; border: 1px solid #00d4ff; border-radius: 8px;">
+                    <h3 style="color: #00d4ff; margin-top: 0; margin-bottom: 15px;">🔧 Model Type for All Pairs</h3>
+                    <p style="color: #aaa; margin-bottom: 15px; font-size: 0.9em;">
+                        Select the model type to use for all trading pairs (BTCUSDT, ETHUSDT, SOLUSDT). 
+                        This setting will be applied automatically when models are loaded for each pair.
+                    </p>
+                    <label style="display: block; margin-bottom: 10px;">
+                        <span style="display: block; margin-bottom: 5px; color: #aaa; font-weight: bold;">Model Type for All Pairs:</span>
+                        <select id="ml-model-type-for-all" style="width: 100%; max-width: 400px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
+                            <option value="">Auto (Ensemble > RF > XGB)</option>
+                            <option value="ensemble">🎯 Ensemble (RF + XGBoost) - Recommended</option>
+                            <option value="rf">Random Forest</option>
+                            <option value="xgb">XGBoost</option>
+                        </select>
+                    </label>
+                    <button class="btn success" onclick="saveMLModelTypeForAll()" style="margin-top: 10px;">Save Model Type for All Pairs</button>
+                    <div id="model-type-status" style="margin-top: 10px; color: #aaa;"></div>
+                </div>
+                
+                <!-- Выбор модели для текущей пары -->
+                <div style="margin-bottom: 20px; padding-top: 20px; border-top: 1px solid #444;">
+                    <h3 style="color: #e0e0e0; margin-bottom: 15px;">Select Model for Current Pair</h3>
+                    <p style="color: #aaa; margin-bottom: 15px; font-size: 0.9em;">
+                        Select a specific ML model for the current trading pair. This overrides the model type setting above.
+                    </p>
                     <label style="display: block; margin-bottom: 10px;">
                         <span style="display: block; margin-bottom: 5px; color: #aaa; font-weight: bold;">Select ML Model:</span>
                         <select id="ml-model-select" style="width: 100%; max-width: 500px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
@@ -819,6 +869,14 @@
                     <div id="select-model-status" style="margin-top: 10px; color: #aaa;"></div>
                 </div>
                 
+                <!-- Информация о моделях для всех пар -->
+                <div id="ml-models-all-pairs" style="margin-bottom: 20px; padding: 15px; background: #1a1a1a; border: 1px solid #444; border-radius: 4px;">
+                    <h4 style="color: #00d4ff; margin-top: 0; margin-bottom: 15px;">📊 Selected Models for All Pairs</h4>
+                    <div id="all-pairs-models-content" style="color: #aaa;">
+                        <p>Loading models info...</p>
+                    </div>
+                </div>
+                
                 <div id="ml-model-info" style="margin-bottom: 20px;">
                     <div class="loading">Loading model info...</div>
                 </div>
@@ -826,16 +884,35 @@
                 <!-- Переобучение модели -->
                 <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #444;">
                     <h3 style="color: #e0e0e0; margin-bottom: 15px;">Retrain Model</h3>
-                    <label style="display: block; margin-bottom: 10px;">
-                        <span style="display: block; margin-bottom: 5px; color: #aaa;">Trading Pair for Retraining:</span>
-                        <select id="ml-symbol-select" style="width: 200px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
-                            <option value="BTCUSDT">BTC/USDT</option>
-                            <option value="ETHUSDT">ETH/USDT</option>
-                            <option value="SOLUSDT">SOL/USDT</option>
-                        </select>
-                    </label>
-                    <button class="btn success" onclick="retrainMLModel()" id="retrain-btn">Retrain ML Model</button>
-                    <div id="retrain-status" style="margin-top: 10px; color: #aaa;"></div>
+                    
+                    <!-- Переобучение всех моделей -->
+                    <div style="margin-bottom: 20px; padding: 15px; background: #1a1a1a; border: 1px solid #444; border-radius: 4px;">
+                        <h4 style="color: #00ff88; margin-top: 0; margin-bottom: 10px;">🔄 Retrain All Models</h4>
+                        <p style="color: #aaa; margin-bottom: 15px; font-size: 0.9em;">
+                            Retrain ML models for all trading pairs (BTCUSDT, ETHUSDT, SOLUSDT). 
+                            This will train RF, XGBoost, and Ensemble models for each pair. 
+                            This process may take 10-20 minutes.
+                        </p>
+                        <button class="btn success" onclick="retrainAllMLModels()" id="retrain-all-btn" style="width: 100%;">
+                            Retrain All ML Models
+                        </button>
+                        <div id="retrain-all-status" style="margin-top: 10px; color: #aaa;"></div>
+                    </div>
+                    
+                    <!-- Переобучение одной модели -->
+                    <div style="padding: 15px; background: #1a1a1a; border: 1px solid #444; border-radius: 4px;">
+                        <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 10px;">Retrain Single Model</h4>
+                        <label style="display: block; margin-bottom: 10px;">
+                            <span style="display: block; margin-bottom: 5px; color: #aaa;">Trading Pair for Retraining:</span>
+                            <select id="ml-symbol-select" style="width: 100%; max-width: 300px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
+                                <option value="BTCUSDT">BTC/USDT</option>
+                                <option value="ETHUSDT">ETH/USDT</option>
+                                <option value="SOLUSDT">SOL/USDT</option>
+                            </select>
+                        </label>
+                        <button class="btn success" onclick="retrainMLModel()" id="retrain-btn">Retrain ML Model</button>
+                        <div id="retrain-status" style="margin-top: 10px; color: #aaa;"></div>
+                    </div>
                 </div>
             </div>
             
@@ -978,6 +1055,22 @@
                 <div class="table-wrapper">
                     <div id="signals-table">
                         <div class="loading">Loading signals...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SMC History Tab -->
+        <div id="smc_history" class="tab-content">
+            <div class="card">
+                <h2>Smart Money Concepts History (CSV)</h2>
+                <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+                    <button onclick="loadSMCHistory()" class="btn success">Refresh SMC Data</button>
+                    <span id="smc-count" style="color: #aaa;"></span>
+                </div>
+                <div class="table-wrapper">
+                    <div id="smc-history-table">
+                        <div class="loading">Loading SMC history from CSV...</div>
                     </div>
                 </div>
             </div>
@@ -1183,6 +1276,9 @@
                 loadStrategySelection();
                 loadStrategyStats();
                 loadMLModelInfo();
+                if (typeof loadAllPairsModelsInfo !== 'undefined') {
+                    loadAllPairsModelsInfo();
+                }
             } else if (tabName === 'trades') {
                 loadTrades();
             } else if (tabName === 'signals') {
@@ -1450,6 +1546,58 @@
                         positionSlEl.style.color = slValue ? '#ff4444' : '#ffaa00';
                     }
                     
+                    // Отображаем информацию о стратегии и сигнале открытия
+                    const entryReason = positionData.entry_reason || (data.position?.entry_reason) || '';
+                    const strategyType = positionData.strategy_type || (data.position?.strategy_type) || '';
+                    
+                    // Форматируем название стратегии
+                    let strategyDisplay = 'Unknown';
+                    if (strategyType) {
+                        const strategyMap = {
+                            'ml': '🤖 ML Strategy',
+                            'trend': '📈 Trend Strategy',
+                            'flat': '📊 Flat Strategy',
+                            'momentum': '⚡ Momentum Strategy',
+                            'liquidity': '💧 Liquidity Sweep',
+                            'hybrid': '🔄 Hybrid',
+                            'unknown': 'Unknown'
+                        };
+                        strategyDisplay = strategyMap[strategyType.toLowerCase()] || strategyType.toUpperCase();
+                    }
+                    
+                    const positionStrategyEl = document.getElementById('position-strategy');
+                    const positionStrategyContainer = document.getElementById('position-strategy-container');
+                    if (positionStrategyEl && positionStrategyContainer) {
+                        if (strategyType) {
+                            positionStrategyEl.textContent = strategyDisplay;
+                            positionStrategyEl.style.color = '#00d4ff';
+                            positionStrategyContainer.style.display = 'flex';
+                        } else {
+                            positionStrategyContainer.style.display = 'none';
+                        }
+                    }
+                    
+                    const positionEntrySignalEl = document.getElementById('position-entry-signal');
+                    const positionEntrySignalContainer = document.getElementById('position-entry-signal-container');
+                    if (positionEntrySignalEl && positionEntrySignalContainer) {
+                        if (entryReason) {
+                            // Форматируем reason для лучшей читаемости
+                            let formattedReason = entryReason;
+                            // Убираем префиксы стратегий для краткости
+                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_)/, '');
+                            // Заменяем подчеркивания на пробелы
+                            formattedReason = formattedReason.replace(/_/g, ' ');
+                            // Делаем первую букву заглавной
+                            formattedReason = formattedReason.charAt(0).toUpperCase() + formattedReason.slice(1);
+                            
+                            positionEntrySignalEl.textContent = formattedReason;
+                            positionEntrySignalEl.style.color = '#aaa';
+                            positionEntrySignalContainer.style.display = 'flex';
+                        } else {
+                            positionEntrySignalContainer.style.display = 'none';
+                        }
+                    }
+                    
                     // Показываем кнопку закрытия позиции
                     const closeButtonContainer = document.getElementById('position-close-button-container');
                     if (closeButtonContainer) {
@@ -1457,7 +1605,7 @@
                     }
                 } else {
                     // Нет позиции - очищаем все элементы
-                    const positionElements = ['position-side', 'position-size', 'position-entry', 'position-current-price', 'position-pnl', 'position-pnl-pct', 'position-tp', 'position-sl'];
+                    const positionElements = ['position-side', 'position-size', 'position-entry', 'position-current-price', 'position-pnl', 'position-pnl-pct', 'position-tp', 'position-sl', 'position-strategy', 'position-entry-signal'];
                     positionElements.forEach(id => {
                         const el = document.getElementById(id);
                         if (el) {
@@ -1477,10 +1625,18 @@
                         }
                     });
                     
-                    // Скрываем кнопку закрытия позиции
+                    // Скрываем кнопку закрытия позиции и информацию о стратегии
                     const closeButtonContainer = document.getElementById('position-close-button-container');
                     if (closeButtonContainer) {
                         closeButtonContainer.style.display = 'none';
+                    }
+                    const positionStrategyContainer = document.getElementById('position-strategy-container');
+                    if (positionStrategyContainer) {
+                        positionStrategyContainer.style.display = 'none';
+                    }
+                    const positionEntrySignalContainer = document.getElementById('position-entry-signal-container');
+                    if (positionEntrySignalContainer) {
+                        positionEntrySignalContainer.style.display = 'none';
                     }
                 }
                 
@@ -1647,7 +1803,7 @@
                         <label>RSI Ceiling:</label>
                         <input type="number" name="rsi_ceiling" value="${strategy.rsi_ceiling}" step="0.1">
                     </div>
-                    <h3 style="margin-top: 20px; color: #00d4ff;">Range Strategy (Mean Reversion)</h3>
+                    <h3 style="margin-top: 20px; color: #00d4ff;">Range Strategy</h3>
                     <div class="form-group">
                         <label>BB Length:</label>
                         <input type="number" name="bb_length" value="${strategy.bb_length}">
@@ -1956,6 +2112,107 @@
                 console.error('Error loading trades:', error);
             }
         }
+
+        async function loadSMCHistory() {
+            try {
+                const response = await fetch('/api/smc/history?limit=100');
+                const result = await response.json();
+                
+                if (!result.success) {
+                    throw new Error(result.error || 'Failed to load SMC history');
+                }
+                
+                const data = result.history || [];
+                
+                const countSpan = document.getElementById('smc-count');
+                if (countSpan) {
+                    countSpan.textContent = `(${data.length} signal${data.length !== 1 ? 's' : ''} found)`;
+                    countSpan.style.color = data.length > 0 ? '#00ff88' : '#aaa';
+                }
+                
+                if (data.length === 0) {
+                    document.getElementById('smc-history-table').innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #aaa;">
+                            <p style="font-size: 1.2em; margin-bottom: 10px;">📊 No SMC signals yet</p>
+                            <p style="font-size: 0.9em;">Signals will appear here once the SMC strategy starts generating entries</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                let html = '<table style="width: 100%; border-collapse: collapse;"><thead><tr style="background: #2a2a2a;">';
+                html += '<th style="padding: 12px; text-align: left; border-bottom: 2px solid #444;">Time (MSK)</th>';
+                html += '<th style="padding: 12px; text-align: left; border-bottom: 2px solid #444;">Pair</th>';
+                html += '<th style="padding: 12px; text-align: center; border-bottom: 2px solid #444;">Action</th>';
+                html += '<th style="padding: 12px; text-align: right; border-bottom: 2px solid #444;">Entry</th>';
+                html += '<th style="padding: 12px; text-align: right; border-bottom: 2px solid #444;">SL</th>';
+                html += '<th style="padding: 12px; text-align: right; border-bottom: 2px solid #444;">TP</th>';
+                html += '<th style="padding: 12px; text-align: left; border-bottom: 2px solid #444;">Zone Type</th>';
+                html += '<th style="padding: 12px; text-align: center; border-bottom: 2px solid #444;">RR</th>';
+                html += '</tr></thead><tbody>';
+                
+                data.forEach((sig, idx) => {
+                    const actionColor = sig.action === 'LONG' ? '#00ff88' : '#ff4444';
+                    const timeStr = sig.timestamp ? convertToMSK(sig.timestamp) : '-';
+                    const entryPrice = parseFloat(sig.price || 0);
+                    const stopLoss = parseFloat(sig.stop_loss || 0);
+                    const takeProfit = parseFloat(sig.take_profit || 0);
+                    const rrRatio = parseFloat(sig.rr_ratio || 0).toFixed(1);
+                    
+                    // Определяем тип зоны из reason (FVG или OB)
+                    const reason = sig.reason || '';
+                    let zoneType = 'Unknown';
+                    let zoneColor = '#aaa';
+                    if (reason.includes('FVG')) {
+                        zoneType = 'FVG';
+                        zoneColor = '#ffaa00';
+                    } else if (reason.includes('OB')) {
+                        zoneType = 'Order Block';
+                        zoneColor = '#9933ff';
+                    }
+                    
+                    // Рассчитываем риск и потенциальную прибыль
+                    const risk = sig.action === 'LONG' ? (entryPrice - stopLoss) : (stopLoss - entryPrice);
+                    const reward = sig.action === 'LONG' ? (takeProfit - entryPrice) : (entryPrice - takeProfit);
+                    
+                    const bgColor = idx % 2 === 0 ? '#1a1a1a' : '#222';
+                    
+                    html += `<tr style="background: ${bgColor}; border-bottom: 1px solid #333;">
+                        <td style="padding: 10px;">${timeStr}</td>
+                        <td style="padding: 10px; font-weight: bold;">${sig.symbol || '-'}</td>
+                        <td style="padding: 10px; text-align: center;">
+                            <span style="color: ${actionColor}; font-weight: bold; background: ${actionColor}22; padding: 4px 12px; border-radius: 4px;">
+                                ${sig.action}
+                            </span>
+                        </td>
+                        <td style="padding: 10px; text-align: right; font-weight: bold; color: #00d4ff;">$${entryPrice.toFixed(2)}</td>
+                        <td style="padding: 10px; text-align: right; color: #ff4444;">$${stopLoss.toFixed(2)}</td>
+                        <td style="padding: 10px; text-align: right; color: #00ff88;">$${takeProfit.toFixed(2)}</td>
+                        <td style="padding: 10px;">
+                            <span style="color: ${zoneColor}; font-size: 0.9em; background: ${zoneColor}22; padding: 3px 8px; border-radius: 3px;">
+                                ${zoneType}
+                            </span>
+                        </td>
+                        <td style="padding: 10px; text-align: center; font-weight: bold; color: ${parseFloat(rrRatio) >= 2.0 ? '#00ff88' : '#ffaa00'};">
+                            1:${rrRatio}
+                        </td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                document.getElementById('smc-history-table').innerHTML = html;
+                
+                console.log(`✅ Loaded ${data.length} SMC signals`);
+            } catch (error) {
+                console.error('❌ Error loading SMC history:', error);
+                document.getElementById('smc-history-table').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #ff4444;">
+                        <p style="font-size: 1.2em; margin-bottom: 10px;">⚠️ Error loading SMC history</p>
+                        <p style="font-size: 0.9em;">${error.message || 'Unknown error'}</p>
+                        <p style="font-size: 0.8em; color: #aaa; margin-top: 10px;">Check console for details</p>
+                    </div>
+                `;
+            }
+        }
         
         // Функция для копирования текста в буфер обмена
         function copyToClipboard(text, element) {
@@ -2070,7 +2327,9 @@
                     const types = {
                         'trend': '<span style="color: #00ff88;">TREND</span>',
                         'flat': '<span style="color: #ffaa00;">FLAT</span>',
-                        'ml': '<span style="color: #00d4ff;">ML</span>',
+                        'ml': '<span style="color: #9933ff;">ML</span>',
+                        'momentum': '<span style="color: #00d4ff;">MOMENTUM</span>',
+                        'liquidity': '<span style="color: #ffd93d;">LIQUIDITY</span>',
                         'unknown': '<span style="color: #aaa;">UNKNOWN</span>'
                     };
                     return types[type] || types['unknown'];
@@ -3328,6 +3587,9 @@
                     const trendCheckbox = document.getElementById('enable-trend-strategy');
                     const flatCheckbox = document.getElementById('enable-flat-strategy');
                     const mlCheckbox = document.getElementById('enable-ml-strategy');
+                    const momentumCheckbox = document.getElementById('enable-momentum-strategy');
+                    const liquidityCheckbox = document.getElementById('enable-liquidity-strategy');
+                    const smcCheckbox = document.getElementById('smcCheckbox');
                     
                     // Функция для конвертации значения в boolean
                     const toBool = (val) => {
@@ -3347,6 +3609,15 @@
                     }
                     if (mlCheckbox) {
                         mlCheckbox.checked = toBool(data.app.enable_ml_strategy);
+                    }
+                    if (momentumCheckbox) {
+                        momentumCheckbox.checked = toBool(data.app.enable_momentum_strategy);
+                    }
+                    if (liquidityCheckbox) {
+                        liquidityCheckbox.checked = toBool(data.app.enable_liquidity_sweep_strategy);
+                    }
+                    if (smcCheckbox) {
+                        smcCheckbox.checked = toBool(data.app.enable_smc_strategy);
                     }
                     
                     // Устанавливаем выбранную пару
@@ -3371,6 +3642,12 @@
                     const strategyPrioritySelect = document.getElementById('strategy-priority-select');
                     if (strategyPrioritySelect && data.app.strategy_priority) {
                         strategyPrioritySelect.value = data.app.strategy_priority;
+                    }
+                    
+                    // Устанавливаем тип модели для всех пар
+                    const modelTypeForAllSelect = document.getElementById('ml-model-type-for-all');
+                    if (modelTypeForAllSelect && data.app.ml_model_type_for_all !== undefined) {
+                        modelTypeForAllSelect.value = data.app.ml_model_type_for_all || "";
                     }
                     
                     // Если есть модель для текущего символа, обновляем информацию
@@ -3526,6 +3803,54 @@
                     </div>
                 `;
                 
+                // Статистика для Momentum стратегии
+                const momentumStats = data.momentum || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 212, 255, 0.05) 100%); border: 1px solid rgba(0, 212, 255, 0.3);">
+                        <h3 style="color: #00d4ff; margin-bottom: 15px;">⚡ Momentum Breakout</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${momentumStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(momentumStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(momentumStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(momentumStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(momentumStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(momentumStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Статистика для Liquidity Sweep стратегии
+                const liquidityStats = data.liquidity || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(255, 217, 61, 0.1) 0%, rgba(255, 217, 61, 0.05) 100%); border: 1px solid rgba(255, 217, 61, 0.3);">
+                        <h3 style="color: #ffd93d; margin-bottom: 15px;">💧 Liquidity Sweep</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${liquidityStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(liquidityStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(liquidityStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(liquidityStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(liquidityStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(liquidityStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
                 // Общая статистика
                 const allStats = data.all || {};
                 html += `
@@ -3581,6 +3906,9 @@
                 const trendCheckbox = document.getElementById('enable-trend-strategy');
                 const flatCheckbox = document.getElementById('enable-flat-strategy');
                 const mlCheckbox = document.getElementById('enable-ml-strategy');
+                const momentumCheckbox = document.getElementById('enable-momentum-strategy');
+                const liquidityCheckbox = document.getElementById('enable-liquidity-strategy');
+                const smcCheckbox = document.getElementById('smcCheckbox');
                 const symbolSelect = document.getElementById('symbol-select');
                 
                 // Проверяем наличие элементов с более детальным сообщением
@@ -3588,18 +3916,10 @@
                 if (!trendCheckbox) missingElements.push('enable-trend-strategy');
                 if (!flatCheckbox) missingElements.push('enable-flat-strategy');
                 if (!mlCheckbox) missingElements.push('enable-ml-strategy');
-                if (!symbolSelect) missingElements.push('symbol-select');
                 
                 if (missingElements.length > 0) {
                     console.error('[saveStrategySelection] Missing elements:', missingElements);
                     alert('Error: Could not find strategy selection elements:\n' + missingElements.join(', ') + '\n\nPlease refresh the page and try again.');
-                    return;
-                }
-                
-                const selectedSymbol = symbolSelect.value;
-                
-                if (!selectedSymbol || selectedSymbol === '') {
-                    alert('❌ Please select a trading symbol');
                     return;
                 }
                 
@@ -3611,7 +3931,9 @@
                         enable_trend_strategy: trendCheckbox.checked,
                         enable_flat_strategy: flatCheckbox.checked,
                         enable_ml_strategy: mlCheckbox.checked,
-                        symbol: selectedSymbol,
+                        enable_momentum_strategy: momentumCheckbox ? momentumCheckbox.checked : false,
+                        enable_liquidity_sweep_strategy: liquidityCheckbox ? liquidityCheckbox.checked : false,
+                        enable_smc_strategy: smcCheckbox ? smcCheckbox.checked : false,
                         strategy_priority: selectedPriority
                     }
                 };
@@ -3628,33 +3950,63 @@
                 const result = await response.json();
                 
                 if (response.ok && result.success) {
-                    // Если сервер вернул обновленные настройки, используем их сразу
-                    if (result.settings) {
-                        // Обновляем select сразу из ответа сервера
-                        if (result.settings.symbol && symbolSelect) {
-                            symbolSelect.value = result.settings.symbol;
-                        }
-                    }
-                    
                     // Показываем уведомление об успехе
                     const priorityText = {
-                        'trend': 'TREND/FLAT Priority',
-                        'ml': 'ML Priority',
-                        'hybrid': 'Hybrid (Equal)'
+                        'trend': 'Trend Strategy Priority',
+                        'flat': 'Flat Strategy Priority',
+                        'ml': 'ML Strategy Priority',
+                        'momentum': 'Momentum Breakout Priority',
+                        'liquidity': 'Liquidity Sweep Priority',
+                        'smc': 'Smart Money Concepts Priority',
+                        'hybrid': 'Hybrid (Latest Signal)'
                     };
+                    const enabledStrategies = [];
+                    if (trendCheckbox.checked) enabledStrategies.push('Trend');
+                    if (flatCheckbox.checked) enabledStrategies.push('Flat');
+                    if (mlCheckbox.checked) enabledStrategies.push('ML');
+                    if (momentumCheckbox && momentumCheckbox.checked) enabledStrategies.push('Momentum');
+                    if (liquidityCheckbox && liquidityCheckbox.checked) enabledStrategies.push('Liquidity Sweep');
+                    const smcCheckbox = document.getElementById('smcCheckbox');
+                    if (smcCheckbox && smcCheckbox.checked) enabledStrategies.push('Smart Money Concepts');
+                    
                     alert('✅ Settings saved successfully!\n\n' +
-                          `Trend Strategy: ${trendCheckbox.checked ? 'ON' : 'OFF'}\n` +
-                          `Flat Strategy: ${flatCheckbox.checked ? 'ON' : 'OFF'}\n` +
-                          `ML Strategy: ${mlCheckbox.checked ? 'ON' : 'OFF'}\n` +
-                          `Strategy Priority: ${priorityText[selectedPriority] || selectedPriority}\n` +
-                          `Trading Symbol: ${result.settings?.symbol || symbolSelect.value}\n\n` +
-                          'Note: If the bot is running, it will use the new settings on the next cycle.');
+                          `Enabled Strategies: ${enabledStrategies.length > 0 ? enabledStrategies.join(', ') : 'None'}\n` +
+                          `Strategy Priority: ${priorityText[selectedPriority] || selectedPriority}\n\n` +
+                          'Note: Settings apply to ALL active trading pairs. If the bot is running, it will use the new settings on the next cycle.');
+                    
+                    // Сначала обновляем чекбоксы из ответа сервера (если есть)
+                    if (result.settings) {
+                        // Обновляем все чекбоксы стратегий
+                        if (trendCheckbox && result.settings.enable_trend_strategy !== undefined) {
+                            trendCheckbox.checked = result.settings.enable_trend_strategy;
+                        }
+                        if (flatCheckbox && result.settings.enable_flat_strategy !== undefined) {
+                            flatCheckbox.checked = result.settings.enable_flat_strategy;
+                        }
+                        if (mlCheckbox && result.settings.enable_ml_strategy !== undefined) {
+                            mlCheckbox.checked = result.settings.enable_ml_strategy;
+                        }
+                        if (momentumCheckbox && result.settings.enable_momentum_strategy !== undefined) {
+                            momentumCheckbox.checked = result.settings.enable_momentum_strategy;
+                        }
+                        if (liquidityCheckbox && result.settings.enable_liquidity_sweep_strategy !== undefined) {
+                            liquidityCheckbox.checked = result.settings.enable_liquidity_sweep_strategy;
+                        }
+                        const smcCheckbox = document.getElementById('smcCheckbox');
+                        if (smcCheckbox && result.settings.enable_smc_strategy !== undefined) {
+                            smcCheckbox.checked = result.settings.enable_smc_strategy;
+                        }
+                        // Обновляем приоритет стратегии
+                        if (strategyPrioritySelect && result.settings.strategy_priority) {
+                            strategyPrioritySelect.value = result.settings.strategy_priority;
+                        }
+                    }
                     
                     // Перезагружаем настройки чтобы убедиться, что значение обновилось
                     // Используем более длинную задержку чтобы сервер успел перезагрузить настройки
                     setTimeout(() => {
                         loadStrategySelection();
-                    }, 1000);
+                    }, 1500);
                     
                     // Обновляем график если он открыт
                     if (typeof loadChart !== 'undefined') {
@@ -3688,6 +4040,115 @@
         }
         window.saveStrategySelection = saveStrategySelection; // Make global
         
+        async function loadAllPairsModelsInfo() {
+            try {
+                const response = await fetch('/api/ml/models/all-pairs');
+                const data = await response.json();
+                
+                const contentDiv = document.getElementById('all-pairs-models-content');
+                if (!contentDiv) return;
+                
+                if (data.error) {
+                    contentDiv.innerHTML = `<p style="color: #ff4444;">Error: ${data.error}</p>`;
+                    return;
+                }
+                
+                const models = data.models || {};
+                const modelTypePreference = data.model_type_preference || "auto";
+                
+                let html = '';
+                
+                // Показываем предпочтение типа модели
+                html += `<div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-radius: 4px;">`;
+                html += `<span style="color: #aaa;">Model Type Preference: </span>`;
+                html += `<span style="color: #00d4ff; font-weight: bold;">${modelTypePreference === "auto" ? "Auto (Ensemble > RF > XGB)" : modelTypePreference.toUpperCase()}</span>`;
+                html += `</div>`;
+                
+                // Показываем информацию о моделях для каждой пары
+                const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+                for (const symbol of symbols) {
+                    const modelInfo = models[symbol] || {};
+                    const found = modelInfo.found || false;
+                    
+                    html += `<div style="margin-bottom: 15px; padding: 12px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px;">`;
+                    html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">`;
+                    html += `<span style="color: #e0e0e0; font-weight: bold; font-size: 1.1em;">${symbol}</span>`;
+                    
+                    if (found) {
+                        const metadata = modelInfo.metadata || {};
+                        const modelType = metadata.model_type || "unknown";
+                        const modelName = modelInfo.model_name || "Unknown";
+                        
+                        // Определяем тип модели для отображения
+                        let modelTypeDisplay = modelType;
+                        let modelTypeIcon = "📊";
+                        if (modelType.includes("ensemble")) {
+                            modelTypeDisplay = "Ensemble (RF + XGBoost)";
+                            modelTypeIcon = "🎯";
+                        } else if (modelType === "rf") {
+                            modelTypeDisplay = "Random Forest";
+                            modelTypeIcon = "🌲";
+                        } else if (modelType === "xgb") {
+                            modelTypeDisplay = "XGBoost";
+                            modelTypeIcon = "⚡";
+                        }
+                        
+                        html += `<span style="color: #00ff88; font-size: 0.9em;">${modelTypeIcon} ${modelTypeDisplay}</span>`;
+                        html += `</div>`;
+                        
+                        // Показываем метрики
+                        if (metadata.accuracy !== undefined || metadata.cv_mean !== undefined) {
+                            html += `<div style="margin-top: 8px; font-size: 0.9em;">`;
+                            if (metadata.accuracy !== undefined) {
+                                html += `<span style="color: #aaa;">Accuracy: </span>`;
+                                html += `<span style="color: #00d4ff;">${((metadata.accuracy || 0) * 100).toFixed(2)}%</span>`;
+                            }
+                            if (metadata.cv_mean !== undefined) {
+                                if (metadata.accuracy !== undefined) html += `<span style="color: #666;"> | </span>`;
+                                html += `<span style="color: #aaa;">CV: </span>`;
+                                html += `<span style="color: #00d4ff;">${((metadata.cv_mean || 0) * 100).toFixed(2)}%</span>`;
+                                if (metadata.cv_std !== undefined) {
+                                    html += `<span style="color: #666;"> ± ${((metadata.cv_std || 0) * 100).toFixed(2)}%</span>`;
+                                }
+                            }
+                            html += `</div>`;
+                        }
+                        
+                        // Показываем дату обучения
+                        if (metadata.trained_at) {
+                            try {
+                                const trainedDate = new Date(metadata.trained_at);
+                                const daysAgo = Math.floor((Date.now() - trainedDate.getTime()) / (1000 * 60 * 60 * 24));
+                                html += `<div style="margin-top: 5px; font-size: 0.85em; color: #888;">`;
+                                html += `Trained: ${trainedDate.toLocaleDateString()} (${daysAgo} days ago)`;
+                                html += `</div>`;
+                            } catch (e) {
+                                // Игнорируем ошибки парсинга даты
+                            }
+                        }
+                    } else {
+                        html += `<span style="color: #ff4444; font-size: 0.9em;">❌ Model not found</span>`;
+                        html += `</div>`;
+                        if (modelInfo.error) {
+                            html += `<div style="margin-top: 5px; font-size: 0.85em; color: #888;">${modelInfo.error}</div>`;
+                        }
+                    }
+                    
+                    html += `</div>`;
+                }
+                
+                contentDiv.innerHTML = html;
+            } catch (error) {
+                console.error('Error loading all pairs models info:', error);
+                const contentDiv = document.getElementById('all-pairs-models-content');
+                if (contentDiv) {
+                    contentDiv.innerHTML = `<p style="color: #ff4444;">Error loading models info: ${error.message}</p>`;
+                }
+            }
+        }
+        
+        window.loadAllPairsModelsInfo = loadAllPairsModelsInfo;
+        
         async function loadMLModelInfo() {
             try {
                 const response = await fetch('/api/ml/model/info');
@@ -3709,8 +4170,28 @@
                 const stats = data.stats || {};
                 const shouldRetrain = data.should_retrain || false;
                 const retrainReasons = data.retrain_reasons || [];
+                const isEnsemble = data.is_ensemble || false;
+                const ensembleMetrics = data.ensemble_metrics || {};
                 
-                let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">';
+                // Определяем тип модели для отображения
+                const modelType = metadata.model_type || 'Unknown';
+                const modelTypeDisplay = modelType.includes('Ensemble') ? modelType : 
+                    (modelType === 'rf' || modelType === 'random_forest' ? 'Random Forest' :
+                    (modelType === 'xgb' || modelType === 'xgboost' ? 'XGBoost' : modelType));
+                
+                let html = '<div style="margin-bottom: 20px;">';
+                
+                // Заголовок с типом модели
+                html += `
+                    <div style="padding: 15px; background: ${isEnsemble ? '#1a3a1a' : '#1a1a1a'}; border: 2px solid ${isEnsemble ? '#00ff88' : '#333'}; border-radius: 8px; margin-bottom: 20px;">
+                        <h3 style="color: ${isEnsemble ? '#00ff88' : '#00d4ff'}; margin: 0 0 10px 0; font-size: 1.3em;">
+                            ${isEnsemble ? '🎯' : '📊'} Model Type: <span style="font-weight: bold;">${modelTypeDisplay}</span>
+                        </h3>
+                        ${isEnsemble ? '<p style="color: #aaa; margin: 0; font-size: 0.9em;">Ensemble combines Random Forest and XGBoost for better performance</p>' : ''}
+                    </div>
+                `;
+                
+                html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">';
                 
                 if (metadata.trained_at) {
                     const trainedDate = new Date(metadata.trained_at);
@@ -3733,13 +4214,73 @@
                         <span class="stat-value">${metadata.symbol || 'N/A'}</span>
                     </div>
                     <div class="stat-item">
+                        <span class="stat-label">Interval:</span>
+                        <span class="stat-value">${metadata.interval || '15'}m</span>
+                    </div>
+                    <div class="stat-item">
                         <span class="stat-label">Training Accuracy:</span>
                         <span class="stat-value">${((metadata.accuracy || 0) * 100).toFixed(2)}%</span>
                     </div>
                     <div class="stat-item">
                         <span class="stat-label">CV Accuracy:</span>
-                        <span class="stat-value">${((metadata.cv_mean || 0) * 100).toFixed(2)}%</span>
+                        <span class="stat-value">${((metadata.cv_mean || 0) * 100).toFixed(2)}% ${metadata.cv_std ? '± ' + ((metadata.cv_std || 0) * 100).toFixed(2) + '%' : ''}</span>
                     </div>
+                `;
+                
+                // Дополнительные метрики для ансамбля
+                if (isEnsemble && ensembleMetrics) {
+                    if (ensembleMetrics.precision !== null && ensembleMetrics.precision !== undefined) {
+                        html += `
+                            <div class="stat-item">
+                                <span class="stat-label">Precision:</span>
+                                <span class="stat-value">${((ensembleMetrics.precision || 0) * 100).toFixed(2)}%</span>
+                            </div>
+                        `;
+                    }
+                    if (ensembleMetrics.recall !== null && ensembleMetrics.recall !== undefined) {
+                        html += `
+                            <div class="stat-item">
+                                <span class="stat-label">Recall:</span>
+                                <span class="stat-value">${((ensembleMetrics.recall || 0) * 100).toFixed(2)}%</span>
+                            </div>
+                        `;
+                    }
+                    if (ensembleMetrics.f1_score !== null && ensembleMetrics.f1_score !== undefined) {
+                        html += `
+                            <div class="stat-item">
+                                <span class="stat-label">F1-Score:</span>
+                                <span class="stat-value">${((ensembleMetrics.f1_score || 0) * 100).toFixed(2)}%</span>
+                            </div>
+                        `;
+                    }
+                    if (ensembleMetrics.cv_f1_mean !== null && ensembleMetrics.cv_f1_mean !== undefined) {
+                        html += `
+                            <div class="stat-item">
+                                <span class="stat-label">CV F1-Score:</span>
+                                <span class="stat-value">${((ensembleMetrics.cv_f1_mean || 0) * 100).toFixed(2)}%</span>
+                            </div>
+                        `;
+                    }
+                    
+                    // Веса ансамбля
+                    if (ensembleMetrics.rf_weight !== null && ensembleMetrics.rf_weight !== undefined &&
+                        ensembleMetrics.xgb_weight !== null && ensembleMetrics.xgb_weight !== undefined) {
+                        html += `
+                            <div class="stat-item" style="grid-column: 1 / -1; margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;">
+                                <span class="stat-label" style="font-weight: bold; color: #00d4ff;">Ensemble Weights:</span>
+                                <div style="margin-top: 5px;">
+                                    <span style="color: #aaa;">Random Forest: </span>
+                                    <span class="stat-value">${((ensembleMetrics.rf_weight || 0) * 100).toFixed(1)}%</span>
+                                    <span style="color: #aaa; margin-left: 15px;">XGBoost: </span>
+                                    <span class="stat-value">${((ensembleMetrics.xgb_weight || 0) * 100).toFixed(1)}%</span>
+                                </div>
+                                ${ensembleMetrics.ensemble_method ? `<p style="color: #888; font-size: 0.85em; margin-top: 5px;">Method: ${ensembleMetrics.ensemble_method}</p>` : ''}
+                            </div>
+                        `;
+                    }
+                }
+                
+                html += `
                     <div class="stat-item">
                         <span class="stat-label">Live Win Rate:</span>
                         <span class="stat-value" style="color: ${stats.win_rate >= 50 ? '#00ff88' : '#ff4444'};">
@@ -3754,7 +4295,23 @@
                     </div>
                 `;
                 
-                html += '</div>';
+                html += '</div></div>';
+                
+                // Рекомендация использовать ансамбль, если доступен
+                if (!isEnsemble && metadata.symbol) {
+                    html += `
+                        <div style="margin-top: 20px; padding: 15px; background: #1a3a1a40; border: 1px solid #00ff88; border-radius: 4px;">
+                            <h3 style="color: #00ff88; margin-top: 0;">💡 Recommendation: Use Ensemble Model</h3>
+                            <p style="color: #aaa; margin: 10px 0;">
+                                An ensemble model (combining Random Forest and XGBoost) is available for ${metadata.symbol || 'this symbol'}.
+                                Ensemble models typically provide better performance and more robust predictions.
+                            </p>
+                            <p style="color: #888; font-size: 0.9em; margin: 5px 0;">
+                                Select an ensemble model from the dropdown above to use it.
+                            </p>
+                        </div>
+                    `;
+                }
                 
                 if (shouldRetrain) {
                     html += `
@@ -3818,16 +4375,61 @@
                 // Очищаем список
                 modelSelect.innerHTML = '';
                 
-                // Добавляем модели
+                // Группируем модели по символам
+                const modelsBySymbol = {};
                 models.forEach(model => {
-                    const option = document.createElement('option');
-                    option.value = model.path;
-                    const trainedDate = model.trained_at ? new Date(model.trained_at).toLocaleDateString() : 'Unknown';
-                    const accuracy = (model.accuracy * 100).toFixed(2);
-                    // Используем model_type напрямую (уже в правильном формате из API)
-                    const modelTypeDisplay = model.model_type || 'Unknown';
-                    option.textContent = `${model.symbol} (${model.interval}m) - ${modelTypeDisplay} - ${accuracy}% - ${trainedDate}`;
-                    modelSelect.appendChild(option);
+                    const symbol = model.symbol || 'UNKNOWN';
+                    if (!modelsBySymbol[symbol]) {
+                        modelsBySymbol[symbol] = [];
+                    }
+                    modelsBySymbol[symbol].push(model);
+                });
+                
+                // Сортируем символы
+                const sortedSymbols = Object.keys(modelsBySymbol).sort();
+                
+                // Добавляем модели, группируя по символам
+                sortedSymbols.forEach(symbol => {
+                    const symbolModels = modelsBySymbol[symbol];
+                    
+                    // Сортируем модели внутри символа: сначала ансамбли, потом по точности
+                    symbolModels.sort((a, b) => {
+                        if (a.is_ensemble && !b.is_ensemble) return -1;
+                        if (!a.is_ensemble && b.is_ensemble) return 1;
+                        return (b.accuracy || 0) - (a.accuracy || 0);
+                    });
+                    
+                    // Добавляем оптгруппу для символа
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = `${symbol} (${symbolModels.length} model${symbolModels.length > 1 ? 's' : ''})`;
+                    
+                    symbolModels.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.path;
+                        const trainedDate = model.trained_at ? new Date(model.trained_at).toLocaleDateString() : 'Unknown';
+                        const accuracy = (model.accuracy * 100).toFixed(2);
+                        const modelTypeDisplay = model.model_type || 'Unknown';
+                        
+                        // Добавляем метрики для ансамбля
+                        let metricsText = '';
+                        if (model.is_ensemble) {
+                            const metrics = [];
+                            if (model.f1_score !== null && model.f1_score !== undefined) {
+                                metrics.push(`F1: ${(model.f1_score * 100).toFixed(1)}%`);
+                            }
+                            if (model.cv_f1_mean !== null && model.cv_f1_mean !== undefined) {
+                                metrics.push(`CV F1: ${(model.cv_f1_mean * 100).toFixed(1)}%`);
+                            }
+                            if (metrics.length > 0) {
+                                metricsText = ` [${metrics.join(', ')}]`;
+                            }
+                        }
+                        
+                        option.textContent = `${modelTypeDisplay} - ${accuracy}%${metricsText} - ${trainedDate}`;
+                        optgroup.appendChild(option);
+                    });
+                    
+                    modelSelect.appendChild(optgroup);
                 });
                 
                 // Получаем текущую модель из API
@@ -3892,10 +4494,18 @@
                     statusDiv.textContent = '✅ Model selected successfully!';
                     statusDiv.style.color = '#00ff88';
                     
-                    // Обновляем информацию о модели
+                    // Обновляем информацию о модели и список выбранных моделей для всех пар
+                    // Используем небольшую задержку, чтобы дать серверу время обновить настройки
                     setTimeout(() => {
                         if (typeof loadMLModelInfo !== 'undefined') {
                             loadMLModelInfo();
+                        }
+                    }, 300);
+                    
+                    // Обновляем список выбранных моделей для всех пар с небольшой задержкой
+                    setTimeout(() => {
+                        if (typeof loadAllPairsModelsInfo !== 'undefined') {
+                            loadAllPairsModelsInfo();
                         }
                     }, 500);
                     
@@ -3915,6 +4525,76 @@
             }
         }
         window.selectMLModel = selectMLModel;
+        
+        async function saveMLModelTypeForAll() {
+            try {
+                const modelTypeSelect = document.getElementById('ml-model-type-for-all');
+                const statusDiv = document.getElementById('model-type-status');
+                
+                if (!modelTypeSelect) {
+                    console.error('ml-model-type-for-all select not found');
+                    return;
+                }
+                
+                const modelType = modelTypeSelect.value || "";
+                
+                // Сохраняем через API
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        app: {
+                            ml_model_type_for_all: modelType || null
+                        }
+                    })
+                });
+                
+                // Проверяем Content-Type перед парсингом JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`Server returned non-JSON response (${response.status}): ${text.substring(0, 100)}`);
+                }
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    if (statusDiv) {
+                        const displayType = modelType || 'Auto';
+                        statusDiv.innerHTML = `<span style="color: #00ff88;">✔ Model type for all pairs saved successfully! (${displayType})</span>`;
+                    }
+                    console.log('Model type for all pairs saved:', modelType || 'Auto');
+                    
+                    // Обновляем значение из ответа сервера, если оно есть
+                    if (data.settings && data.settings.ml_model_type_for_all !== undefined) {
+                        modelTypeSelect.value = data.settings.ml_model_type_for_all || "";
+                    }
+                    
+                    // Перезагружаем настройки через 1 секунду
+                    setTimeout(() => {
+                        if (typeof loadSettings !== 'undefined') {
+                            loadSettings();
+                        }
+                    }, 1000);
+                } else {
+                    const errorMsg = data.error || data.message || 'Failed to save model type';
+                    if (statusDiv) {
+                        statusDiv.innerHTML = `<span style="color: #ff4444;">Error: ${errorMsg}</span>`;
+                    }
+                    console.error('Error saving model type:', errorMsg);
+                }
+            } catch (error) {
+                console.error('Error saving model type for all pairs:', error);
+                const statusDiv = document.getElementById('model-type-status');
+                if (statusDiv) {
+                    statusDiv.innerHTML = `<span style="color: #ff4444;">Error: ${error.message}</span>`;
+                }
+            }
+        }
+        
+        window.saveMLModelTypeForAll = saveMLModelTypeForAll;
         
         async function retrainMLModel() {
             try {
@@ -3970,6 +4650,9 @@
                         if (typeof loadMLModelInfo !== 'undefined') {
                             setTimeout(loadMLModelInfo, 10000); // Обновляем через 10 секунд
                         }
+                        if (typeof loadAllPairsModelsInfo !== 'undefined') {
+                            setTimeout(loadAllPairsModelsInfo, 10000); // Обновляем через 10 секунд
+                        }
                     }, 5000);
                 } else {
                     statusDiv.textContent = `❌ Error: ${result.error || 'Unknown error'}`;
@@ -3992,6 +4675,62 @@
             }
         }
         window.retrainMLModel = retrainMLModel;
+        
+        async function retrainAllMLModels() {
+            try {
+                const retrainAllBtn = document.getElementById('retrain-all-btn');
+                const statusDiv = document.getElementById('retrain-all-status');
+                
+                if (!retrainAllBtn || !statusDiv) {
+                    alert('Error: Could not find retrain elements');
+                    return;
+                }
+                
+                if (!confirm(`Are you sure you want to retrain ALL ML models?\n\nThis will retrain models for:\n- BTCUSDT\n- ETHUSDT\n- SOLUSDT\n\nEach pair will train RF, XGBoost, and Ensemble models.\n\nThis process may take 10-20 minutes.`)) {
+                    return;
+                }
+                
+                retrainAllBtn.disabled = true;
+                retrainAllBtn.textContent = 'Training All Models...';
+                statusDiv.innerHTML = '<span style="color: #ffaa00;">⏳ Starting model retraining for all pairs... This may take 10-20 minutes. Check the console for progress.</span>';
+                
+                const response = await fetch('/api/ml/model/retrain-all', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to start retraining');
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusDiv.innerHTML = '<span style="color: #00ff88;">✅ Model retraining started for all pairs! Check the console for progress. The models will be updated when training completes.</span>';
+                    console.log('Model retraining started for all pairs:', data.message);
+                } else {
+                    throw new Error(data.error || 'Failed to start retraining');
+                }
+            } catch (error) {
+                console.error('Error retraining all ML models:', error);
+                const statusDiv = document.getElementById('retrain-all-status');
+                const retrainAllBtn = document.getElementById('retrain-all-btn');
+                
+                if (statusDiv) {
+                    statusDiv.innerHTML = `<span style="color: #ff4444;">❌ Error: ${error.message}</span>`;
+                }
+                
+                if (retrainAllBtn) {
+                    retrainAllBtn.disabled = false;
+                    retrainAllBtn.textContent = 'Retrain All ML Models';
+                }
+            }
+        }
+        
+        window.retrainAllMLModels = retrainAllMLModels;
         
         async function loadWalletData() {
             try {
@@ -4264,6 +5003,9 @@
             }
             if (typeof loadMLModelInfo !== 'undefined') {
                 loadMLModelInfo();
+            }
+            if (typeof loadAllPairsModelsInfo !== 'undefined') {
+                loadAllPairsModelsInfo();
             }
         }, 100);
         

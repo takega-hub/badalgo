@@ -29,7 +29,7 @@ MATPLOTLIB_AVAILABLE = False
 from bot.config import load_settings, AppSettings, StrategyParams, RiskParams
 from bot.exchange.bybit_client import BybitClient
 from bot.live import _get_balance, _get_position, _get_open_orders, _timeframe_to_bybit_interval, run_live_from_api
-from bot.web.history import get_trades, get_signals, get_strategy_stats
+from bot.web.history import get_trades, get_signals, get_strategy_stats, get_smc_history
 from bot.indicators import prepare_with_indicators
 from bot.strategy import Action, build_signals, enrich_for_strategy, detect_market_phase, MarketPhase
 from bot.multi_symbol_manager import MultiSymbolManager
@@ -144,16 +144,21 @@ def _save_settings_to_env(settings: AppSettings):
         # Создаем словарь существующих переменных
         env_dict = {}
         keys_to_update = {
-            'ENABLE_TREND_STRATEGY', 'ENABLE_FLAT_STRATEGY', 'ENABLE_ML_STRATEGY', 'TRADING_SYMBOL',
-            'STRATEGY_PRIORITY',  # Приоритет стратегии
+            'ENABLE_TREND_STRATEGY', 'ENABLE_FLAT_STRATEGY', 'ENABLE_ML_STRATEGY', 
+            'ENABLE_MOMENTUM_STRATEGY', 
+            'ENABLE_LIQUIDITY_SWEEP_STRATEGY',
+            'ENABLE_SMC_STRATEGY',
+            'TRADING_SYMBOL', 'STRATEGY_PRIORITY',  # Приоритет стратегии
             'ML_CONFIDENCE_THRESHOLD', 'ML_MIN_SIGNAL_STRENGTH', 'ML_STABILITY_FILTER',
+            'ML_MODEL_TYPE_FOR_ALL',  # Тип модели для всех пар
             # Strategy Parameters (Trend/Flat)
             'ADX_THRESHOLD', 'ADX_LENGTH', 'DI_LENGTH', 'BREAKOUT_LOOKBACK', 'BREAKOUT_VOLUME_MULT',
+            'MOMENTUM_ADX_THRESHOLD',
             'SMA_LENGTH', 'PULLBACK_TOLERANCE', 'VOLUME_SPIKE_MULT', 'CONSOLIDATION_BARS', 'CONSOLIDATION_RANGE_PCT',
             'RSI_LENGTH', 'RSI_FLOOR', 'RSI_CEILING',
             # Range Strategy Parameters
             'BB_LENGTH', 'BB_STD', 'RANGE_RSI_OVERSOLD', 'RANGE_RSI_OVERBOUGHT', 'RANGE_VOLUME_MULT',
-            'RANGE_TP_AGGRESSIVE', 'RANGE_STOP_LOSS_PCT',
+            'RANGE_TP_AGGRESSIVE', 'RANGE_STOP_LOSS_PCT', 'RANGE_BB_TOUCH_TOLERANCE_PCT',
             # Risk Management параметры
             'MAX_POSITION_USD', 'BASE_ORDER_USD', 'ADD_ORDER_USD', 'STOP_LOSS_PCT', 'TAKE_PROFIT_PCT',
             'BALANCE_PERCENT_PER_TRADE',
@@ -174,6 +179,9 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ENABLE_TREND_STRATEGY'] = str(settings.enable_trend_strategy).lower()
         env_dict['ENABLE_FLAT_STRATEGY'] = str(settings.enable_flat_strategy).lower()
         env_dict['ENABLE_ML_STRATEGY'] = str(settings.enable_ml_strategy).lower()
+        env_dict['ENABLE_MOMENTUM_STRATEGY'] = str(settings.enable_momentum_strategy).lower()
+        env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY'] = str(settings.enable_liquidity_sweep_strategy).lower()
+        env_dict['ENABLE_SMC_STRATEGY'] = str(settings.enable_smc_strategy).lower()
         env_dict['STRATEGY_PRIORITY'] = str(settings.strategy_priority).lower()
         env_dict['TRADING_SYMBOL'] = str(settings.symbol)
         
@@ -181,6 +189,11 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ML_CONFIDENCE_THRESHOLD'] = str(settings.ml_confidence_threshold)
         env_dict['ML_MIN_SIGNAL_STRENGTH'] = str(settings.ml_min_signal_strength)
         env_dict['ML_STABILITY_FILTER'] = str(settings.ml_stability_filter).lower()
+        if settings.ml_model_type_for_all:
+            env_dict['ML_MODEL_TYPE_FOR_ALL'] = str(settings.ml_model_type_for_all).lower()
+        else:
+            # Если None, удаляем из .env (очищаем настройку)
+            env_dict.pop('ML_MODEL_TYPE_FOR_ALL', None)
         
         # Сохраняем параметры стратегии (Trend/Flat)
         env_dict['ADX_THRESHOLD'] = str(settings.strategy.adx_threshold)
@@ -188,6 +201,7 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['DI_LENGTH'] = str(settings.strategy.di_length)
         env_dict['BREAKOUT_LOOKBACK'] = str(settings.strategy.breakout_lookback)
         env_dict['BREAKOUT_VOLUME_MULT'] = str(settings.strategy.breakout_volume_mult)
+        env_dict['MOMENTUM_ADX_THRESHOLD'] = str(settings.strategy.momentum_adx_threshold)
         env_dict['SMA_LENGTH'] = str(settings.strategy.sma_length)
         env_dict['PULLBACK_TOLERANCE'] = str(settings.strategy.pullback_tolerance)
         env_dict['VOLUME_SPIKE_MULT'] = str(settings.strategy.volume_spike_mult)
@@ -205,6 +219,7 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['RANGE_VOLUME_MULT'] = str(settings.strategy.range_volume_mult)
         env_dict['RANGE_TP_AGGRESSIVE'] = str(settings.strategy.range_tp_aggressive).lower()
         env_dict['RANGE_STOP_LOSS_PCT'] = str(settings.strategy.range_stop_loss_pct)
+        env_dict['RANGE_BB_TOUCH_TOLERANCE_PCT'] = str(settings.strategy.range_bb_touch_tolerance_pct)
         
         # Сохраняем параметры управления рисками
         env_dict['MAX_POSITION_USD'] = str(settings.risk.max_position_usd)
@@ -244,6 +259,9 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ENABLE_TREND_STRATEGY={env_dict['ENABLE_TREND_STRATEGY']}\n")
             f.write(f"ENABLE_FLAT_STRATEGY={env_dict['ENABLE_FLAT_STRATEGY']}\n")
             f.write(f"ENABLE_ML_STRATEGY={env_dict['ENABLE_ML_STRATEGY']}\n")
+            f.write(f"ENABLE_MOMENTUM_STRATEGY={env_dict['ENABLE_MOMENTUM_STRATEGY']}\n")
+            f.write(f"ENABLE_LIQUIDITY_SWEEP_STRATEGY={env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY']}\n")
+            f.write(f"ENABLE_SMC_STRATEGY={env_dict['ENABLE_SMC_STRATEGY']}\n")
             f.write(f"STRATEGY_PRIORITY={env_dict['STRATEGY_PRIORITY']}\n")
             f.write(f"TRADING_SYMBOL={env_dict['TRADING_SYMBOL']}\n")
             
@@ -252,6 +270,8 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ML_CONFIDENCE_THRESHOLD={env_dict['ML_CONFIDENCE_THRESHOLD']}\n")
             f.write(f"ML_MIN_SIGNAL_STRENGTH={env_dict['ML_MIN_SIGNAL_STRENGTH']}\n")
             f.write(f"ML_STABILITY_FILTER={env_dict['ML_STABILITY_FILTER']}\n")
+            if 'ML_MODEL_TYPE_FOR_ALL' in env_dict:
+                f.write(f"ML_MODEL_TYPE_FOR_ALL={env_dict['ML_MODEL_TYPE_FOR_ALL']}\n")
             
             # Добавляем параметры стратегии (Trend/Flat)
             f.write(f"\n# Strategy Parameters - Trend/Flat (auto-updated by admin panel)\n")
@@ -702,12 +722,47 @@ def api_status():
                                     "take_profit": (symbol_position.get('take_profit') or symbol_position.get('takeProfit') or ''),
                                     "stop_loss": (symbol_position.get('stop_loss') or symbol_position.get('stopLoss') or ''),
                                     "leverage": symbol_position.get('leverage', settings.leverage),
+                                    "entry_reason": None,  # Будет заполнено ниже
+                                    "strategy_type": None,  # Будет заполнено ниже
                                 }
                                 if symbol_position and symbol_position.get("side") and (float(symbol_position.get('size', 0)) > 0)
                                 else None
                             ),
                             "open_orders": len(symbol_orders) if symbol_orders else 0
                         }
+                        
+                        # Добавляем информацию о сигнале открытия позиции для этого символа
+                        if symbols_status[symbol].get("position") and symbols_status[symbol]["position"].get("side"):
+                            try:
+                                from bot.web.history import _load_history
+                                history = _load_history()
+                                trades = history.get("trades", [])
+                                
+                                position_side = symbols_status[symbol]["position"].get("side", "").upper()
+                                position_side_normalized = "long" if position_side in ("LONG", "BUY") else "short" if position_side in ("SHORT", "SELL") else None
+                                
+                                if position_side_normalized:
+                                    # Ищем последнюю открытую сделку (без exit_time) для этого символа и направления
+                                    open_trades = [
+                                        t for t in trades
+                                        if t.get("symbol", "").upper() == symbol.upper() and
+                                        t.get("side", "").lower() == position_side_normalized and
+                                        (not t.get("exit_time") or t.get("exit_time") == "" or t.get("exit_time") is None)
+                                    ]
+                                    
+                                    if open_trades:
+                                        # Берем последнюю открытую сделку (самую свежую по entry_time)
+                                        open_trades.sort(key=lambda x: x.get("entry_time", ""), reverse=True)
+                                        last_open_trade = open_trades[0]
+                                        
+                                        entry_reason = last_open_trade.get("entry_reason", "")
+                                        strategy_type = last_open_trade.get("strategy_type", "unknown")
+                                        
+                                        if symbols_status[symbol].get("position"):
+                                            symbols_status[symbol]["position"]["entry_reason"] = entry_reason
+                                            symbols_status[symbol]["position"]["strategy_type"] = strategy_type
+                            except Exception as e:
+                                print(f"[web] Error getting entry signal info for {symbol}: {e}")
                     except Exception as e:
                         print(f"[web] Error getting status for {symbol}: {e}")
                         import traceback
@@ -844,11 +899,48 @@ def api_status():
                 "take_profit": (position.get('take_profit') or position.get('takeProfit') or '') if position else '',
                 "stop_loss": (position.get('stop_loss') or position.get('stopLoss') or '') if position else '',
                 "leverage": position.get('leverage', settings.leverage) if position else settings.leverage,
+                "entry_reason": None,  # Будет заполнено ниже
+                "strategy_type": None,  # Будет заполнено ниже
             } if position else None,
             "open_orders": len(orders) if isinstance(orders, list) else 0,
             "symbols_status": symbols_status if symbols_status else None,
             "symbol": primary_symbol,  # Добавляем символ в ответ для использования в интерфейсе
         }
+        
+        # Добавляем информацию о сигнале открытия позиции, если позиция открыта
+        if position and position.get("side") and float(position.get('size', 0)) > 0:
+            try:
+                from bot.web.history import _load_history
+                history = _load_history()
+                trades = history.get("trades", [])
+                
+                # Ищем открытую позицию (сделка без exit_time или с пустым exit_time)
+                # для текущего символа и соответствующего направления
+                position_side = position.get("side", "").upper()
+                position_side_normalized = "long" if position_side in ("LONG", "BUY") else "short" if position_side in ("SHORT", "SELL") else None
+                
+                if position_side_normalized:
+                    # Ищем последнюю открытую сделку (без exit_time) для этого символа и направления
+                    open_trades = [
+                        t for t in trades
+                        if t.get("symbol", "").upper() == primary_symbol.upper() and
+                        t.get("side", "").lower() == position_side_normalized and
+                        (not t.get("exit_time") or t.get("exit_time") == "" or t.get("exit_time") is None)
+                    ]
+                    
+                    if open_trades:
+                        # Берем последнюю открытую сделку (самую свежую по entry_time)
+                        open_trades.sort(key=lambda x: x.get("entry_time", ""), reverse=True)
+                        last_open_trade = open_trades[0]
+                        
+                        entry_reason = last_open_trade.get("entry_reason", "")
+                        strategy_type = last_open_trade.get("strategy_type", "unknown")
+                        
+                        if response_data.get("position"):
+                            response_data["position"]["entry_reason"] = entry_reason
+                            response_data["position"]["strategy_type"] = strategy_type
+            except Exception as e:
+                print(f"[web] Error getting entry signal info for {primary_symbol}: {e}")
         
         # Добавляем статистику PnL для выбранного символа
         try:
@@ -879,7 +971,7 @@ def api_status():
                 "is_running": bot_state.get("is_running", False) if bot_state else False,
                 "current_status": "Error",
                 "last_error": str(e),
-                "last_update": datetime.now().isoformat()
+                "last_update": datetime.now(timezone.utc).isoformat()
             },
             "account": {
                 "balance": "N/A",
@@ -891,7 +983,6 @@ def api_status():
             "open_orders": 0,
             "symbols_status": {}
         }), 200  # Возвращаем 200, чтобы фронтенд мог обработать ошибку в data.error
-
 
 @app.route("/api/settings")
 @login_required
@@ -959,8 +1050,12 @@ def api_get_settings():
                 "enable_trend_strategy": settings.enable_trend_strategy,
                 "enable_flat_strategy": settings.enable_flat_strategy,
                 "enable_ml_strategy": settings.enable_ml_strategy,
+                "enable_momentum_strategy": settings.enable_momentum_strategy,
+                "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
+                "enable_smc_strategy": settings.enable_smc_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
+                "ml_model_type_for_all": settings.ml_model_type_for_all or "",
                 "ml_confidence_threshold": settings.ml_confidence_threshold,
                 "ml_min_signal_strength": settings.ml_min_signal_strength,
                 "ml_stability_filter": settings.ml_stability_filter,
@@ -1039,7 +1134,9 @@ def api_update_settings():
             for key, value in app_data.items():
                 if hasattr(settings, key):
                     # Специальная обработка для boolean значений
-                    if key in ("enable_trend_strategy", "enable_flat_strategy", "enable_ml_strategy", "ml_stability_filter"):
+                    if key in ("enable_trend_strategy", "enable_flat_strategy", "enable_ml_strategy", 
+                               "enable_momentum_strategy", 
+                               "enable_liquidity_sweep_strategy", "enable_smc_strategy", "ml_stability_filter"):
                         setattr(settings, key, bool(value))
                     elif key == "symbol":
                         # Проверяем доступные пары
@@ -1070,12 +1167,26 @@ def api_update_settings():
                             return jsonify({"error": f"Invalid ml_confidence_threshold: {value}. Must be a number between 0 and 1. Error: {e}"}), 400
                     elif key == "strategy_priority":
                         # Проверяем допустимые значения приоритета стратегии
-                        allowed_priorities = ["trend", "ml", "hybrid"]
+                        allowed_priorities = ["trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid"]
                         if value in allowed_priorities:
                             setattr(settings, key, value)
                             print(f"[web] Strategy priority updated: {value}")
                         else:
                             return jsonify({"error": f"Invalid strategy_priority: {value}. Allowed: {', '.join(allowed_priorities)}"}), 400
+                    elif key == "ml_model_type_for_all":
+                        # Проверяем допустимые значения типа модели для всех пар
+                        allowed_types = ["rf", "xgb", "ensemble", ""]
+                        # Безопасная обработка: проверяем None и пустые значения
+                        if value is None or value == "":
+                            # Если пустое значение, устанавливаем None (авто-выбор)
+                            setattr(settings, key, None)
+                            print(f"[web] ML model type for all pairs updated: None (auto)")
+                        elif isinstance(value, str) and value.lower() in allowed_types:
+                            # Если значение - строка и входит в допустимые, устанавливаем в нижнем регистре
+                            setattr(settings, key, value.lower())
+                            print(f"[web] ML model type for all pairs updated: {value.lower()}")
+                        else:
+                            return jsonify({"error": f"Invalid ml_model_type_for_all: {value}. Allowed: {', '.join([t for t in allowed_types if t])}, or empty for auto"}), 400
                     elif key in ("timeframe", "leverage", "live_poll_seconds"):
                         # Обрабатываем числовые значения для app параметров (могут прийти с запятой)
                         if isinstance(value, str):
@@ -1114,6 +1225,8 @@ def api_update_settings():
         # Принудительно очищаем кэш переменных окружения (включая ML настройки, параметры стратегии, риска и app)
         env_keys_to_clear = [
             "TRADING_SYMBOL", "ENABLE_TREND_STRATEGY", "ENABLE_FLAT_STRATEGY", "ENABLE_ML_STRATEGY",
+            "ENABLE_MOMENTUM_STRATEGY", 
+            "ENABLE_LIQUIDITY_SWEEP_STRATEGY",
             "STRATEGY_PRIORITY",  # Приоритет стратегии
             "ML_CONFIDENCE_THRESHOLD", "ML_MIN_SIGNAL_STRENGTH", "ML_STABILITY_FILTER",
             # Strategy Parameters
@@ -1143,6 +1256,7 @@ def api_update_settings():
         set_settings(settings)
         
         print(f"[web] Settings updated. ML config: confidence={settings.ml_confidence_threshold}, strength={settings.ml_min_signal_strength}, stability={settings.ml_stability_filter}")
+        print(f"[web] Strategy settings: TREND={settings.enable_trend_strategy}, FLAT={settings.enable_flat_strategy}, ML={settings.enable_ml_strategy}, MOMENTUM={settings.enable_momentum_strategy}, LIQUIDITY={settings.enable_liquidity_sweep_strategy}")
         
         # Возвращаем обновленные настройки в ответе, чтобы фронтенд мог их использовать
         # Используем settings после перезагрузки, чтобы гарантировать актуальные значения
@@ -1154,13 +1268,17 @@ def api_update_settings():
                 "enable_trend_strategy": settings.enable_trend_strategy,
                 "enable_flat_strategy": settings.enable_flat_strategy,
                 "enable_ml_strategy": settings.enable_ml_strategy,
+                "enable_momentum_strategy": settings.enable_momentum_strategy,
+                "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
+                "enable_smc_strategy": settings.enable_smc_strategy,
+                "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
+                "ml_model_type_for_all": settings.ml_model_type_for_all or "",
             }
         }
         return jsonify(response_data)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
-
 
 @app.route("/api/trades")
 @login_required
@@ -1265,6 +1383,26 @@ def api_all_strategy_stats():
     return jsonify(all_stats)
 
 
+@app.route("/api/smc/history")
+@login_required
+def api_smc_history():
+    """Получить историю сигналов SMC из CSV файла."""
+    try:
+        limit = request.args.get("limit", 100, type=int)
+        smc_history = get_smc_history(limit=limit)
+        
+        return jsonify({
+            "success": True,
+            "history": smc_history,
+            "total": len(smc_history),
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/ml/model/info")
 @login_required
 def api_ml_model_info():
@@ -1305,11 +1443,12 @@ def api_ml_model_info():
     if not metadata:
         model_path = Path(settings.ml_model_path)
         if model_path.exists():
-            # Пытаемся извлечь информацию из имени файла: rf_ETHUSDT_15.pkl
+            # Пытаемся извлечь информацию из имени файла: rf_ETHUSDT_15.pkl или ensemble_ETHUSDT_15.pkl
             filename = model_path.name
             parts = filename.replace('.pkl', '').split('_')
             symbol = parts[1] if len(parts) > 1 else settings.symbol
             interval = parts[2] if len(parts) > 2 else "15"
+            model_type_from_filename = parts[0].lower() if len(parts) > 0 else "unknown"
             
             # Получаем дату модификации файла
             mtime = os.path.getmtime(settings.ml_model_path)
@@ -1325,10 +1464,15 @@ def api_ml_model_info():
                     metadata = {
                         "symbol": symbol,
                         "interval": interval,
+                        "model_type": model_type_from_filename,
                         "trained_at": trained_at,
                         "accuracy": metrics.get("accuracy", 0.0),
                         "cv_mean": metrics.get("cv_mean", 0.0),
                         "cv_std": metrics.get("cv_std", 0.0),
+                        "precision": metrics.get("precision", None),
+                        "recall": metrics.get("recall", None),
+                        "f1_score": metrics.get("f1_score", None),
+                        "cv_f1_mean": metrics.get("cv_f1_mean", None),
                     }
             except Exception as e:
                 print(f"[web] Error loading model data: {e}")
@@ -1336,6 +1480,7 @@ def api_ml_model_info():
                 metadata = {
                     "symbol": symbol,
                     "interval": interval,
+                    "model_type": model_type_from_filename,
                     "trained_at": trained_at,
                     "accuracy": 0.0,
                     "cv_mean": 0.0,
@@ -1375,13 +1520,154 @@ def api_ml_model_info():
                 should_retrain = True
                 retrain_reasons.append(f"Model is {days_old} days old")
     
+    # Определяем, является ли модель ансамблем
+    model_type = metadata.get("model_type", "").lower() if metadata else ""
+    is_ensemble = "ensemble" in model_type
+    
+    # Получаем дополнительные метрики для ансамбля
+    ensemble_metrics = {}
+    if is_ensemble and metadata:
+        ensemble_metrics = {
+            "precision": metadata.get("precision"),
+            "recall": metadata.get("recall"),
+            "f1_score": metadata.get("f1_score"),
+            "cv_f1_mean": metadata.get("cv_f1_mean"),
+            "rf_weight": metadata.get("rf_weight"),
+            "xgb_weight": metadata.get("xgb_weight"),
+            "ensemble_method": metadata.get("ensemble_method"),
+        }
+    
     return jsonify({
         "metadata": metadata,
         "stats": ml_stats,
         "should_retrain": should_retrain,
         "retrain_reasons": retrain_reasons,
         "current_model_path": settings.ml_model_path if settings and settings.ml_model_path else None,
+        "is_ensemble": is_ensemble,
+        "ensemble_metrics": ensemble_metrics,
     })
+
+
+@app.route("/api/ml/models/all-pairs")
+@login_required
+def api_ml_models_all_pairs():
+    """Получить информацию о выбранных моделях для всех пар."""
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        from pathlib import Path
+        from bot.ml.model_trainer import ModelTrainer
+        from bot.multi_symbol_manager import MultiSymbolManager
+        
+        # Получаем менеджер для доступа к настройкам для каждой пары
+        # Создаем временный менеджер для получения информации о моделях
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        models_info = {}
+        
+        # Получаем предпочтение типа модели
+        model_type_preference = getattr(settings, 'ml_model_type_for_all', None)
+        
+        models_dir = Path(__file__).parent.parent.parent / "ml_models"
+        trainer = ModelTrainer()
+        
+        for symbol in symbols:
+            # Ищем модель для символа
+            found_model = None
+            
+            # Сначала проверяем, есть ли явно выбранная модель в settings.ml_model_path
+            # и соответствует ли она текущему символу И типу модели (если ml_model_type_for_all задан)
+            if settings.ml_model_path:
+                model_path_obj = Path(settings.ml_model_path)
+                if model_path_obj.exists():
+                    # Извлекаем символ и тип модели из имени файла модели
+                    model_filename = model_path_obj.name
+                    # Формат: ensemble_BTCUSDT_15.pkl или rf_ETHUSDT_15.pkl
+                    if "_" in model_filename:
+                        parts = model_filename.replace('.pkl', '').split('_')
+                        if len(parts) >= 2 and parts[1] == symbol:
+                            # Модель соответствует текущему символу
+                            model_type_from_filename = parts[0].lower()
+                            if model_type_preference:
+                                # Если задан глобальный тип модели, проверяем соответствие
+                                if model_type_from_filename == model_type_preference.lower():
+                                    found_model = str(model_path_obj)
+                                    print(f"[web] Using explicitly selected model for {symbol}: {found_model} (matches type: {model_type_preference})")
+                                else:
+                                    # Явно выбранная модель не соответствует глобальному типу - игнорируем
+                                    print(
+                                        f"[web] Explicit model for {symbol} "
+                                        f"({model_type_from_filename}) doesn't match global preference "
+                                        f"({model_type_preference}), ignoring it"
+                                    )
+                            else:
+                                # Глобальный тип не задан - используем явно выбранную модель
+                                found_model = str(model_path_obj)
+                                print(f"[web] Using explicitly selected model for {symbol}: {found_model}")
+            
+            # Если явно выбранная модель не найдена или не соответствует символу/типу, ищем автоматически
+            if not found_model:
+                if model_type_preference:
+                    # Ищем модель указанного типа
+                    pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                    for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                        if model_file.is_file():
+                            found_model = str(model_file)
+                            break
+                else:
+                    # Автоматический выбор: предпочитаем ensemble > rf > xgb
+                    for model_type in ["ensemble", "rf", "xgb"]:
+                        pattern = f"{model_type}_{symbol}_*.pkl"
+                        for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                            if model_file.is_file():
+                                found_model = str(model_file)
+                                break
+                        if found_model:
+                            break
+            
+            if found_model:
+                try:
+                    metadata = trainer.load_model_metadata(found_model)
+                    
+                    # Если метаданных нет, извлекаем из имени файла
+                    if not metadata:
+                        filename = Path(found_model).name
+                        parts = filename.replace('.pkl', '').split('_')
+                        if len(parts) >= 3:
+                            metadata = {
+                                "symbol": parts[1],
+                                "interval": parts[2],
+                                "model_type": parts[0].lower(),
+                            }
+                    
+                    models_info[symbol] = {
+                        "model_path": found_model,
+                        "model_name": Path(found_model).name,
+                        "metadata": metadata or {},
+                        "found": True,
+                    }
+                except Exception as e:
+                    print(f"[web] Error loading model info for {symbol}: {e}")
+                    models_info[symbol] = {
+                        "found": False,
+                        "error": str(e),
+                    }
+            else:
+                models_info[symbol] = {
+                    "found": False,
+                    "error": "Model not found",
+                }
+        
+        return jsonify({
+            "models": models_info,
+            "model_type_preference": model_type_preference or "auto",
+        })
+        
+    except Exception as e:
+        print(f"[web] Error in api_ml_models_all_pairs: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/ml/models/list")
@@ -1464,8 +1750,19 @@ def api_ml_models_list():
                     "random_forest": "Random Forest",
                     "xgb": "XGBoost",
                     "xgboost": "XGBoost",
+                    "ensemble": "🎯 Ensemble (RF + XGBoost)",
+                    "ensemble_weighted": "🎯 Ensemble (Weighted)",
+                    "ensemble_voting": "🎯 Ensemble (Voting)",
                     "unknown": "Unknown"
                 }.get(model_type.lower(), model_type.upper())
+                
+                # Получаем дополнительные метрики для ансамбля
+                cv_mean = metadata.get("cv_mean", 0.0) if metadata else 0.0
+                cv_std = metadata.get("cv_std", 0.0) if metadata else 0.0
+                precision = metadata.get("precision", None) if metadata else None
+                recall = metadata.get("recall", None) if metadata else None
+                f1_score = metadata.get("f1_score", None) if metadata else None
+                cv_f1_mean = metadata.get("cv_f1_mean", None) if metadata else None
                 
                 models.append({
                     "path": str(model_file),
@@ -1476,6 +1773,13 @@ def api_ml_models_list():
                     "model_type_raw": model_type,  # Сохраняем исходное значение для совместимости
                     "trained_at": metadata.get("trained_at", None) if metadata else None,
                     "accuracy": metadata.get("accuracy", 0.0) if metadata else 0.0,
+                    "cv_mean": cv_mean,
+                    "cv_std": cv_std,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1_score": f1_score,
+                    "cv_f1_mean": cv_f1_mean,
+                    "is_ensemble": "ensemble" in model_type.lower(),
                 })
             except Exception as e:
                 print(f"[web] Error loading model metadata for {model_file}: {e}")
@@ -1537,7 +1841,7 @@ def api_ml_model_select():
 @app.route("/api/ml/model/retrain", methods=["POST"])
 @login_required
 def api_ml_model_retrain():
-    """Переобучить ML модель."""
+    """Переобучить ML модель для одной пары."""
     if not settings:
         return jsonify({"error": "Settings not loaded"}), 500
     
@@ -1586,57 +1890,86 @@ def api_ml_model_retrain():
                 # Feature Engineering
                 feature_engineer = FeatureEngineer()
                 df_features = feature_engineer.create_technical_indicators(df_raw)
+                print(f"[web] ✅ Created {len(feature_engineer.get_feature_names())} features for {symbol}")
+                
+                # Используем новые параметры (как в train_ml_model.py)
+                threshold_pct = 0.2
                 df_with_target = feature_engineer.create_target_variable(
                     df_features,
                     forward_periods=4,
-                    threshold_pct=0.02,
+                    threshold_pct=threshold_pct,
+                    use_atr_threshold=True,
+                    use_risk_adjusted=True,
+                    min_risk_reward_ratio=1.5,
                 )
+                print(f"[web] ✅ Created target variable for {symbol}")
+                print(f"[web]   Target distribution: {df_with_target['target'].value_counts().to_dict()}")
                 
                 X, y = feature_engineer.prepare_features_for_ml(df_with_target)
                 
                 # Обучение
                 trainer = ModelTrainer()
                 
-                # Обучаем обе модели
-                rf_model, rf_metrics = trainer.train_random_forest_classifier(X, y)
-                xgb_model, xgb_metrics = trainer.train_xgboost_classifier(X, y)
-                
-                # Выбираем лучшую
-                if xgb_metrics['cv_mean'] > rf_metrics['cv_mean']:
-                    best_model = xgb_model
-                    best_metrics = xgb_metrics
-                    model_name = "XGBoost"
-                    filename = f"xgb_{symbol}_{interval}.pkl"
-                else:
-                    best_model = rf_model
-                    best_metrics = rf_metrics
-                    model_name = "Random Forest"
-                    filename = f"rf_{symbol}_{interval}.pkl"
-                
-                # Определяем model_type из имени файла
-                model_type = "rf" if filename.startswith("rf_") else "xgb" if filename.startswith("xgb_") else "unknown"
-                
-                # Сохраняем модель
-                model_path = trainer.save_model(
-                    best_model,
+                # Обучаем все три модели (RF, XGB, Ensemble)
+                print(f"[web] --- Training Random Forest for {symbol} ---")
+                rf_model, rf_metrics = trainer.train_random_forest_classifier(
+                    X, y,
+                    n_estimators=100,
+                    max_depth=10,
+                )
+                trainer.save_model(
+                    rf_model,
                     trainer.scaler,
                     feature_engineer.get_feature_names(),
-                    best_metrics,
-                    filename,
+                    rf_metrics,
+                    f"rf_{symbol}_{interval}.pkl",
                     symbol=symbol,
                     interval=interval,
-                    model_type=model_type,
                 )
+                print(f"[web] ✅ Saved RF model for {symbol}")
                 
-                # Обновляем путь к модели в настройках
-                settings.ml_model_path = str(model_path)
+                print(f"[web] --- Training XGBoost for {symbol} ---")
+                xgb_model, xgb_metrics = trainer.train_xgboost_classifier(
+                    X, y,
+                    n_estimators=100,
+                    max_depth=6,
+                    learning_rate=0.1,
+                )
+                trainer.save_model(
+                    xgb_model,
+                    trainer.scaler,
+                    feature_engineer.get_feature_names(),
+                    xgb_metrics,
+                    f"xgb_{symbol}_{interval}.pkl",
+                    symbol=symbol,
+                    interval=interval,
+                )
+                print(f"[web] ✅ Saved XGB model for {symbol}")
                 
-                # Сохраняем в .env
-                _save_settings_to_env(settings)
-                
-                # Обновляем в shared_settings
-                from bot.shared_settings import set_settings
-                set_settings(settings)
+                print(f"[web] --- Training Ensemble for {symbol} ---")
+                ensemble_model, ensemble_metrics = trainer.train_ensemble(
+                    X, y,
+                    rf_n_estimators=100,
+                    rf_max_depth=10,
+                    xgb_n_estimators=100,
+                    xgb_max_depth=6,
+                    xgb_learning_rate=0.1,
+                    ensemble_method="weighted_average",
+                )
+                trainer.save_model(
+                    ensemble_model,
+                    trainer.scaler,
+                    feature_engineer.get_feature_names(),
+                    ensemble_metrics,
+                    f"ensemble_{symbol}_{interval}.pkl",
+                    symbol=symbol,
+                    interval=interval,
+                    model_type="ensemble_weighted",
+                )
+                print(f"[web] ✅ Saved Ensemble model for {symbol}")
+                print(f"[web]   Ensemble CV Accuracy: {ensemble_metrics['cv_mean']:.4f}")
+                print(f"[web]   Ensemble F1-Score: {ensemble_metrics['f1_score']:.4f}")
+                print(f"[web] ✅ Model retraining completed for {symbol}")
                 
             except Exception as e:
                 print(f"[web] Error during model retraining: {e}")
@@ -1650,6 +1983,170 @@ def api_ml_model_retrain():
         return jsonify({
             "success": True,
             "message": f"Model retraining started for {symbol}",
+            "status": "training",
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to start retraining: {e}"}), 500
+
+
+@app.route("/api/ml/model/retrain-all", methods=["POST"])
+@login_required
+def api_ml_model_retrain_all():
+    """Переобучить ML модели для всех пар (BTCUSDT, ETHUSDT, SOLUSDT)."""
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        # Запускаем переобучение в отдельном потоке
+        import threading
+        
+        def train_all_models():
+            global settings
+            try:
+                # Импортируем необходимые модули внутри потока
+                try:
+                    from bot.ml.data_collector import DataCollector
+                    from bot.ml.feature_engineering import FeatureEngineer
+                    from bot.ml.model_trainer import ModelTrainer
+                except Exception as import_error:
+                    print(f"[web] Error importing modules in train_all_models thread: {import_error}")
+                    return
+                
+                print(f"[web] 🚀 Starting ML model retraining for ALL pairs (BTCUSDT, ETHUSDT, SOLUSDT)...")
+                
+                symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+                interval = "15"
+                
+                for symbol in symbols:
+                    print(f"\n[web] {'='*60}")
+                    print(f"[web] Training models for {symbol}")
+                    print(f"[web] {'='*60}")
+                    
+                    try:
+                        # Сбор данных
+                        collector = DataCollector(settings.api)
+                        df_raw = collector.collect_klines(
+                            symbol=symbol,
+                            interval=interval,
+                            start_date=None,
+                            end_date=None,
+                            limit=200,
+                        )
+                        
+                        if df_raw.empty:
+                            print(f"[web] ❌ No data collected for {symbol}. Skipping.")
+                            continue
+                        
+                        print(f"[web] ✅ Collected {len(df_raw)} candles for {symbol}")
+                        
+                        # Feature Engineering
+                        feature_engineer = FeatureEngineer()
+                        df_features = feature_engineer.create_technical_indicators(df_raw)
+                        print(f"[web] ✅ Created {len(feature_engineer.get_feature_names())} features for {symbol}")
+                        
+                        # Используем новые параметры (как в train_ml_model.py)
+                        threshold_pct = 0.2
+                        df_with_target = feature_engineer.create_target_variable(
+                            df_features,
+                            forward_periods=4,
+                            threshold_pct=threshold_pct,
+                            use_atr_threshold=True,
+                            use_risk_adjusted=True,
+                            min_risk_reward_ratio=1.5,
+                        )
+                        print(f"[web] ✅ Created target variable for {symbol}")
+                        print(f"[web]   Target distribution: {df_with_target['target'].value_counts().to_dict()}")
+                        
+                        X, y = feature_engineer.prepare_features_for_ml(df_with_target)
+                        
+                        # Обучение
+                        trainer = ModelTrainer()
+                        
+                        # Обучаем Random Forest
+                        print(f"[web] --- Training Random Forest for {symbol} ---")
+                        rf_model, rf_metrics = trainer.train_random_forest_classifier(
+                            X, y,
+                            n_estimators=100,
+                            max_depth=10,
+                        )
+                        trainer.save_model(
+                            rf_model,
+                            trainer.scaler,
+                            feature_engineer.get_feature_names(),
+                            rf_metrics,
+                            f"rf_{symbol}_{interval}.pkl",
+                            symbol=symbol,
+                            interval=interval,
+                        )
+                        print(f"[web] ✅ Saved RF model for {symbol}")
+                        
+                        # Обучаем XGBoost
+                        print(f"[web] --- Training XGBoost for {symbol} ---")
+                        xgb_model, xgb_metrics = trainer.train_xgboost_classifier(
+                            X, y,
+                            n_estimators=100,
+                            max_depth=6,
+                            learning_rate=0.1,
+                        )
+                        trainer.save_model(
+                            xgb_model,
+                            trainer.scaler,
+                            feature_engineer.get_feature_names(),
+                            xgb_metrics,
+                            f"xgb_{symbol}_{interval}.pkl",
+                            symbol=symbol,
+                            interval=interval,
+                        )
+                        print(f"[web] ✅ Saved XGB model for {symbol}")
+                        
+                        # Обучаем Ensemble
+                        print(f"[web] --- Training Ensemble for {symbol} ---")
+                        ensemble_model, ensemble_metrics = trainer.train_ensemble(
+                            X, y,
+                            rf_n_estimators=100,
+                            rf_max_depth=10,
+                            xgb_n_estimators=100,
+                            xgb_max_depth=6,
+                            xgb_learning_rate=0.1,
+                            ensemble_method="weighted_average",
+                        )
+                        trainer.save_model(
+                            ensemble_model,
+                            trainer.scaler,
+                            feature_engineer.get_feature_names(),
+                            ensemble_metrics,
+                            f"ensemble_{symbol}_{interval}.pkl",
+                            symbol=symbol,
+                            interval=interval,
+                            model_type="ensemble_weighted",
+                        )
+                        print(f"[web] ✅ Saved Ensemble model for {symbol}")
+                        print(f"[web]   Ensemble CV Accuracy: {ensemble_metrics['cv_mean']:.4f}")
+                        print(f"[web]   Ensemble F1-Score: {ensemble_metrics['f1_score']:.4f}")
+                        
+                    except Exception as e:
+                        print(f"[web] ❌ Error training models for {symbol}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+                
+                print(f"\n[web] {'='*60}")
+                print(f"[web] ✅ Model retraining completed for ALL pairs!")
+                print(f"[web] {'='*60}")
+                
+            except Exception as e:
+                print(f"[web] ❌ Error during model retraining: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Запускаем в отдельном потоке
+        thread = threading.Thread(target=train_all_models, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Model retraining started for all pairs (BTCUSDT, ETHUSDT, SOLUSDT)",
             "status": "training",
         })
         
@@ -1961,7 +2458,7 @@ def api_bot_start():
                 # Обновляем bot_state ПЕРЕД запуском, чтобы UI мог сразу увидеть изменения
                 bot_state["is_running"] = True
                 bot_state["current_status"] = "Starting"
-                bot_state["last_update"] = datetime.now().isoformat()
+                bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
                 
                 # Запускаем обновление настроек и запуск менеджера в отдельном потоке, чтобы не блокировать Flask
                 print("[web] ⚙️  Starting bot in background thread (update_settings + start)...")
@@ -2011,15 +2508,15 @@ def api_bot_start():
                             bot_state["is_running"] = True
                             bot_state["current_status"] = "Running"
                             bot_state["last_action"] = f"Started for {', '.join(alive_workers)}"
-                            bot_state["last_action_time"] = datetime.now().isoformat()
-                            bot_state["last_update"] = datetime.now().isoformat()
+                            bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                            bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
                             print(f"[web] [background] 🎉 Bot started successfully for symbols: {', '.join(alive_workers)}")
                         else:
                             print("[web] [background] ⚠️ Warning: No alive workers found after startup")
                             bot_state["is_running"] = False
                             bot_state["current_status"] = "Error"
                             bot_state["last_error"] = "No alive workers found after startup"
-                            bot_state["last_error_time"] = datetime.now().isoformat()
+                            bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
                     except Exception as e:
                         error_msg = str(e)
                         print(f"[web] [background] ❌ ERROR: multi_symbol_manager.start() failed: {error_msg}")
@@ -2030,7 +2527,7 @@ def api_bot_start():
                         bot_state["is_running"] = False
                         bot_state["current_status"] = "Error"
                         bot_state["last_error"] = f"Failed to start MultiSymbolManager: {error_msg}"
-                        bot_state["last_error_time"] = datetime.now().isoformat()
+                        bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
                 
                 # Запускаем в отдельном потоке, чтобы не блокировать Flask
                 import threading
@@ -2064,7 +2561,7 @@ def api_bot_start():
                 bot_state["is_running"] = False
                 bot_state["current_status"] = "Error"
                 bot_state["last_error"] = error_msg
-                bot_state["last_error_time"] = datetime.now().isoformat()
+                bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
                 
                 # Возвращаем детальную информацию об ошибке для отладки
                 return jsonify({
@@ -2091,7 +2588,7 @@ def api_bot_start():
                 bot_thread.start()
                 
                 bot_state["is_running"] = True
-                bot_state["last_update"] = datetime.now().isoformat()
+                bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
                 return jsonify({"success": True, "message": f"Bot started for {settings.symbol}"})
             except Exception as e:
                 print(f"[web] Error starting bot thread: {e}")
@@ -2213,8 +2710,8 @@ def api_bot_stop():
                 bot_state["is_running"] = False
                 bot_state["current_status"] = "Stopped"
                 bot_state["last_action"] = "Stopped all workers"
-                bot_state["last_action_time"] = datetime.now().isoformat()
-                bot_state["last_update"] = datetime.now().isoformat()
+                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
                 
                 print(f"[web] Bot state updated: is_running={bot_state['is_running']}, status={bot_state['current_status']}")
                 
@@ -2234,7 +2731,7 @@ def api_bot_stop():
                 bot_state["is_running"] = False
                 bot_state["current_status"] = "Error"
                 bot_state["last_error"] = str(e)
-                bot_state["last_error_time"] = datetime.now().isoformat()
+                bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
                 return jsonify({
                     "success": False, 
                     "error": f"Failed to stop bot: {str(e)}"
@@ -2252,8 +2749,8 @@ def api_bot_stop():
             bot_state["is_running"] = False
             bot_state["current_status"] = "Stopped"
             bot_state["last_action"] = "Stopped"
-            bot_state["last_action_time"] = datetime.now().isoformat()
-            bot_state["last_update"] = datetime.now().isoformat()
+            bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+            bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
             bot_thread = None
             
             print(f"[web] Bot stopped (single symbol mode)")
@@ -2274,7 +2771,7 @@ def api_bot_stop():
         bot_state["is_running"] = False
         bot_state["current_status"] = "Error"
         bot_state["last_error"] = str(e)
-        bot_state["last_error_time"] = datetime.now().isoformat()
+        bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
         return jsonify({
             "success": False, 
             "error": f"Unexpected error: {str(e)}"
@@ -2286,7 +2783,7 @@ def _run_bot_in_thread(settings: AppSettings):
     try:
         print(f"[web] Bot thread started")
         bot_state["current_status"] = "Starting"
-        bot_state["last_update"] = datetime.now().isoformat()
+        bot_state["last_update"] = datetime.now(timezone.utc).isoformat()
         # Запускаем live бота с передачей bot_state для обновления статуса
         run_live_from_api(settings, bot_state=bot_state)
     except Exception as e:
@@ -2296,7 +2793,7 @@ def _run_bot_in_thread(settings: AppSettings):
         bot_state["is_running"] = False
         bot_state["current_status"] = "Error"
         bot_state["last_error"] = str(e)
-        bot_state["last_error_time"] = datetime.now().isoformat()
+        bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
     finally:
         print(f"[web] Bot thread finished")
         bot_state["is_running"] = False
@@ -2336,22 +2833,57 @@ def api_chart_data():
         
         df_raw = client.get_kline_df(symbol=symbol, interval=chart_interval, limit=chart_limit)
         
+        if df_raw.empty:
+            return jsonify({"error": "No raw data received from exchange"}), 500
+        
+        print(f"[web] Raw data: {len(df_raw)} candles for {symbol}")
+        
         # Вычисляем индикаторы
-        df_ind = prepare_with_indicators(
-            df_raw,
-            adx_length=settings.strategy.adx_length,
-            di_length=settings.strategy.di_length,
-            sma_length=settings.strategy.sma_length,
-            rsi_length=settings.strategy.rsi_length,
-            breakout_lookback=settings.strategy.breakout_lookback,
-            bb_length=settings.strategy.bb_length,
-            bb_std=settings.strategy.bb_std,
-            atr_length=14,  # ATR период
-        )
+        try:
+            df_ind = prepare_with_indicators(
+                df_raw,
+                adx_length=settings.strategy.adx_length,
+                di_length=settings.strategy.di_length,
+                sma_length=settings.strategy.sma_length,
+                rsi_length=settings.strategy.rsi_length,
+                breakout_lookback=settings.strategy.breakout_lookback,
+                bb_length=settings.strategy.bb_length,
+                bb_std=settings.strategy.bb_std,
+                atr_length=14,  # ATR период
+                ema_fast_length=settings.strategy.ema_fast_length,
+                ema_slow_length=settings.strategy.ema_slow_length,
+                ema_timeframe=settings.strategy.momentum_ema_timeframe,
+            )
+            print(f"[web] After prepare_with_indicators: {len(df_ind)} candles")
+        except Exception as e:
+            print(f"[web] Error in prepare_with_indicators: {e}")
+            import traceback
+            print(f"[web] Traceback: {traceback.format_exc()}")
+            return jsonify({"error": f"Error calculating indicators: {str(e)}"}), 500
+        
+        if df_ind.empty:
+            # Если после вычисления индикаторов DataFrame пуст, используем исходные данные
+            print(f"[web] ⚠️ Warning: df_ind is empty after prepare_with_indicators, using raw data")
+            df_ind = df_raw.copy()
+            # Добавляем минимальные индикаторы вручную
+            try:
+                import pandas_ta as ta
+                df_ind["sma"] = ta.sma(df_ind["close"], length=settings.strategy.sma_length)
+                df_ind["rsi"] = ta.rsi(df_ind["close"], length=settings.strategy.rsi_length)
+                df_ind["adx"] = 0  # Заглушка
+                df_ind["bb_upper"] = df_ind["close"] * 1.02
+                df_ind["bb_middle"] = df_ind["close"]
+                df_ind["bb_lower"] = df_ind["close"] * 0.98
+            except Exception as e:
+                print(f"[web] Error adding minimal indicators: {e}")
+        
         df_ready = enrich_for_strategy(df_ind, settings.strategy)
+        print(f"[web] After enrich_for_strategy: {len(df_ready)} candles")
         
         if df_ready.empty:
-            return jsonify({"error": "No data available after processing"}), 500
+            # Если после enrich_for_strategy DataFrame пуст, используем df_ind
+            print(f"[web] ⚠️ Warning: df_ready is empty after enrich_for_strategy, using df_ind")
+            df_ready = df_ind.copy()
         
         # Загружаем сигналы из истории для отображения на графике
         # Это позволяет показать исторические сигналы, даже если стратегия сейчас выключена
@@ -2444,7 +2976,8 @@ def api_chart_data():
         try:
             # Trend стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_trend_strategy:
-                trend_signals = build_signals(df_ready, settings.strategy)
+                use_momentum = settings.enable_momentum_strategy
+                trend_signals = build_signals(df_ready, settings.strategy, use_momentum=use_momentum, use_liquidity=False)
                 print(f"[web] Trend strategy generated {len(trend_signals)} signals")
                 for sig in trend_signals:
                     # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
@@ -2474,7 +3007,7 @@ def api_chart_data():
             
             # Flat стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_flat_strategy:
-                flat_signals = build_signals(df_ready, settings.strategy)
+                flat_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=False)
                 print(f"[web] Flat strategy generated {len(flat_signals)} signals")
                 for sig in flat_signals:
                     # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
@@ -2503,13 +3036,62 @@ def api_chart_data():
                             print(f"[web] ⚠️ Failed to save flat signal to history: {e}")
             
             # ML стратегия - генерируем текущие сигналы (если стратегия включена)
-            if settings.enable_ml_strategy and settings.ml_model_path:
+            if settings.enable_ml_strategy:
                 try:
                     from bot.ml.strategy_ml import build_ml_signals
-                    if len(df_ready) >= 200:
+                    from pathlib import Path
+                    
+                    # Определяем, какую модель использовать для данного символа на графике
+                    models_dir = Path(__file__).parent.parent.parent / "ml_models"
+                    model_type_preference = getattr(settings, "ml_model_type_for_all", None)
+                    model_path_for_chart = None
+                    
+                    # 1) Пытаемся использовать явно выбранную модель, если она подходит символу и (при наличии) типу
+                    if settings.ml_model_path:
+                        model_path_obj = Path(settings.ml_model_path)
+                        if model_path_obj.exists():
+                            filename = model_path_obj.name
+                            if "_" in filename:
+                                parts = filename.replace(".pkl", "").split("_")
+                                if len(parts) >= 2 and parts[1] == symbol:
+                                    model_type_from_filename = parts[0].lower()
+                                    if model_type_preference:
+                                        if model_type_from_filename == model_type_preference.lower():
+                                            model_path_for_chart = str(model_path_obj)
+                                            print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart} (matches type: {model_type_preference})")
+                                        else:
+                                            print(
+                                                f"[web] Explicit ML model for chart {symbol} ({model_type_from_filename}) "
+                                                f"doesn't match global preference ({model_type_preference}), ignoring it"
+                                            )
+                                    else:
+                                        model_path_for_chart = str(model_path_obj)
+                                        print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart}")
+                    
+                    # 2) Если явная модель не подходит, ищем по предпочтению или авто (ensemble > rf > xgb)
+                    if not model_path_for_chart and models_dir.exists():
+                        if model_type_preference:
+                            pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                            for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                if model_file.is_file():
+                                    model_path_for_chart = str(model_file)
+                                    print(f"[web] Using preferred ML model for chart {symbol}: {model_path_for_chart}")
+                                    break
+                        else:
+                            for model_type in ["ensemble", "rf", "xgb"]:
+                                pattern = f"{model_type}_{symbol}_*.pkl"
+                                for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                    if model_file.is_file():
+                                        model_path_for_chart = str(model_file)
+                                        print(f"[web] Using auto-selected ML model for chart {symbol}: {model_path_for_chart}")
+                                        break
+                                if model_path_for_chart:
+                                    break
+                    
+                    if model_path_for_chart and len(df_ready) >= 200:
                         ml_signals = build_ml_signals(
                             df_ready,
-                            model_path=settings.ml_model_path,
+                            model_path=model_path_for_chart,
                             confidence_threshold=settings.ml_confidence_threshold,
                             min_signal_strength=settings.ml_min_signal_strength,
                             stability_filter=settings.ml_stability_filter,
@@ -2521,8 +3103,95 @@ def api_chart_data():
                         for sig in ml_signals:
                             if sig.action in (Action.LONG, Action.SHORT):
                                 signals.append(sig)
+                                # Сохраняем ML сигнал в историю для синхронизации с графиком
+                                try:
+                                    from bot.web.history import add_signal
+                                    ts_log = sig.timestamp
+                                    if isinstance(ts_log, pd.Timestamp):
+                                        if ts_log.tzinfo is None:
+                                            ts_log = ts_log.tz_localize('UTC')
+                                        else:
+                                            ts_log = ts_log.tz_convert('UTC')
+                                        ts_log = ts_log.to_pydatetime()
+                                    add_signal(
+                                        action=sig.action.value,
+                                        reason=sig.reason,
+                                        price=sig.price,
+                                        timestamp=ts_log,
+                                        symbol=symbol,
+                                        strategy_type="ml",
+                                        signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                    )
+                                except Exception as e:
+                                    print(f"[web] ⚠️ Failed to save ML signal to history: {e}")
                 except Exception as e:
                     print(f"[web] Error generating ML signals for chart: {e}")
+            
+            # Momentum стратегия - генерируем текущие сигналы (если стратегия включена)
+            if settings.enable_momentum_strategy:
+                try:
+                    momentum_signals = build_signals(df_ready, settings.strategy, use_momentum=True, use_liquidity=False)
+                    print(f"[web] Momentum strategy generated {len(momentum_signals)} signals")
+                    for sig in momentum_signals:
+                        # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
+                        if sig.reason.startswith("momentum_") and sig.action in (Action.LONG, Action.SHORT):
+                            signals.append(sig)
+                            # Сохраняем сигнал в историю для синхронизации с графиком
+                            try:
+                                from bot.web.history import add_signal
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="momentum",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                print(f"[web] ⚠️ Failed to save momentum signal to history: {e}")
+                except Exception as e:
+                    print(f"[web] Error generating Momentum signals for chart: {e}")
+            
+            # Liquidity Sweep стратегия - генерируем текущие сигналы (если стратегия включена)
+            if settings.enable_liquidity_sweep_strategy:
+                try:
+                    liquidity_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=True)
+                    print(f"[web] Liquidity strategy generated {len(liquidity_signals)} signals")
+                    for sig in liquidity_signals:
+                        # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
+                        if sig.reason.startswith("liquidity_") and sig.action in (Action.LONG, Action.SHORT):
+                            signals.append(sig)
+                            # Сохраняем сигнал в историю для синхронизации с графиком
+                            try:
+                                from bot.web.history import add_signal
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="liquidity",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                print(f"[web] ⚠️ Failed to save liquidity signal to history: {e}")
+                except Exception as e:
+                    print(f"[web] Error generating Liquidity signals for chart: {e}")
             
             if signals is None:
                 signals = []

@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, List
 
 import pandas as pd
 from pybit.unified_trading import HTTP
+from pybit.exceptions import FailedRequestError
 
 from bot.config import ApiSettings
 
@@ -20,6 +21,25 @@ class BybitClient:
         # Передаём ключи только если они не пустые
         api_key = api.api_key.strip() if api.api_key else None
         api_secret = api.api_secret.strip() if api.api_secret else None
+        
+        # Диагностика: проверяем наличие ключей
+        if not api_key or not api_secret:
+            print(f"[bybit] ⚠️ WARNING: API keys are missing or empty!")
+            print(f"[bybit]   API Key: {'SET' if api_key else 'NOT SET'} (length: {len(api_key) if api_key else 0})")
+            print(f"[bybit]   API Secret: {'SET' if api_secret else 'NOT SET'} (length: {len(api_secret) if api_secret else 0})")
+            print(f"[bybit]   Base URL: {api.base_url}")
+            print(f"[bybit]   Testnet mode: {testnet}")
+            print(f"[bybit]   Please check your .env file and ensure BYBIT_API_KEY and BYBIT_API_SECRET are set correctly.")
+        else:
+            # Показываем частично скрытый ключ для диагностики
+            api_key_display = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
+            api_secret_display = f"{api_secret[:8]}...{api_secret[-4:]}" if len(api_secret) > 12 else "***"
+            print(f"[bybit] Initializing client: testnet={testnet}, base_url={api.base_url}")
+            print(f"[bybit]   API Key: {api_key_display} (length: {len(api_key)})")
+            print(f"[bybit]   API Secret: {api_secret_display} (length: {len(api_secret)})")
+            if testnet:
+                print(f"[bybit]   ⚠️ IMPORTANT: Make sure these are TESTNET API keys, not production keys!")
+                print(f"[bybit]   Testnet keys can be created at: https://testnet.bybit.com/app/user/api-management")
         
         # Настройки для решения проблем с синхронизацией времени
         # Увеличиваем recv_window до максимума (120 секунд) для учета задержек сети и расхождений времени
@@ -44,6 +64,23 @@ class BybitClient:
                 resp = func(*args, **kwargs)
                 ret_code = resp.get("retCode")
                 ret_msg = resp.get("retMsg", "")
+                
+                # Проверяем на ошибку авторизации (401) - неверные API ключи
+                if ret_code == 401:
+                    print(f"[bybit] ❌ ERROR 401: Unauthorized - Invalid API keys or keys not for testnet!")
+                    print(f"[bybit]   Error message: {ret_msg}")
+                    print(f"[bybit]   Please verify:")
+                    print(f"[bybit]   1. API keys are correct in .env file")
+                    print(f"[bybit]   2. API keys are for TESTNET (not production)")
+                    print(f"[bybit]   3. Testnet keys can be created at: https://testnet.bybit.com/app/user/api-management")
+                    print(f"[bybit]   4. Keys have proper permissions (Read, Trade)")
+                    # Не повторяем запрос при 401 - это не временная ошибка
+                    raise FailedRequestError(
+                        request=f"Request failed: Invalid API credentials",
+                        status_code=401,
+                        time=time.time(),
+                        response={"retCode": 401, "retMsg": ret_msg}
+                    )
                 
                 # Проверяем на rate limit (403) или другие временные ошибки
                 if ret_code == 403 and ("rate limit" in ret_msg.lower() or "usa" in ret_msg.lower()):
@@ -219,6 +256,42 @@ class BybitClient:
             print(f"[bybit] Error getting qtyStep: {e}")
             return 0.001  # Дефолтное значение
     
+    def get_price_step(self, symbol: str) -> float:
+        """Получить priceStep (шаг цены / tick size) для символа."""
+        try:
+            instrument = self.get_instrument_info(symbol)
+            if instrument:
+                # Ищем в priceFilter
+                price_filter = instrument.get("priceFilter", {})
+                tick_size = price_filter.get("tickSize", "0.01")
+                return float(tick_size)
+            return 0.01  # Дефолтное значение
+        except Exception as e:
+            print(f"[bybit] Error getting priceStep: {e}")
+            return 0.01  # Дефолтное значение
+    
+    def round_price(self, price: float, symbol: str) -> float:
+        """
+        Округляет цену до минимального шага (tick size) для символа.
+        
+        Args:
+            price: Цена для округления
+            symbol: Торговая пара (например, "BTCUSDT")
+        
+        Returns:
+            Округленная цена
+        """
+        try:
+            tick_size = self.get_price_step(symbol)
+            if tick_size > 0:
+                # Округляем до ближайшего кратного tick_size
+                rounded = round(price / tick_size) * tick_size
+                return rounded
+            return price
+        except Exception as e:
+            print(f"[bybit] Error rounding price: {e}")
+            return price
+    
     def place_order(
         self,
         symbol: str,
@@ -335,9 +408,25 @@ class BybitClient:
             "symbol": symbol,
         }
         if stop_loss is not None:
-            params["stopLoss"] = str(stop_loss)
+            # Убеждаемся, что цена - это float, а не строка или другое значение
+            if isinstance(stop_loss, str):
+                stop_loss = float(stop_loss)
+            # Округляем цену до минимального шага (tick size) для символа
+            stop_loss = self.round_price(stop_loss, symbol)
+            # ВАЖНО: Передаем цену как число (float), а не строку
+            # pybit сам преобразует его в правильный формат для API
+            params["stopLoss"] = stop_loss
+            print(f"[bybit] Setting stopLoss for {symbol}: {stop_loss} (type: {type(stop_loss).__name__}, rounded to tick size)")
         if take_profit is not None:
-            params["takeProfit"] = str(take_profit)
+            # Убеждаемся, что цена - это float, а не строка или другое значение
+            if isinstance(take_profit, str):
+                take_profit = float(take_profit)
+            # Округляем цену до минимального шага (tick size) для символа
+            take_profit = self.round_price(take_profit, symbol)
+            # ВАЖНО: Передаем цену как число (float), а не строку
+            # pybit сам преобразует его в правильный формат для API
+            params["takeProfit"] = take_profit
+            print(f"[bybit] Setting takeProfit for {symbol}: {take_profit} (type: {type(take_profit).__name__}, rounded to tick size)")
         if trailing_stop is not None:
             params["trailingStop"] = str(trailing_stop)
         return self.session.set_trading_stop(**params)
