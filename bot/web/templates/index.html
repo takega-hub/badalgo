@@ -1308,31 +1308,98 @@
             if (!window.activeTVCandleSeries) return;
             // Очищаем старые линии
             try {
-                // В Lightweight Charts нет метода clearPriceLines, нужно хранить ссылки или полагаться на удаление серии
-                // Для простоты мы пересоздаем серии индикаторов, но линии цены привязаны к CandleSeries
-                // Поэтому при обновлении без пересоздания графика нам нужно иметь способ их удалить.
-                // В текущей версии API LW Charts проще всего пересоздать серию или не использовать PriceLines если они мешают.
-                // Но мы можем попробовать удалять их если сохраним ссылки.
                 if (window.activeTVEntryLine) window.activeTVCandleSeries.removePriceLine(window.activeTVEntryLine);
                 if (window.activeTVSLLine) window.activeTVCandleSeries.removePriceLine(window.activeTVSLLine);
                 if (window.activeTVTPLine) window.activeTVCandleSeries.removePriceLine(window.activeTVTPLine);
             } catch(e) {}
 
+            // Обновляем информационную панель позиции
+            updatePositionInfoPanel(data.position);
+
             if (data.position && parseFloat(data.position.entry_price) > 0) {
                 const pos = data.position;
+                const sideColor = pos.side === 'long' ? '#00ff88' : '#ff4444';
+                
                 window.activeTVEntryLine = window.activeTVCandleSeries.createPriceLine({
-                    price: parseFloat(pos.entry_price), color: '#2962FF', lineWidth: 2, lineStyle: 0, title: `Entry (${pos.side})`
+                    price: parseFloat(pos.entry_price), 
+                    color: sideColor, 
+                    lineWidth: 2, 
+                    lineStyle: 0, 
+                    title: `Entry (${pos.side.toUpperCase()}) $${parseFloat(pos.entry_price).toFixed(2)}`
                 });
+                
                 if (parseFloat(pos.stop_loss) > 0) {
                     window.activeTVSLLine = window.activeTVCandleSeries.createPriceLine({
-                        price: parseFloat(pos.stop_loss), color: '#ff4444', lineWidth: 2, lineStyle: 2, title: 'SL'
+                        price: parseFloat(pos.stop_loss), 
+                        color: '#ff4444', 
+                        lineWidth: 2, 
+                        lineStyle: 2, 
+                        title: `SL $${parseFloat(pos.stop_loss).toFixed(2)}`
                     });
                 }
                 if (parseFloat(pos.take_profit) > 0) {
                     window.activeTVTPLine = window.activeTVCandleSeries.createPriceLine({
-                        price: parseFloat(pos.take_profit), color: '#00ff88', lineWidth: 2, lineStyle: 2, title: 'TP'
+                        price: parseFloat(pos.take_profit), 
+                        color: '#00ff88', 
+                        lineWidth: 2, 
+                        lineStyle: 2, 
+                        title: `TP $${parseFloat(pos.take_profit).toFixed(2)}`
                     });
                 }
+            }
+        }
+
+        function updatePositionInfoPanel(position) {
+            let panel = document.getElementById('position-info-panel');
+            if (!panel) {
+                // Создаём панель если её нет
+                panel = document.createElement('div');
+                panel.id = 'position-info-panel';
+                panel.style.cssText = 'position:absolute;top:60px;left:10px;background:rgba(0,0,0,0.85);padding:10px 15px;border-radius:8px;font-size:12px;z-index:100;border:1px solid #333;min-width:180px;';
+                const container = document.getElementById('chart-container');
+                if (container) {
+                    container.style.position = 'relative';
+                    container.appendChild(panel);
+                }
+            }
+            
+            if (position && parseFloat(position.entry_price) > 0) {
+                const side = position.side || 'unknown';
+                const sideColor = side === 'long' ? '#00ff88' : '#ff4444';
+                const entry = parseFloat(position.entry_price).toFixed(2);
+                const size = parseFloat(position.size || 0).toFixed(4);
+                const pnl = parseFloat(position.unrealised_pnl || 0).toFixed(2);
+                const pnlColor = parseFloat(pnl) >= 0 ? '#00ff88' : '#ff4444';
+                const tp = parseFloat(position.take_profit || 0);
+                const sl = parseFloat(position.stop_loss || 0);
+                
+                panel.innerHTML = `
+                    <div style="color:#fff;font-weight:bold;margin-bottom:8px;border-bottom:1px solid #444;padding-bottom:5px;">
+                        📊 Open Position
+                    </div>
+                    <div style="display:grid;grid-template-columns:auto auto;gap:4px 12px;">
+                        <span style="color:#888;">Side:</span>
+                        <span style="color:${sideColor};font-weight:bold;">${side.toUpperCase()}</span>
+                        <span style="color:#888;">Entry:</span>
+                        <span style="color:#fff;">$${entry}</span>
+                        <span style="color:#888;">Size:</span>
+                        <span style="color:#fff;">${size}</span>
+                        <span style="color:#888;">PnL:</span>
+                        <span style="color:${pnlColor};font-weight:bold;">$${pnl}</span>
+                        <span style="color:#888;">TP:</span>
+                        <span style="color:${tp > 0 ? '#00ff88' : '#666'};">${tp > 0 ? '$' + tp.toFixed(2) : 'Not set'}</span>
+                        <span style="color:#888;">SL:</span>
+                        <span style="color:${sl > 0 ? '#ff4444' : '#666'};">${sl > 0 ? '$' + sl.toFixed(2) : 'Not set'}</span>
+                    </div>
+                `;
+                panel.style.display = 'block';
+            } else {
+                panel.innerHTML = `
+                    <div style="color:#888;font-size:11px;">
+                        No open position
+                    </div>
+                `;
+                panel.style.display = 'block';
             }
         }
 

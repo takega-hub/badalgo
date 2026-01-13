@@ -417,6 +417,35 @@ def _ensure_tp_sl_set(
         tp_set = current_tp and current_tp != "" and str(current_tp).strip() != ""
         sl_set = current_sl and current_sl != "" and str(current_sl).strip() != ""
         
+        # КРИТИЧЕСКАЯ ПРОВЕРКА: Обнаружение аномальных TP/SL (более 500% от entry price)
+        # Это может произойти, если TP/SL от другой монеты (например, BTC цена на ETH позиции)
+        tp_is_anomalous = False
+        sl_is_anomalous = False
+        
+        if tp_set and avg_price > 0:
+            try:
+                current_tp_val = float(current_tp)
+                tp_deviation_pct = abs(current_tp_val - avg_price) / avg_price * 100
+                if tp_deviation_pct > 500:  # Более 500% отклонение - явно ошибка
+                    print(f"[live] 🚨 ANOMALY DETECTED: Current TP=${current_tp_val:.2f} is {tp_deviation_pct:.0f}% away from entry ${avg_price:.2f}")
+                    print(f"[live]   This looks like a TP from another asset (e.g., BTC price on ETH position)")
+                    print(f"[live]   Will FORCE reset TP to correct value")
+                    tp_is_anomalous = True
+                    tp_set = False  # Считаем как не установленный
+            except (ValueError, TypeError):
+                pass
+        
+        if sl_set and avg_price > 0:
+            try:
+                current_sl_val = float(current_sl)
+                sl_deviation_pct = abs(current_sl_val - avg_price) / avg_price * 100
+                if sl_deviation_pct > 500:  # Более 500% отклонение - явно ошибка
+                    print(f"[live] 🚨 ANOMALY DETECTED: Current SL=${current_sl_val:.2f} is {sl_deviation_pct:.0f}% away from entry ${avg_price:.2f}")
+                    print(f"[live]   This looks like a SL from another asset")
+                    print(f"[live]   Will FORCE reset SL to correct value")
+                    sl_is_anomalous = True
+                    sl_set = False  # Считаем как не установленный
+        
         # Определяем, какая стратегия используется для расчета TP/SL
         # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
         # Если ML стратегия включена и имеет приоритет, используем ML TP/SL

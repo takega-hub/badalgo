@@ -36,6 +36,61 @@ def _web_log(message: str, always_show: bool = False):
     """Логирование веб-интерфейса с фильтром."""
     if always_show or WEB_VERBOSE_LOGGING:
         print(message)
+
+def _format_position_with_validation(position: dict, symbol: str, default_leverage: int) -> dict:
+    """Форматирует позицию с валидацией TP/SL на аномалии."""
+    if not position:
+        return None
+    
+    try:
+        entry_price = float(position.get('avg_price', 0))
+        tp_raw = position.get('take_profit') or position.get('takeProfit') or ''
+        sl_raw = position.get('stop_loss') or position.get('stopLoss') or ''
+        
+        # Конвертируем в числа
+        tp_float = float(tp_raw) if tp_raw and str(tp_raw).strip() not in ('', '0') else 0.0
+        sl_float = float(sl_raw) if sl_raw and str(sl_raw).strip() not in ('', '0') else 0.0
+        
+        # Проверка на аномальные TP/SL (отклонение более 500% от entry price)
+        if tp_float > 0 and entry_price > 0:
+            tp_deviation = abs(tp_float - entry_price) / entry_price
+            if tp_deviation > 5.0:
+                print(f"[web] ⚠️ ANOMALY TP: ${tp_float:.2f} is {tp_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}")
+                tp_float = 0.0
+        
+        if sl_float > 0 and entry_price > 0:
+            sl_deviation = abs(sl_float - entry_price) / entry_price
+            if sl_deviation > 5.0:
+                print(f"[web] ⚠️ ANOMALY SL: ${sl_float:.2f} is {sl_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}")
+                sl_float = 0.0
+        
+        return {
+            "side": position.get("side"),
+            "size": float(position.get('size', 0)),
+            "avg_price": entry_price,
+            "mark_price": float(position.get('mark_price', 0)) if position.get('mark_price') else entry_price,
+            "unrealised_pnl": float(position.get('unrealised_pnl', 0)),
+            "take_profit": tp_float if tp_float > 0 else '',
+            "stop_loss": sl_float if sl_float > 0 else '',
+            "leverage": position.get('leverage', default_leverage),
+            "entry_reason": None,
+            "strategy_type": None,
+        }
+    except Exception as e:
+        print(f"[web] Error formatting position: {e}")
+        return {
+            "side": position.get("side"),
+            "size": float(position.get('size', 0)),
+            "avg_price": float(position.get('avg_price', 0)),
+            "mark_price": float(position.get('mark_price', 0)),
+            "unrealised_pnl": float(position.get('unrealised_pnl', 0)),
+            "take_profit": '',
+            "stop_loss": '',
+            "leverage": position.get('leverage', default_leverage),
+            "entry_reason": None,
+            "strategy_type": None,
+        }
+
 from bot.live import _get_balance, _get_position, _get_open_orders, _timeframe_to_bybit_interval, run_live_from_api
 from bot.web.history import get_trades, get_signals, get_strategy_stats, get_smc_history
 from bot.indicators import prepare_with_indicators
@@ -898,18 +953,7 @@ def api_status():
                 "active_symbols": settings.active_symbols if settings else [],
                 "leverage": settings.leverage,
             },
-            "position": {
-                "side": position.get("side") if position else None,
-                "size": float(position.get('size', 0)) if position else 0,
-                "avg_price": float(position.get('avg_price', 0)) if position else 0,
-                "mark_price": float(position.get('mark_price', 0)) if position else (float(position.get('avg_price', 0)) if position else 0),
-                "unrealised_pnl": float(position.get('unrealised_pnl', 0)) if position else 0,
-                "take_profit": (position.get('take_profit') or position.get('takeProfit') or '') if position else '',
-                "stop_loss": (position.get('stop_loss') or position.get('stopLoss') or '') if position else '',
-                "leverage": position.get('leverage', settings.leverage) if position else settings.leverage,
-                "entry_reason": None,  # Будет заполнено ниже
-                "strategy_type": None,  # Будет заполнено ниже
-            } if position else None,
+            "position": _format_position_with_validation(position, primary_symbol, settings.leverage) if position else None,
             "open_orders": len(orders) if isinstance(orders, list) else 0,
             "symbols_status": symbols_status if symbols_status else None,
             "symbol": primary_symbol,  # Добавляем символ в ответ для использования в интерфейсе
@@ -3194,13 +3238,32 @@ def api_chart_data():
                 tp_val = position.get("takeProfit") or position.get("take_profit")
                 sl_val = position.get("stopLoss") or position.get("stop_loss")
                 
+                entry_price = float(position["avg_price"])
+                
+                # Конвертируем TP/SL
+                tp_float = float(tp_val) if tp_val and str(tp_val).strip() != "0" else 0.0
+                sl_float = float(sl_val) if sl_val and str(sl_val).strip() != "0" else 0.0
+                
+                # Проверка на аномальные TP/SL (отклонение более 500% от entry price - явно ошибка)
+                if tp_float > 0 and entry_price > 0:
+                    tp_deviation = abs(tp_float - entry_price) / entry_price
+                    if tp_deviation > 5.0:  # Более 500% отклонение
+                        print(f"[web] ⚠️ ANOMALY: TP ${tp_float:.2f} is {tp_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}. Ignoring.")
+                        tp_float = 0.0  # Игнорируем явно некорректный TP
+                
+                if sl_float > 0 and entry_price > 0:
+                    sl_deviation = abs(sl_float - entry_price) / entry_price
+                    if sl_deviation > 5.0:  # Более 500% отклонение
+                        print(f"[web] ⚠️ ANOMALY: SL ${sl_float:.2f} is {sl_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}. Ignoring.")
+                        sl_float = 0.0  # Игнорируем явно некорректный SL
+                
                 position_info = {
                     "side": position["side"],
                     "size": float(position["size"]),
-                    "entry_price": float(position["avg_price"]),
+                    "entry_price": entry_price,
                     "unrealised_pnl": float(position["unrealised_pnl"]),
-                    "take_profit": float(tp_val) if tp_val and str(tp_val).strip() != "0" else 0.0,
-                    "stop_loss": float(sl_val) if sl_val and str(sl_val).strip() != "0" else 0.0,
+                    "take_profit": tp_float,
+                    "stop_loss": sl_float,
                 }
             except Exception as e:
                 print(f"[web] Error formatting position info: {e}")
