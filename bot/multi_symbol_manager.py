@@ -249,7 +249,8 @@ class MultiSymbolManager:
                                             print(f"[MultiSymbol] ✅ Using explicitly selected model for {symbol}: {found_model} (matches type: {model_type_preference})")
                                         else:
                                             # Модель соответствует символу, но не типу - игнорируем её
-                                            print(f"[MultiSymbol] ⚠️  Explicitly selected model for {symbol} ({model_type_from_filename}) doesn't match global preference ({model_type_preference}), ignoring it")
+                                            # Убрано verbose сообщение о несовпадении модели - это нормальное поведение
+                                            pass
                                     else:
                                         # ml_model_type_for_all не задан - используем явно выбранную модель
                                         found_model = str(explicit_model_path)

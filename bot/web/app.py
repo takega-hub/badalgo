@@ -2903,10 +2903,7 @@ def api_chart_data():
                                             model_path_for_chart = str(model_path_obj)
                                             print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart} (matches type: {model_type_preference})")
                                         else:
-                                            print(
-                                                f"[web] Explicit ML model for chart {symbol} ({model_type_from_filename}) "
-                                                f"doesn't match global preference ({model_type_preference}), ignoring it"
-                                            )
+                                            # Убрано verbose сообщение о несовпадении модели - это нормальное поведение
                                     else:
                                         model_path_for_chart = str(model_path_obj)
                                         print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart}")

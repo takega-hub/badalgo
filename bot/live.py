@@ -2,6 +2,7 @@ import math
 import time
 import warnings
 import os
+import logging
 
 # Подавляем предупреждения scikit-learn ДО импорта библиотек
 # Устанавливаем переменную окружения ПЕРВОЙ
@@ -19,6 +20,12 @@ warnings.filterwarnings('ignore', message='.*should be used with.*')
 warnings.filterwarnings('ignore', message='.*propagate the scikit-learn configuration.*')
 # Специфичное предупреждение из терминала
 warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.delayed.*')
+
+# Подавляем XGBoost warnings
+logging.getLogger('xgboost').setLevel(logging.ERROR)
+warnings.filterwarnings('ignore', message='.*XGBoost.*')
+warnings.filterwarnings('ignore', message='.*Booster.save_model.*')
+warnings.filterwarnings('ignore', message='.*serialized model.*')
 
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple
@@ -758,7 +765,7 @@ def _ensure_tp_sl_set(
             tp_pct_margin = settings.ml_target_profit_pct_margin  # Например, 25.0%
             sl_pct_margin = settings.ml_max_loss_pct_margin  # Например, 10.0%
             
-            print(f"[live] 🔍 ML TP/SL input: ml_target_profit_pct_margin={tp_pct_margin}%, ml_max_loss_pct_margin={sl_pct_margin}%, leverage={settings.leverage}x")
+            # Убрано verbose сообщение о входных параметрах ML TP/SL
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: SL должен быть в диапазоне 7-10% от маржи ПЕРЕД расчетом
             min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
@@ -777,7 +784,7 @@ def _ensure_tp_sl_set(
             tp_pct = tp_pct_margin / settings.leverage / 100.0
             sl_pct = sl_pct_margin / settings.leverage / 100.0
             
-            print(f"[live] 🔍 After adjustment: sl_pct_margin={sl_pct_margin}%, sl_pct={sl_pct*100:.4f}% from price = {sl_pct*settings.leverage*100:.2f}% from margin")
+            # Убрано verbose сообщение о корректировке SL
             
             # МИНИМАЛЬНЫЕ ПОРОГИ: гарантируем, что TP не равен нулю
             # Минимум 0.5% для TP (от цены)
@@ -913,7 +920,7 @@ def _ensure_tp_sl_set(
                     base_sl = avg_price * (1 - max_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
                 else:
-                    print(f"[live] ✅ SL is correct: {base_sl:.2f} ({sl_deviation_pct_from_margin*100:.1f}% from margin, {sl_deviation_pct_from_price*100:.2f}% from price)")
+                    # Убрано verbose сообщение "SL is correct" - логируется только при проблемах
         else:  # SHORT
             # Для SHORT: TP должен быть ниже цены входа, SL должен быть выше
             if base_tp >= avg_price:
@@ -940,7 +947,7 @@ def _ensure_tp_sl_set(
                     base_sl = avg_price * (1 + max_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
                 else:
-                    print(f"[live] ✅ SL is correct: {base_sl:.2f} ({sl_deviation_pct_from_margin*100:.1f}% from margin, {sl_deviation_pct_from_price*100:.2f}% from price)")
+                    # Убрано verbose сообщение "SL is correct" - логируется только при проблемах
         
         # Инициализируем целевые TP/SL базовыми значениями
         target_tp = base_tp
@@ -1012,8 +1019,7 @@ def _ensure_tp_sl_set(
                     else:
                         target_sl = breakeven_sl
                         print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
-            else:
-                print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is worse than base SL ({base_sl:.2f}) or too small, keeping base SL")
+            # Сообщение "is worse than base SL or too small" убрано - уже есть сообщение выше
         
         # 2. TRAILING STOP: Активируем trailing stop, когда цена прошла половину до TP
         # Вычисляем расстояние до TP
@@ -1028,7 +1034,7 @@ def _ensure_tp_sl_set(
         # Также проверяем минимальную активацию из настроек (для обратной совместимости)
         min_activation_pct = max(settings.risk.trailing_stop_activation_pct * 100, half_tp_distance_pct)
         
-        print(f"[live] 🔍 Trailing stop check: TP distance={tp_distance_pct:.2f}%, half TP={half_tp_distance_pct:.2f}%, current profit={max_profit_pct:.2f}%, min activation={min_activation_pct:.2f}%")
+        # Убрано verbose сообщение о проверке trailing stop - логируется только при активации
         
         if settings.risk.enable_trailing_stop and max_profit_pct >= min_activation_pct:
             trailing_distance_pct = settings.risk.trailing_stop_distance_pct
@@ -1067,7 +1073,7 @@ def _ensure_tp_sl_set(
                     print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
         elif settings.risk.enable_trailing_stop:
             # Trailing stop еще не активирован
-            print(f"[live] ⏳ Trailing stop waiting: profit={max_profit_pct:.2f}%, need {min_activation_pct:.2f}% (half TP: {half_tp_distance_pct:.2f}%)")
+            # Убрано verbose сообщение "Trailing stop waiting" - логируется только при активации
         
         # Проверяем, нужно ли обновить TP/SL
         tp_needs_update = not tp_set
@@ -1205,7 +1211,7 @@ def _ensure_tp_sl_set(
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusting to {max_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 - max_sl_pct_from_price)
                         else:
-                            print(f"[live] ✅ Final SL is correct: {final_sl:.2f} ({sl_deviation_pct_from_margin*100:.1f}% from margin, {sl_deviation_pct_from_price*100:.2f}% from price)")
+                            # Убрано verbose сообщение "Final SL is correct" - логируется только при проблемах
                 else:  # SHORT
                     # Для SHORT: SL должен быть СТРОГО выше цены входа
                     if final_sl <= avg_price:
@@ -1238,7 +1244,7 @@ def _ensure_tp_sl_set(
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusting to {max_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 + max_sl_pct_from_price)
                         else:
-                            print(f"[live] ✅ Final SL is correct: {final_sl:.2f} ({sl_deviation_pct_from_margin*100:.1f}% from margin, {sl_deviation_pct_from_price*100:.2f}% from price)")
+                            # Убрано verbose сообщение "Final SL is correct" - логируется только при проблемах
             
             if final_tp is not None:
                 if position_bias == Bias.LONG:
@@ -3356,15 +3362,7 @@ def run_live_from_api(
             fresh_liquidity_signals = [s for s in liquidity_signals_only if is_signal_fresh(s, df_ready)]
             fresh_smc_signals = [s for s in smc_signals_only if is_signal_fresh(s, df_ready)]
             
-            # ДИАГНОСТИКА: Логируем, если есть сигналы, но нет свежих
-            if main_strategy_signals and not fresh_main_signals:
-                _log(f"  ⚠️ TREND/FLAT: {len(main_strategy_signals)} signals generated, but NONE are fresh (< 15 min old)!", symbol)
-                # Показываем последний сигнал и когда он был
-                last_sig = main_strategy_signals[-1]
-                ts_str = last_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(last_sig.timestamp, 'strftime') else str(last_sig.timestamp)
-                last_candle_time = df_ready.index[-1] if not df_ready.empty else "N/A"
-                _log(f"    Last signal: {ts_str}, Last candle: {last_candle_time}", symbol)
-                _log(f"    💡 No NEW signals generated for recent candles - strategy conditions not met", symbol)
+            # Убрано verbose сообщение о том, что сигналы не свежие - это нормальное поведение
             
             # Сортируем свежие сигналы по timestamp (от старых к новым) для правильного определения самого свежего
             # ВАЖНО: После сортировки последний элемент [-1] будет самым свежим
@@ -3373,34 +3371,7 @@ def run_live_from_api(
             if fresh_ml_signals:
                 fresh_ml_signals.sort(key=get_timestamp_for_sort)  # Сортировка по возрастанию timestamp
             
-            # ДИАГНОСТИКА: Детальная информация о сигналах для BTCUSDT
-            if symbol == "BTCUSDT":
-                _log(f"🔍 DETAILED DIAGNOSTICS for BTCUSDT:", symbol)
-                _log(f"  • df_ready size: {len(df_ready)} candles", symbol)
-                _log(f"  • df_ready empty: {df_ready.empty}", symbol)
-                if not df_ready.empty:
-                    last_row = df_ready.iloc[-1]
-                    _log(f"  • Last candle time: {df_ready.index[-1]}", symbol)
-                    _log(f"  • Last close price: ${last_row.get('close', 'N/A')}", symbol)
-                    _log(f"  • ADX: {last_row.get('adx', 'N/A')}", symbol)
-                    _log(f"  • RSI: {last_row.get('rsi', 'N/A')}", symbol)
-                _log(f"  • TREND strategy enabled: {current_settings.enable_trend_strategy}", symbol)
-                _log(f"  • FLAT strategy enabled: {current_settings.enable_flat_strategy}", symbol)
-                _log(f"  • ML strategy enabled: {current_settings.enable_ml_strategy}", symbol)
-                _log(f"  • MOMENTUM strategy enabled: {current_settings.enable_momentum_strategy}", symbol)
-                _log(f"  • LIQUIDITY strategy enabled: {current_settings.enable_liquidity_sweep_strategy}", symbol)
-                _log(f"  • ML model path: {current_settings.ml_model_path}", symbol)
-            
-            _log(f"🔍 Signal selection summary:", symbol)
-            _log(f"  • TREND/FLAT: {len(main_strategy_signals)} generated, latest: {len(fresh_main_signals)} selected", symbol)
-            if fresh_main_signals:
-                sig = fresh_main_signals[0]
-                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                _log(f"    Latest: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
-            _log(f"  • ML: {len(ml_signals_only)} generated, latest: {len(fresh_ml_signals)} selected", symbol)
-            _log(f"  • MOMENTUM: {len(momentum_signals_only)} generated, latest: {len(fresh_momentum_signals)} selected", symbol)
-            _log(f"  • LIQUIDITY: {len(liquidity_signals_only)} generated, latest: {len(fresh_liquidity_signals)} selected", symbol)
-            _log(f"  • SMC: {len(smc_signals_only)} generated, latest: {len(fresh_smc_signals)} selected", symbol)
+            # Убрано verbose диагностическое сообщение - логируется только при проблемах
             if fresh_smc_signals:
                 sig = fresh_smc_signals[-1]
                 ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
