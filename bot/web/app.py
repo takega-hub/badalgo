@@ -2982,6 +2982,40 @@ def api_chart_data():
                 except Exception as e:
                     print(f"[web] Error generating Liquidity signals for chart: {e}")
             
+            # SMC стратегия - генерируем текущие сигналы (если стратегия включена)
+            if settings.enable_smc_strategy:
+                try:
+                    from bot.smc_strategy import build_smc_signals
+                    smc_signals = build_smc_signals(df_ready, settings.strategy, symbol=symbol)
+                    _web_log(f"[web] SMC Strategy processed: {len(smc_signals)} signals")
+                    for sig in smc_signals:
+                        # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
+                        if sig.action in (Action.LONG, Action.SHORT):
+                            signals.append(sig)
+                            # Сохраняем SMC сигнал в общую историю для синхронизации с графиком
+                            try:
+                                from bot.web.history import add_signal
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="smc",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                print(f"[web] ⚠️ Failed to save SMC signal to history: {e}")
+                except Exception as e:
+                    print(f"[web] Error generating SMC signals for chart: {e}")
+            
             if signals is None:
                 signals = []
         except Exception as e:
