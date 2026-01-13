@@ -225,6 +225,7 @@ def _save_settings_to_env(settings: AppSettings):
             # Risk Management параметры
             'MAX_POSITION_USD', 'BASE_ORDER_USD', 'ADD_ORDER_USD', 'STOP_LOSS_PCT', 'TAKE_PROFIT_PCT',
             'BALANCE_PERCENT_PER_TRADE',
+            'ENABLE_TRAILING_STOP', 'TRAILING_STOP_ACTIVATION_PCT', 'TRAILING_STOP_DISTANCE_PCT',
             # App Settings параметры
             'TIMEFRAME', 'LEVERAGE', 'LIVE_POLL_SECONDS'
         }
@@ -291,6 +292,9 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['STOP_LOSS_PCT'] = str(settings.risk.stop_loss_pct)
         env_dict['TAKE_PROFIT_PCT'] = str(settings.risk.take_profit_pct)
         env_dict['BALANCE_PERCENT_PER_TRADE'] = str(settings.risk.balance_percent_per_trade)
+        env_dict['ENABLE_TRAILING_STOP'] = str(settings.risk.enable_trailing_stop).lower()
+        env_dict['TRAILING_STOP_ACTIVATION_PCT'] = str(settings.risk.trailing_stop_activation_pct)
+        env_dict['TRAILING_STOP_DISTANCE_PCT'] = str(settings.risk.trailing_stop_distance_pct)
         
         # Сохраняем общие настройки приложения
         env_dict['TIMEFRAME'] = str(settings.timeframe)
@@ -370,6 +374,9 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"STOP_LOSS_PCT={env_dict['STOP_LOSS_PCT']}\n")
             f.write(f"TAKE_PROFIT_PCT={env_dict['TAKE_PROFIT_PCT']}\n")
             f.write(f"BALANCE_PERCENT_PER_TRADE={env_dict['BALANCE_PERCENT_PER_TRADE']}\n")
+            f.write(f"ENABLE_TRAILING_STOP={env_dict['ENABLE_TRAILING_STOP']}\n")
+            f.write(f"TRAILING_STOP_ACTIVATION_PCT={env_dict['TRAILING_STOP_ACTIVATION_PCT']}\n")
+            f.write(f"TRAILING_STOP_DISTANCE_PCT={env_dict['TRAILING_STOP_DISTANCE_PCT']}\n")
             
             # Добавляем общие настройки приложения
             f.write(f"\n# App Settings (auto-updated by admin panel)\n")
@@ -1430,6 +1437,9 @@ def api_all_strategy_stats():
         "trend": get_strategy_stats(strategy_type="trend"),
         "flat": get_strategy_stats(strategy_type="flat"),
         "ml": get_strategy_stats(strategy_type="ml"),
+        "momentum": get_strategy_stats(strategy_type="momentum"),
+        "liquidity": get_strategy_stats(strategy_type="liquidity"),
+        "smc": get_strategy_stats(strategy_type="smc"),
         "all": get_strategy_stats(strategy_type=None),
     }
     return jsonify(all_stats)

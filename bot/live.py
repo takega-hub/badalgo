@@ -316,11 +316,29 @@ def _calculate_tp_sl_for_signal(
         if strategy_type == "ml":
             # Для ML стратегии используем настройки из ml_target_profit_pct_margin и ml_max_loss_pct_margin
             # Проценты от маржи нужно перевести в проценты от цены: / leverage (без деления на 100, так как настройки уже в процентах)
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: SL должен быть в диапазоне 7-10% от маржи ПЕРЕД расчетом
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+            
+            # Проверяем и корректируем ml_max_loss_pct_margin ДО расчета sl_pct
+            sl_pct_margin_raw = settings.ml_max_loss_pct_margin
+            if sl_pct_margin_raw < min_sl_pct_from_margin * 100:
+                print(f"[live] 🚨 CRITICAL: ML SL from margin ({sl_pct_margin_raw}%) < {min_sl_pct_from_margin*100:.0f}%, adjusting to {min_sl_pct_from_margin*100:.0f}%")
+                sl_pct_margin_raw = min_sl_pct_from_margin * 100
+            elif sl_pct_margin_raw > max_sl_pct_from_margin * 100:
+                print(f"[live] 🚨 CRITICAL: ML SL from margin ({sl_pct_margin_raw}%) > {max_sl_pct_from_margin*100:.0f}%, adjusting to {max_sl_pct_from_margin*100:.0f}%")
+                sl_pct_margin_raw = max_sl_pct_from_margin * 100
+            
             tp_pct = settings.ml_target_profit_pct_margin / settings.leverage / 100.0
-            sl_pct = settings.ml_max_loss_pct_margin / settings.leverage / 100.0
+            sl_pct = sl_pct_margin_raw / settings.leverage / 100.0
+            
+            print(f"[live] 🔍 ML TP/SL calculation: ml_target_profit_pct_margin={settings.ml_target_profit_pct_margin}%, ml_max_loss_pct_margin={sl_pct_margin_raw}% (adjusted from {settings.ml_max_loss_pct_margin}%), leverage={settings.leverage}x")
+            print(f"[live]   → tp_pct={tp_pct*100:.4f}% from price, sl_pct={sl_pct*100:.4f}% from price = {sl_pct*settings.leverage*100:.2f}% from margin")
             
             # Пытаемся извлечь TP/SL из reason сигнала (формат: "ml_LONG_сила_среднее_70%_TP_2.50%_SL_1.00%_...")
             # Если в сигнале указаны конкретные проценты, используем их (они уже в процентах от цены)
+            # ВАЖНО: Но проверяем, что SL в диапазоне 7-10% от маржи
             import re
             tp_match = re.search(r'TP_([\d.]+)%', sig.reason)
             sl_match = re.search(r'SL_([\d.]+)%', sig.reason)
@@ -328,9 +346,25 @@ def _calculate_tp_sl_for_signal(
             if tp_match:
                 # Извлекаем процент из reason (например, "2.50%") и преобразуем в долю (0.025)
                 tp_pct = float(tp_match.group(1)) / 100.0
+            
             if sl_match:
                 # Извлекаем процент из reason (например, "1.00%") и преобразуем в долю (0.01)
-                sl_pct = float(sl_match.group(1)) / 100.0
+                extracted_sl_pct = float(sl_match.group(1)) / 100.0
+                extracted_sl_pct_from_margin = extracted_sl_pct * settings.leverage
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: SL из сигнала должен быть в диапазоне 7-10% от маржи
+                min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+                max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+                
+                if extracted_sl_pct_from_margin < min_sl_pct_from_margin:
+                    print(f"[live] ⚠️ WARNING: SL from signal reason ({extracted_sl_pct*100:.2f}% from price = {extracted_sl_pct_from_margin*100:.1f}% from margin) < {min_sl_pct_from_margin*100:.0f}%, using {min_sl_pct_from_margin*100:.0f}% from margin")
+                    sl_pct = min_sl_pct_from_margin / settings.leverage
+                elif extracted_sl_pct_from_margin > max_sl_pct_from_margin:
+                    print(f"[live] ⚠️ WARNING: SL from signal reason ({extracted_sl_pct*100:.2f}% from price = {extracted_sl_pct_from_margin*100:.1f}% from margin) > {max_sl_pct_from_margin*100:.0f}%, using {max_sl_pct_from_margin*100:.0f}% from margin")
+                    sl_pct = max_sl_pct_from_margin / settings.leverage
+                else:
+                    sl_pct = extracted_sl_pct
+                    print(f"[live] ✅ SL from signal reason is valid: {extracted_sl_pct*100:.2f}% from price = {extracted_sl_pct_from_margin*100:.1f}% from margin")
             
             # Используем уровни поддержки/сопротивления, если доступны
             if use_sr_levels:
@@ -724,39 +758,47 @@ def _ensure_tp_sl_set(
             tp_pct_margin = settings.ml_target_profit_pct_margin  # Например, 25.0%
             sl_pct_margin = settings.ml_max_loss_pct_margin  # Например, 10.0%
             
+            print(f"[live] 🔍 ML TP/SL input: ml_target_profit_pct_margin={tp_pct_margin}%, ml_max_loss_pct_margin={sl_pct_margin}%, leverage={settings.leverage}x")
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: SL должен быть в диапазоне 7-10% от маржи ПЕРЕД расчетом
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+            
+            # Проверяем и корректируем ml_max_loss_pct_margin ДО расчета sl_pct
+            if sl_pct_margin < min_sl_pct_from_margin * 100:
+                print(f"[live] 🚨 CRITICAL: ML SL from margin ({sl_pct_margin}%) < {min_sl_pct_from_margin*100:.0f}%, adjusting to {min_sl_pct_from_margin*100:.0f}%")
+                sl_pct_margin = min_sl_pct_from_margin * 100
+            elif sl_pct_margin > max_sl_pct_from_margin * 100:
+                print(f"[live] 🚨 CRITICAL: ML SL from margin ({sl_pct_margin}%) > {max_sl_pct_from_margin*100:.0f}%, adjusting to {max_sl_pct_from_margin*100:.0f}%")
+                sl_pct_margin = max_sl_pct_from_margin * 100
+            
             # Переводим проценты от маржи в проценты от цены
             # Если leverage = 10, то 25% от маржи = 2.5% от цены
             tp_pct = tp_pct_margin / settings.leverage / 100.0
             sl_pct = sl_pct_margin / settings.leverage / 100.0
             
-            # МИНИМАЛЬНЫЕ ПОРОГИ: гарантируем, что TP/SL не равны нулю
-            # Минимум 0.5% для TP и 0.5% для SL (от цены)
+            print(f"[live] 🔍 After adjustment: sl_pct_margin={sl_pct_margin}%, sl_pct={sl_pct*100:.4f}% from price = {sl_pct*settings.leverage*100:.2f}% from margin")
+            
+            # МИНИМАЛЬНЫЕ ПОРОГИ: гарантируем, что TP не равен нулю
+            # Минимум 0.5% для TP (от цены)
             min_tp_pct = 0.005  # 0.5%
-            min_sl_pct = 0.005  # 0.5%
             
             if tp_pct < min_tp_pct:
                 print(f"[live] ⚠️ WARNING: ML TP percentage ({tp_pct*100:.4f}%) too small, using minimum {min_tp_pct*100:.2f}%")
                 print(f"[live]   ml_target_profit_pct_margin={tp_pct_margin}%, leverage={settings.leverage}")
                 tp_pct = min_tp_pct
             
-            # КРИТИЧЕСКАЯ ПРОВЕРКА: SL должен быть в диапазоне 7-10% от маржи
-            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
-            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+            # SL уже проверен и скорректирован выше (7-10% от маржи)
+            # Дополнительная проверка: убеждаемся, что sl_pct соответствует диапазону
+            min_sl_pct_from_price = min_sl_pct_from_margin / settings.leverage  # Минимум от цены (0.7% при 10x)
+            max_sl_pct_from_price = max_sl_pct_from_margin / settings.leverage   # Максимум от цены (1.0% при 10x)
             
-            # Проверяем, что ml_max_loss_pct_margin в правильном диапазоне
-            if sl_pct_margin < min_sl_pct_from_margin * 100:
-                print(f"[live] ⚠️ WARNING: ML SL from margin ({sl_pct_margin}%) < {min_sl_pct_from_margin*100:.0f}%, adjusting to {min_sl_pct_from_margin*100:.0f}%")
-                sl_pct_margin = min_sl_pct_from_margin * 100
-                sl_pct = sl_pct_margin / settings.leverage / 100.0
-            elif sl_pct_margin > max_sl_pct_from_margin * 100:
-                print(f"[live] ⚠️ WARNING: ML SL from margin ({sl_pct_margin}%) > {max_sl_pct_from_margin*100:.0f}%, adjusting to {max_sl_pct_from_margin*100:.0f}%")
-                sl_pct_margin = max_sl_pct_from_margin * 100
-                sl_pct = sl_pct_margin / settings.leverage / 100.0
-            
-            if sl_pct < min_sl_pct:
-                print(f"[live] ⚠️ WARNING: ML SL percentage ({sl_pct*100:.4f}%) too small, using minimum {min_sl_pct*100:.2f}%")
-                print(f"[live]   ml_max_loss_pct_margin={sl_pct_margin}%, leverage={settings.leverage}")
-                sl_pct = min_sl_pct
+            if sl_pct < min_sl_pct_from_price:
+                print(f"[live] 🚨 CRITICAL: ML SL percentage ({sl_pct*100:.4f}%) still too small after adjustment, forcing to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
+                sl_pct = min_sl_pct_from_price
+            elif sl_pct > max_sl_pct_from_price:
+                print(f"[live] 🚨 CRITICAL: ML SL percentage ({sl_pct*100:.4f}%) still too large after adjustment, forcing to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
+                sl_pct = max_sl_pct_from_price
             
             print(f"[live] 📊 ML TP/SL calculation: margin_tp={tp_pct_margin}%, margin_sl={sl_pct_margin}%, leverage={settings.leverage}")
             print(f"[live]   → price_tp={tp_pct*100:.2f}%, price_sl={sl_pct*100:.2f}%")
@@ -866,7 +908,7 @@ def _ensure_tp_sl_set(
                     print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting...")
                     base_sl = avg_price * (1 - min_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
-                elif sl_deviation_pct_from_margin > max_sl_pct_from_margin:
+                elif sl_deviation_pct_from_margin > max_sl_pct_from_margin * 1.01:  # Допуск 1% для округления
                     print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusting...")
                     base_sl = avg_price * (1 - max_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
@@ -893,7 +935,7 @@ def _ensure_tp_sl_set(
                     print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting...")
                     base_sl = avg_price * (1 + min_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
-                elif sl_deviation_pct_from_margin > max_sl_pct_from_margin:
+                elif sl_deviation_pct_from_margin > max_sl_pct_from_margin * 1.01:  # Допуск 1% для округления
                     print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusting...")
                     base_sl = avg_price * (1 + max_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
@@ -905,23 +947,43 @@ def _ensure_tp_sl_set(
         target_sl = base_sl
         
         # 1. БЕЗУБЫТОК: Перемещаем SL в безубыток при достижении определенной прибыли
-        # ВАЖНО: Безубыток должен быть лучше текущего SL, но не хуже базового SL
+        # ВАЖНО: Безубыток должен быть лучше текущего SL, но не меньше 7% от маржи
         if settings.risk.enable_breakeven and max_profit_pct >= settings.risk.breakeven_activation_pct * 100:
             if position_bias == Bias.LONG:
                 breakeven_sl = avg_price * 0.999  # Немного ниже входа для LONG (чтобы не сработал сразу)
             else:  # SHORT
                 breakeven_sl = avg_price * 1.001  # Немного выше входа для SHORT (чтобы не сработал сразу)
             
-            # Проверяем, что безубыток лучше базового SL (для LONG: выше базового SL, для SHORT: ниже базового SL)
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Безубыток должен быть не меньше 7% от маржи
+            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # Минимум от цены (0.7% при 10x)
+            
+            if position_bias == Bias.LONG:
+                breakeven_sl_pct_from_price = abs(avg_price - breakeven_sl) / avg_price
+                breakeven_sl_pct_from_margin = breakeven_sl_pct_from_price * leverage
+            else:  # SHORT
+                breakeven_sl_pct_from_price = abs(breakeven_sl - avg_price) / avg_price
+                breakeven_sl_pct_from_margin = breakeven_sl_pct_from_price * leverage
+            
+            # Проверяем, что безубыток лучше базового SL
+            # ВАЖНО: Безубыток может быть меньше 7% от маржи, если позиция в прибыли
+            # Но если базовый SL уже 7% от маржи, безубыток не должен быть хуже базового SL
             use_breakeven = False
             if position_bias == Bias.LONG:
                 # Для LONG: безубыток должен быть выше базового SL (ближе к цене входа)
                 if breakeven_sl > base_sl:
                     use_breakeven = True
+                    print(f"[live] ✅ Breakeven SL ({breakeven_sl:.2f}) is better than base SL ({base_sl:.2f}) for LONG position")
+                else:
+                    print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is not better than base SL ({base_sl:.2f}), keeping base SL")
             else:  # SHORT
                 # Для SHORT: безубыток должен быть ниже базового SL (ближе к цене входа)
                 if breakeven_sl < base_sl:
                     use_breakeven = True
+                    print(f"[live] ✅ Breakeven SL ({breakeven_sl:.2f}) is better than base SL ({base_sl:.2f}) for SHORT position")
+                else:
+                    print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is not better than base SL ({base_sl:.2f}), keeping base SL")
             
             if use_breakeven:
                 # Если текущий SL хуже безубытка, перемещаем его
@@ -943,46 +1005,61 @@ def _ensure_tp_sl_set(
                     target_sl = breakeven_sl
                     print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
             else:
-                print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
+                print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is worse than base SL ({base_sl:.2f}) or too small, keeping base SL")
         
-        # 2. TRAILING STOP: Активируем trailing stop при достижении определенной прибыли
-        if settings.risk.enable_trailing_stop and max_profit_pct >= settings.risk.trailing_stop_activation_pct * 100:
+        # 2. TRAILING STOP: Активируем trailing stop, когда цена прошла половину до TP
+        # Вычисляем расстояние до TP
+        if position_bias == Bias.LONG:
+            tp_distance_pct = (target_tp - avg_price) / avg_price * 100  # Процент от цены входа до TP
+        else:  # SHORT
+            tp_distance_pct = (avg_price - target_tp) / avg_price * 100  # Процент от цены входа до TP
+        
+        # Trailing stop активируется, когда прибыль >= 50% от расстояния до TP
+        half_tp_distance_pct = tp_distance_pct * 0.5
+        
+        # Также проверяем минимальную активацию из настроек (для обратной совместимости)
+        min_activation_pct = max(settings.risk.trailing_stop_activation_pct * 100, half_tp_distance_pct)
+        
+        print(f"[live] 🔍 Trailing stop check: TP distance={tp_distance_pct:.2f}%, half TP={half_tp_distance_pct:.2f}%, current profit={max_profit_pct:.2f}%, min activation={min_activation_pct:.2f}%")
+        
+        if settings.risk.enable_trailing_stop and max_profit_pct >= min_activation_pct:
             trailing_distance_pct = settings.risk.trailing_stop_distance_pct
             
             if position_bias == Bias.LONG:
                 # Для LONG: SL должен быть ниже максимальной цены на trailing_distance_pct
                 trailing_sl = max_price * (1 - trailing_distance_pct)
-                # SL не должен быть ниже базового SL, но также не должен быть выше цены входа
                 # ВАЖНО: Trailing stop должен быть лучше базового SL (выше для LONG)
-                if trailing_sl > base_sl and trailing_sl < avg_price:
+                # Может быть выше цены входа, если цена прошла половину до TP
+                if trailing_sl > base_sl:
                     if trailing_sl > target_sl:
+                        old_target_sl = target_sl
                         target_sl = trailing_sl
-                        print(f"[live] 📈 Trailing stop: ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%)")
+                        print(f"[live] 📈 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)")
+                        print(f"[live]   Trailing distance: {trailing_distance_pct*100:.2f}% from max price")
                     else:
                         print(f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop ({trailing_sl:.2f}), keeping it")
-                elif trailing_sl >= avg_price:
-                    # Если trailing SL выше цены входа, не используем его - оставляем текущий SL
-                    print(f"[live] ⚠️ Trailing stop would be above entry price, keeping current SL: ${target_sl:.2f}")
-                elif trailing_sl <= base_sl:
+                else:
                     # Если trailing SL хуже базового SL, не используем его
                     print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
             else:  # SHORT
                 # Для SHORT: SL должен быть выше максимальной цены на trailing_distance_pct
                 trailing_sl = max_price * (1 + trailing_distance_pct)
-                # SL не должен быть выше базового SL, но также не должен быть ниже цены входа
                 # ВАЖНО: Trailing stop должен быть лучше базового SL (ниже для SHORT)
-                if trailing_sl < base_sl and trailing_sl > avg_price:
+                # Может быть ниже цены входа, если цена прошла половину до TP
+                if trailing_sl < base_sl:
                     if trailing_sl < target_sl:
+                        old_target_sl = target_sl
                         target_sl = trailing_sl
-                        print(f"[live] 📉 Trailing stop: ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%)")
+                        print(f"[live] 📉 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)")
+                        print(f"[live]   Trailing distance: {trailing_distance_pct*100:.2f}% from max price")
                     else:
                         print(f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop ({trailing_sl:.2f}), keeping it")
-                elif trailing_sl <= avg_price:
-                    # Если trailing SL ниже цены входа, не используем его - оставляем текущий SL
-                    print(f"[live] ⚠️ Trailing stop would be below entry price, keeping current SL: ${target_sl:.2f}")
-                elif trailing_sl >= base_sl:
+                else:
                     # Если trailing SL хуже базового SL, не используем его
                     print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
+        elif settings.risk.enable_trailing_stop:
+            # Trailing stop еще не активирован
+            print(f"[live] ⏳ Trailing stop waiting: profit={max_profit_pct:.2f}%, need {min_activation_pct:.2f}% (half TP: {half_tp_distance_pct:.2f}%)")
         
         # Проверяем, нужно ли обновить TP/SL
         tp_needs_update = not tp_set
@@ -1012,30 +1089,57 @@ def _ensure_tp_sl_set(
         
         # ФИНАЛЬНАЯ ВАЛИДАЦИЯ: Проверяем target_sl и target_tp перед отправкой в API
         # Это критически важно для предотвращения ошибок API
+        # ВАЖНО: Trailing stop может быть выше цены входа (для LONG) или ниже (для SHORT), если цена прошла половину до TP
+        
+        # Проверяем, является ли это trailing stop (SL лучше базового SL и прибыль достаточно большая)
+        # Вычисляем половину до TP для проверки
         if position_bias == Bias.LONG:
-            # Для LONG: TP должен быть выше цены входа, SL должен быть ниже
+            tp_distance_pct = (target_tp - avg_price) / avg_price * 100
+        else:  # SHORT
+            tp_distance_pct = (avg_price - target_tp) / avg_price * 100
+        half_tp_distance_pct = tp_distance_pct * 0.5
+        min_activation_pct = max(settings.risk.trailing_stop_activation_pct * 100, half_tp_distance_pct)
+        
+        # Проверяем, является ли это trailing stop
+        is_trailing_stop = False
+        if settings.risk.enable_trailing_stop and max_profit_pct >= min_activation_pct:
+            if position_bias == Bias.LONG:
+                # Для LONG: trailing stop выше базового SL (может быть выше цены входа)
+                is_trailing_stop = target_sl > base_sl
+            else:  # SHORT
+                # Для SHORT: trailing stop ниже базового SL (может быть ниже цены входа)
+                is_trailing_stop = target_sl < base_sl
+        
+        if position_bias == Bias.LONG:
+            # Для LONG: TP должен быть выше цены входа
             if target_tp <= avg_price:
                 print(f"[live] ⚠️ WARNING: Final TP ({target_tp:.2f}) <= entry price ({avg_price:.2f}) for LONG position, adjusting...")
                 target_tp = avg_price * 1.01  # Минимальный TP 1% выше входа
-            if target_sl >= avg_price:
+            # Для LONG: SL должен быть ниже цены входа, ИСКЛЮЧЕНИЕ: trailing stop может быть выше
+            if target_sl >= avg_price and not is_trailing_stop:
                 print(f"[live] ⚠️ CRITICAL: Final SL ({target_sl:.2f}) >= entry price ({avg_price:.2f}) for LONG position, FORCING adjustment...")
                 target_sl = avg_price * 0.99  # Минимальный SL 1% ниже входа
                 # Дополнительная проверка после корректировки
                 if target_sl >= avg_price:
                     target_sl = avg_price * 0.95  # Если все еще проблема, используем 5% ниже
                     print(f"[live] ⚠️ CRITICAL: SL still invalid, using 5% below entry: ${target_sl:.2f}")
+            elif is_trailing_stop:
+                print(f"[live] ✅ Trailing stop SL ({target_sl:.2f}) is above entry price ({avg_price:.2f}) - это нормально для trailing stop")
         else:  # SHORT
-            # Для SHORT: TP должен быть ниже цены входа, SL должен быть выше
+            # Для SHORT: TP должен быть ниже цены входа
             if target_tp >= avg_price:
                 print(f"[live] ⚠️ WARNING: Final TP ({target_tp:.2f}) >= entry price ({avg_price:.2f}) for SHORT position, adjusting...")
                 target_tp = avg_price * 0.99  # Минимальный TP 1% ниже входа
-            if target_sl <= avg_price:
+            # Для SHORT: SL должен быть выше цены входа, ИСКЛЮЧЕНИЕ: trailing stop может быть ниже
+            if target_sl <= avg_price and not is_trailing_stop:
                 print(f"[live] ⚠️ CRITICAL: Final SL ({target_sl:.2f}) <= entry price ({avg_price:.2f}) for SHORT position, FORCING adjustment...")
                 target_sl = avg_price * 1.01  # Минимальный SL 1% выше входа
                 # Дополнительная проверка после корректировки
                 if target_sl <= avg_price:
                     target_sl = avg_price * 1.05  # Если все еще проблема, используем 5% выше
                     print(f"[live] ⚠️ CRITICAL: SL still invalid, using 5% above entry: ${target_sl:.2f}")
+            elif is_trailing_stop:
+                print(f"[live] ✅ Trailing stop SL ({target_sl:.2f}) is below entry price ({avg_price:.2f}) - это нормально для trailing stop")
         
         # Устанавливаем или обновляем TP/SL
         if tp_needs_update or sl_needs_update:
@@ -1048,6 +1152,9 @@ def _ensure_tp_sl_set(
             # КРИТИЧЕСКАЯ ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ: Убеждаемся, что значения корректны
             final_sl = target_sl if sl_needs_update else None
             final_tp = target_tp if tp_needs_update else None
+            
+            # Сохраняем базовый SL для проверки безубытка
+            base_sl_for_check = base_sl
             
             # СТРОГАЯ ВАЛИДАЦИЯ: Исправляем значения до отправки в API
             # ВАЖНО: SL должен быть в диапазоне 7-10% от маржи
@@ -1068,10 +1175,15 @@ def _ensure_tp_sl_set(
                         sl_deviation_pct_from_price = abs(avg_price - final_sl) / avg_price
                         sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                         
-                        if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                        # ВАЖНО: Если это безубыток (близко к цене входа, в пределах 0.5% от цены), 
+                        # и он лучше базового SL, не перезаписываем его
+                        is_breakeven = sl_deviation_pct_from_price < 0.005  # 0.5% от цены
+                        if is_breakeven and final_sl > base_sl_for_check:
+                            print(f"[live] ✅ Final SL is breakeven ({final_sl:.2f}), better than base SL ({base_sl_for_check:.2f}), keeping it")
+                        elif sl_deviation_pct_from_margin < min_sl_pct_from_margin:
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 - min_sl_pct_from_price)
-                        elif sl_deviation_pct_from_margin > max_sl_pct_from_margin:
+                        elif sl_deviation_pct_from_margin > max_sl_pct_from_margin * 1.01:  # Допуск 1% для округления
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusting to {max_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 - max_sl_pct_from_price)
                         else:
@@ -1086,10 +1198,15 @@ def _ensure_tp_sl_set(
                         sl_deviation_pct_from_price = abs(final_sl - avg_price) / avg_price
                         sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                         
-                        if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                        # ВАЖНО: Если это безубыток (близко к цене входа, в пределах 0.5% от цены), 
+                        # и он лучше базового SL, не перезаписываем его
+                        is_breakeven = sl_deviation_pct_from_price < 0.005  # 0.5% от цены
+                        if is_breakeven and final_sl < base_sl_for_check:
+                            print(f"[live] ✅ Final SL is breakeven ({final_sl:.2f}), better than base SL ({base_sl_for_check:.2f}), keeping it")
+                        elif sl_deviation_pct_from_margin < min_sl_pct_from_margin:
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 + min_sl_pct_from_price)
-                        elif sl_deviation_pct_from_margin > max_sl_pct_from_margin:
+                        elif sl_deviation_pct_from_margin > max_sl_pct_from_margin * 1.01:  # Допуск 1% для округления
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusting to {max_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 + max_sl_pct_from_price)
                         else:

@@ -2233,6 +2233,32 @@
                         <label>Balance % Per Trade:</label>
                         <input type="number" name="balance_percent_per_trade" value="${risk.balance_percent_per_trade}" step="0.1">
                     </div>
+                    <h3 style="margin-top: 20px; color: #00d4ff;">Trailing Stop Settings</h3>
+                    <div class="form-group">
+                        <label>Enable Trailing Stop:</label>
+                        <input type="checkbox" name="enable_trailing_stop" ${risk.enable_trailing_stop ? 'checked' : ''} style="width: 20px; height: 20px;">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">
+                            Включить trailing stop. SL будет двигаться вслед за ценой, когда цена пройдет половину до TP.
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>Trailing Stop Activation % (минимум от маржи):</label>
+                        <input type="number" name="trailing_stop_activation_pct" value="${(risk.trailing_stop_activation_pct * 100).toFixed(3)}" step="0.001" min="0.1" max="10">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">
+                            <strong>Минимальная прибыль для активации trailing stop (от маржи):</strong><br>
+                            Trailing stop активируется, когда прибыль >= max(это значение, половина до TP).<br>
+                            <strong>Пример:</strong> Если установлено 0.5%, то trailing stop активируется при прибыли >= 0.5% от маржи, или при достижении половины до TP (если она больше).
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>Trailing Stop Distance % (от максимальной цены):</label>
+                        <input type="number" name="trailing_stop_distance_pct" value="${(risk.trailing_stop_distance_pct * 100).toFixed(3)}" step="0.001" min="0.1" max="5">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">
+                            <strong>Расстояние trailing stop от максимальной цены:</strong><br>
+                            SL будет находиться на этом расстоянии от максимальной достигнутой цены.<br>
+                            <strong>Пример:</strong> Если установлено 0.3%, и максимальная цена = $143.50, то trailing SL = $143.50 * (1 - 0.003) = $143.07
+                        </small>
+                    </div>
                     <h3 style="margin-top: 20px; color: #00d4ff;">App Settings</h3>
                     <!-- Скрытые поля для обратной совместимости -->
                     <input type="hidden" name="symbol" value="${app.symbol}">
@@ -2284,17 +2310,18 @@
             const data = {};
             
             for (const [key, value] of formData.entries()) {
-                // Пропускаем checkbox, обработаем его отдельно
-                if (key === 'range_tp_aggressive') {
+                // Пропускаем checkbox, обработаем их отдельно
+                if (key === 'range_tp_aggressive' || key === 'enable_trailing_stop') {
                     continue;
                 }
                 // Обрабатываем запятую как разделитель десятичных дробей (для локализованного ввода)
                 const normalizedValue = String(value).replace(',', '.');
                 const numValue = parseFloat(normalizedValue);
                 
-                // Преобразуем проценты в доли для stop_loss_pct, take_profit_pct и range_stop_loss_pct
-                if (key === 'stop_loss_pct' || key === 'take_profit_pct' || key === 'range_stop_loss_pct') {
-                    // Пользователь вводит проценты (например, 7 для 7%), преобразуем в доли (0.07)
+                // Преобразуем проценты в доли для stop_loss_pct, take_profit_pct, range_stop_loss_pct, trailing_stop_activation_pct и trailing_stop_distance_pct
+                if (key === 'stop_loss_pct' || key === 'take_profit_pct' || key === 'range_stop_loss_pct' || 
+                    key === 'trailing_stop_activation_pct' || key === 'trailing_stop_distance_pct') {
+                    // Пользователь вводит проценты (например, 0.5 для 0.5%), преобразуем в доли (0.005)
                     data[key] = isNaN(numValue) ? value : numValue / 100.0;
                 } else {
                     data[key] = isNaN(numValue) ? value : numValue;
@@ -2306,6 +2333,14 @@
                 const checkbox = event.target.querySelector('[name="range_tp_aggressive"]');
                 if (checkbox) {
                     data.range_tp_aggressive = checkbox.checked;
+                }
+            }
+            
+            // Проверяем checkbox для risk секции
+            if (section === 'risk') {
+                const trailingStopCheckbox = event.target.querySelector('[name="enable_trailing_stop"]');
+                if (trailingStopCheckbox) {
+                    data.enable_trailing_stop = trailingStopCheckbox.checked;
                 }
             }
             
@@ -3650,6 +3685,46 @@
                         <div class="stat-item">
                             <span class="stat-label">Avg PnL:</span>
                             <span class="stat-value">${formatNumber(liquidityStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Статистика для SMC стратегии
+                const smcStats = data.smc || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(153, 51, 255, 0.1) 0%, rgba(153, 51, 255, 0.05) 100%); border: 1px solid rgba(153, 51, 255, 0.3);">
+                        <h3 style="color: #9933ff; margin-bottom: 15px;">🟣 Smart Money Concepts</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${smcStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(smcStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(smcStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Winning Trades:</span>
+                            <span class="stat-value" style="color: #00ff88">${smcStats.winning_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Losing Trades:</span>
+                            <span class="stat-value" style="color: #ff4444">${smcStats.losing_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(smcStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(smcStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(smcStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Win:</span>
+                            <span class="stat-value" style="color: #00ff88">${formatNumber(smcStats.avg_win || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Loss:</span>
+                            <span class="stat-value" style="color: #ff4444">${formatNumber(smcStats.avg_loss || 0)} USDT</span>
                         </div>
                     </div>
                 `;

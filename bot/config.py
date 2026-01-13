@@ -790,6 +790,31 @@ def load_settings() -> AppSettings:
         except ValueError:
             pass
     
+    # Загружаем настройки trailing stop из .env
+    enable_trailing_stop = os.getenv("ENABLE_TRAILING_STOP", "").strip().lower()
+    if enable_trailing_stop:
+        settings.risk.enable_trailing_stop = enable_trailing_stop in ("true", "1", "yes", "on")
+    
+    trailing_stop_activation = os.getenv("TRAILING_STOP_ACTIVATION_PCT", "").strip()
+    if trailing_stop_activation:
+        try:
+            activation_value = float(trailing_stop_activation)
+            if activation_value >= 1.0:
+                activation_value = activation_value / 100.0
+            settings.risk.trailing_stop_activation_pct = activation_value
+        except ValueError:
+            pass
+    
+    trailing_stop_distance = os.getenv("TRAILING_STOP_DISTANCE_PCT", "").strip()
+    if trailing_stop_distance:
+        try:
+            distance_value = float(trailing_stop_distance)
+            if distance_value >= 1.0:
+                distance_value = distance_value / 100.0
+            settings.risk.trailing_stop_distance_pct = distance_value
+        except ValueError:
+            pass
+    
     # Загружаем общие настройки приложения из .env
     timeframe = os.getenv("TIMEFRAME", "").strip()
     if timeframe:
