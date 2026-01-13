@@ -124,9 +124,12 @@ class RiskParams:
     enable_breakeven: bool = True  # Включить перемещение SL в безубыток
     breakeven_activation_pct: float = 0.005  # Активировать безубыток при прибыли 0.5%
     
-    # Умное добавление к позиции
-    enable_smart_add: bool = True  # Включить умное добавление (только при откатах)
-    smart_add_pullback_pct: float = 0.002  # Добавлять только при откате 0.2% от максимума
+    # Умное добавление к позиции (averaging/pyramiding)
+    enable_smart_add: bool = True  # Включить умное добавление
+    smart_add_pullback_pct: float = 0.002  # Минимальный откат для добавления (0.2%)
+    max_add_count: int = 2  # Максимальное количество докупок (2 = можно добавить 2 раза)
+    smart_add_tp_sl_progress_pct: float = 0.5  # Добавлять когда цена прошла N% пути к TP или SL (50%)
+    smart_add_adjust_sl: bool = True  # Пересчитывать SL после докупки по новой средней цене
     
     # Защита от входа на границах (ATR анализ)
     enable_atr_entry_filter: bool = True  # Включить фильтр входа по ATR

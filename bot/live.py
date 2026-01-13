@@ -1828,6 +1828,8 @@ def run_live_from_api(
     position_strategy: Dict[str, str] = {}  # Хранит стратегию, которая открыла позицию {symbol: "trend"|"flat"|"ml"|"hybrid"|"unknown"}
     position_order_id: Dict[str, str] = {}  # Хранит orderId открытой позиции {symbol: orderId}
     position_order_link_id: Dict[str, str] = {}  # Хранит orderLinkId открытой позиции {symbol: orderLinkId}
+    position_add_count: Dict[str, int] = {}  # Счётчик докупок {symbol: count}
+    position_entry_price: Dict[str, float] = {}  # Цена входа в первоначальную позицию {symbol: price}
     last_handled_signal: Optional[tuple] = None  # (timestamp, action)
     seen_signal_keys_cycle: set = set()  # Отслеживание сохраненных сигналов за цикл
     previous_position: Optional[Dict[str, Any]] = None  # Хранит предыдущую позицию для обнаружения закрытия
@@ -2075,6 +2077,8 @@ def run_live_from_api(
                     position_strategy.pop(symbol, None)
                     position_order_id.pop(symbol, None)
                     position_order_link_id.pop(symbol, None)
+                    position_add_count.pop(symbol, None)
+                    position_entry_price.pop(symbol, None)
             
             # Обновляем previous_position для следующего цикла
             previous_position = position.copy() if position else None
@@ -3872,6 +3876,9 @@ def run_live_from_api(
                                 position_order_id[symbol] = order_id
                             if order_link_id_result:
                                 position_order_link_id[symbol] = order_link_id_result
+                        # Инициализируем счётчик докупок и сохраняем цену входа
+                        position_add_count[symbol] = 0
+                        position_entry_price[symbol] = sig.price
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
@@ -3888,16 +3895,75 @@ def run_live_from_api(
                     # Это может быть подтверждение от другой стратегии или повторный сигнал от той же
                     if should_add_to_position:
                         print(f"[live] 📊 Adding to position: signals from different strategies confirm each other")
-                    # Проверяем smart add условие
+                    
+                    # Проверяем smart add условия
                     if current_settings.risk.enable_smart_add:
-                        max_price = position_max_price.get(symbol, sig.price)
-                        pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
-                        
-                        if pullback_pct < current_settings.risk.smart_add_pullback_pct * 100:
-                            print(f"[live] ⚠️ Skipping ADD_LONG: pullback too small ({pullback_pct:.2f}% < {current_settings.risk.smart_add_pullback_pct * 100:.2f}%)")
+                        # 1. Проверяем лимит докупок
+                        current_add_count = position_add_count.get(symbol, 0)
+                        max_adds = current_settings.risk.max_add_count
+                        if current_add_count >= max_adds:
+                            print(f"[live] ⚠️ Skipping ADD_LONG: max adds reached ({current_add_count}/{max_adds})")
                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                 break
                             continue
+                        
+                        # 2. Проверяем прогресс к TP или SL (>50% пути)
+                        avg_price = position.get("avg_price", sig.price)
+                        current_tp = position.get("take_profit", "")
+                        current_sl = position.get("stop_loss", "")
+                        
+                        can_add = False
+                        add_reason = ""
+                        
+                        if current_tp and current_sl and avg_price > 0:
+                            try:
+                                tp_price = float(current_tp) if current_tp else 0
+                                sl_price = float(current_sl) if current_sl else 0
+                                
+                                if tp_price > 0 and sl_price > 0:
+                                    # Расчёт прогресса к TP (для LONG: цена растёт к TP)
+                                    distance_to_tp = tp_price - avg_price
+                                    progress_to_tp = (sig.price - avg_price) / distance_to_tp if distance_to_tp > 0 else 0
+                                    
+                                    # Расчёт прогресса к SL (для LONG: цена падает к SL)
+                                    distance_to_sl = avg_price - sl_price
+                                    progress_to_sl = (avg_price - sig.price) / distance_to_sl if distance_to_sl > 0 else 0
+                                    
+                                    threshold = current_settings.risk.smart_add_tp_sl_progress_pct
+                                    
+                                    if progress_to_tp >= threshold:
+                                        can_add = True
+                                        add_reason = f"price moved {progress_to_tp*100:.1f}% to TP (threshold: {threshold*100:.0f}%)"
+                                    elif progress_to_sl >= threshold:
+                                        can_add = True
+                                        add_reason = f"price moved {progress_to_sl*100:.1f}% to SL (threshold: {threshold*100:.0f}%) - averaging down"
+                                    else:
+                                        print(f"[live] ⚠️ Skipping ADD_LONG: price not moved enough (to TP: {progress_to_tp*100:.1f}%, to SL: {progress_to_sl*100:.1f}%, need: {threshold*100:.0f}%)")
+                                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                            break
+                                        continue
+                            except (ValueError, TypeError) as e:
+                                print(f"[live] ⚠️ Error calculating TP/SL progress: {e}")
+                                # Fallback на старую логику pullback
+                                max_price = position_max_price.get(symbol, sig.price)
+                                pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                                if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
+                                    can_add = True
+                                    add_reason = f"pullback {pullback_pct:.2f}% (fallback logic)"
+                        else:
+                            # Нет TP/SL - используем старую логику откатов
+                            max_price = position_max_price.get(symbol, sig.price)
+                            pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                            if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
+                                can_add = True
+                                add_reason = f"pullback {pullback_pct:.2f}% (no TP/SL set)"
+                        
+                        if not can_add:
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
+                        
+                        print(f"[live] 📊 ADD_LONG conditions met: {add_reason}")
                     
                     # Рассчитываем количество контрактов как половину от текущего размера позиции
                     current_size = position.get("size", 0)
@@ -3915,7 +3981,7 @@ def run_live_from_api(
                             break
                         continue
                     
-                    print(f"[live] 📈 Adding to LONG position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f}")
+                    print(f"[live] 📈 Adding to LONG position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f} [Add #{current_add_count + 1}/{max_adds}]")
                     resp = client.place_order(
                         symbol=symbol,
                         side="Buy",
@@ -3923,7 +3989,39 @@ def run_live_from_api(
                     )
                     
                     if resp.get("retCode") == 0:
-                        print(f"[live] ✅ Added to LONG position successfully")
+                        # Обновляем счётчик докупок
+                        position_add_count[symbol] = current_add_count + 1
+                        print(f"[live] ✅ Added to LONG position successfully (add #{position_add_count[symbol]}/{max_adds})")
+                        
+                        # Пересчитываем и обновляем SL по новой средней цене
+                        if current_settings.risk.smart_add_adjust_sl:
+                            try:
+                                # Ждём обновления позиции
+                                import time as time_module
+                                time_module.sleep(0.5)
+                                
+                                # Получаем обновлённую позицию
+                                updated_position = _get_position(client, symbol)
+                                if updated_position:
+                                    new_avg_price = updated_position.get("avg_price", 0)
+                                    if new_avg_price > 0:
+                                        # Рассчитываем новый SL (тот же % от новой средней цены)
+                                        sl_pct = current_settings.risk.stop_loss_pct
+                                        new_sl = new_avg_price * (1 - sl_pct)
+                                        
+                                        print(f"[live] 🔄 Adjusting SL: avg price ${avg_price:.2f} → ${new_avg_price:.2f}, new SL: ${new_sl:.2f}")
+                                        
+                                        sl_resp = client.set_trading_stop(
+                                            symbol=symbol,
+                                            stop_loss=new_sl,
+                                        )
+                                        if sl_resp.get("retCode") == 0:
+                                            print(f"[live] ✅ SL adjusted to ${new_sl:.2f} after averaging")
+                                        else:
+                                            print(f"[live] ⚠️ Failed to adjust SL: {sl_resp.get('retMsg', 'Unknown error')}")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Error adjusting SL after add: {e}")
+                        
                         processed_signals.add(signal_id)
                         _save_processed_signals(processed_signals, processed_signals_file)
                         last_handled_signal = (ts, sig.action.value)
@@ -4298,6 +4396,9 @@ def run_live_from_api(
                                 position_order_id[symbol] = order_id
                             if order_link_id_result:
                                 position_order_link_id[symbol] = order_link_id_result
+                        # Инициализируем счётчик докупок и сохраняем цену входа
+                        position_add_count[symbol] = 0
+                        position_entry_price[symbol] = sig.price
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
@@ -4313,16 +4414,75 @@ def run_live_from_api(
                     # Это может быть подтверждение от другой стратегии или повторный сигнал от той же
                     if should_add_to_position:
                         print(f"[live] 📊 Adding to position: signals from different strategies confirm each other")
-                    # Проверяем smart add условие
+                    
+                    # Проверяем smart add условия
                     if current_settings.risk.enable_smart_add:
-                        max_price = position_max_price.get(symbol, sig.price)
-                        pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
-                        
-                        if pullback_pct < current_settings.risk.smart_add_pullback_pct * 100:
-                            print(f"[live] ⚠️ Skipping ADD_SHORT: pullback too small ({pullback_pct:.2f}% < {current_settings.risk.smart_add_pullback_pct * 100:.2f}%)")
+                        # 1. Проверяем лимит докупок
+                        current_add_count = position_add_count.get(symbol, 0)
+                        max_adds = current_settings.risk.max_add_count
+                        if current_add_count >= max_adds:
+                            print(f"[live] ⚠️ Skipping ADD_SHORT: max adds reached ({current_add_count}/{max_adds})")
                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                 break
                             continue
+                        
+                        # 2. Проверяем прогресс к TP или SL (>50% пути)
+                        avg_price = position.get("avg_price", sig.price)
+                        current_tp = position.get("take_profit", "")
+                        current_sl = position.get("stop_loss", "")
+                        
+                        can_add = False
+                        add_reason = ""
+                        
+                        if current_tp and current_sl and avg_price > 0:
+                            try:
+                                tp_price = float(current_tp) if current_tp else 0
+                                sl_price = float(current_sl) if current_sl else 0
+                                
+                                if tp_price > 0 and sl_price > 0:
+                                    # Расчёт прогресса к TP (для SHORT: цена падает к TP)
+                                    distance_to_tp = avg_price - tp_price
+                                    progress_to_tp = (avg_price - sig.price) / distance_to_tp if distance_to_tp > 0 else 0
+                                    
+                                    # Расчёт прогресса к SL (для SHORT: цена растёт к SL)
+                                    distance_to_sl = sl_price - avg_price
+                                    progress_to_sl = (sig.price - avg_price) / distance_to_sl if distance_to_sl > 0 else 0
+                                    
+                                    threshold = current_settings.risk.smart_add_tp_sl_progress_pct
+                                    
+                                    if progress_to_tp >= threshold:
+                                        can_add = True
+                                        add_reason = f"price moved {progress_to_tp*100:.1f}% to TP (threshold: {threshold*100:.0f}%)"
+                                    elif progress_to_sl >= threshold:
+                                        can_add = True
+                                        add_reason = f"price moved {progress_to_sl*100:.1f}% to SL (threshold: {threshold*100:.0f}%) - averaging down"
+                                    else:
+                                        print(f"[live] ⚠️ Skipping ADD_SHORT: price not moved enough (to TP: {progress_to_tp*100:.1f}%, to SL: {progress_to_sl*100:.1f}%, need: {threshold*100:.0f}%)")
+                                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                            break
+                                        continue
+                            except (ValueError, TypeError) as e:
+                                print(f"[live] ⚠️ Error calculating TP/SL progress: {e}")
+                                # Fallback на старую логику pullback
+                                max_price = position_max_price.get(symbol, sig.price)
+                                pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                                if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
+                                    can_add = True
+                                    add_reason = f"pullback {pullback_pct:.2f}% (fallback logic)"
+                        else:
+                            # Нет TP/SL - используем старую логику откатов
+                            max_price = position_max_price.get(symbol, sig.price)
+                            pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                            if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
+                                can_add = True
+                                add_reason = f"pullback {pullback_pct:.2f}% (no TP/SL set)"
+                        
+                        if not can_add:
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
+                        
+                        print(f"[live] 📊 ADD_SHORT conditions met: {add_reason}")
                     
                     # Рассчитываем количество контрактов как половину от текущего размера позиции
                     current_size = position.get("size", 0)
@@ -4340,7 +4500,7 @@ def run_live_from_api(
                             break
                         continue
                     
-                    print(f"[live] 📉 Adding to SHORT position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f}")
+                    print(f"[live] 📉 Adding to SHORT position: {qty:.3f} (half of {current_size:.3f}) @ ${sig.price:.2f} [Add #{current_add_count + 1}/{max_adds}]")
                     resp = client.place_order(
                         symbol=symbol,
                         side="Sell",
@@ -4348,11 +4508,43 @@ def run_live_from_api(
                     )
                     
                     if resp.get("retCode") == 0:
+                        # Обновляем счётчик докупок
+                        position_add_count[symbol] = current_add_count + 1
                         print("=" * 60)
-                        print(f"[live] 📊 ADDED TO POSITION: SHORT")
+                        print(f"[live] 📊 ADDED TO POSITION: SHORT (add #{position_add_count[symbol]}/{max_adds})")
                         print(f"[live]   Quantity Added: {qty:.3f} @ ${sig.price:.2f}")
                         print(f"[live]   Total Position Size: {current_size + qty:.3f}")
                         print("=" * 60)
+                        
+                        # Пересчитываем и обновляем SL по новой средней цене
+                        if current_settings.risk.smart_add_adjust_sl:
+                            try:
+                                # Ждём обновления позиции
+                                import time as time_module
+                                time_module.sleep(0.5)
+                                
+                                # Получаем обновлённую позицию
+                                updated_position = _get_position(client, symbol)
+                                if updated_position:
+                                    new_avg_price = updated_position.get("avg_price", 0)
+                                    if new_avg_price > 0:
+                                        # Рассчитываем новый SL (тот же % от новой средней цены)
+                                        sl_pct = current_settings.risk.stop_loss_pct
+                                        new_sl = new_avg_price * (1 + sl_pct)  # Для SHORT SL выше цены входа
+                                        
+                                        print(f"[live] 🔄 Adjusting SL: avg price ${avg_price:.2f} → ${new_avg_price:.2f}, new SL: ${new_sl:.2f}")
+                                        
+                                        sl_resp = client.set_trading_stop(
+                                            symbol=symbol,
+                                            stop_loss=new_sl,
+                                        )
+                                        if sl_resp.get("retCode") == 0:
+                                            print(f"[live] ✅ SL adjusted to ${new_sl:.2f} after averaging")
+                                        else:
+                                            print(f"[live] ⚠️ Failed to adjust SL: {sl_resp.get('retMsg', 'Unknown error')}")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Error adjusting SL after add: {e}")
+                        
                         processed_signals.add(signal_id)
                         _save_processed_signals(processed_signals, processed_signals_file)
                         last_handled_signal = (ts, sig.action.value)
