@@ -921,6 +921,7 @@ def _ensure_tp_sl_set(
                     print(f"[live]   Adjusted SL to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
                 else:
                     # Убрано verbose сообщение "SL is correct" - логируется только при проблемах
+                    pass
         else:  # SHORT
             # Для SHORT: TP должен быть ниже цены входа, SL должен быть выше
             if base_tp >= avg_price:
@@ -948,6 +949,7 @@ def _ensure_tp_sl_set(
                     print(f"[live]   Adjusted SL to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
                 else:
                     # Убрано verbose сообщение "SL is correct" - логируется только при проблемах
+                    pass
         
         # Инициализируем целевые TP/SL базовыми значениями
         target_tp = base_tp
@@ -1074,6 +1076,7 @@ def _ensure_tp_sl_set(
         elif settings.risk.enable_trailing_stop:
             # Trailing stop еще не активирован
             # Убрано verbose сообщение "Trailing stop waiting" - логируется только при активации
+            pass
         
         # Проверяем, нужно ли обновить TP/SL
         tp_needs_update = not tp_set
@@ -1212,6 +1215,7 @@ def _ensure_tp_sl_set(
                             final_sl = avg_price * (1 - max_sl_pct_from_price)
                         else:
                             # Убрано verbose сообщение "Final SL is correct" - логируется только при проблемах
+                            pass
                 else:  # SHORT
                     # Для SHORT: SL должен быть СТРОГО выше цены входа
                     if final_sl <= avg_price:
@@ -1245,6 +1249,7 @@ def _ensure_tp_sl_set(
                             final_sl = avg_price * (1 + max_sl_pct_from_price)
                         else:
                             # Убрано verbose сообщение "Final SL is correct" - логируется только при проблемах
+                            pass
             
             if final_tp is not None:
                 if position_bias == Bias.LONG:
