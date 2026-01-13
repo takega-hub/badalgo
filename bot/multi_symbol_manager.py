@@ -4,12 +4,13 @@
 """
 import threading
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 
 from bot.config import AppSettings
 from bot.live import run_live_from_api
 from bot.shared_settings import get_settings, set_settings
+from bot.exchange.bybit_client import BybitClient
 
 # Глобальный словарь для обновления статуса воркеров из run_live_from_api
 # Формат: {symbol: {"last_update": timestamp, "error": error_msg}}
@@ -102,6 +103,68 @@ class MultiSymbolManager:
                 if hasattr(self.workers[symbol], 'stop_event'):
                     self.workers[symbol].stop_event.clear()
                     print(f"[MultiSymbol] ⚙️  Stop event cleared for {symbol}")
+    
+    def _detect_and_add_open_positions(self) -> Set[str]:
+        """
+        Обнаруживает все открытые позиции на Bybit и автоматически добавляет их в управление.
+        Возвращает множество символов с открытыми позициями.
+        
+        ВАЖНО: Эта функция НЕ захватывает self.lock.
+        """
+        detected_symbols: Set[str] = set()
+        
+        try:
+            # Создаем клиент Bybit
+            client = BybitClient(self.settings.api)
+            
+            # Получаем ВСЕ открытые позиции по USDT
+            print("[MultiSymbol] 🔍 Scanning Bybit for ALL open positions...")
+            response = client.get_position_info(settle_coin="USDT")
+            
+            if response.get("retCode") != 0:
+                print(f"[MultiSymbol] ⚠️ Failed to get positions: {response.get('retMsg', 'Unknown error')}")
+                return detected_symbols
+            
+            positions = response.get("result", {}).get("list", [])
+            
+            for pos in positions:
+                size = float(pos.get("size", 0))
+                if size > 0:  # Есть открытая позиция
+                    symbol = pos.get("symbol", "")
+                    side = pos.get("side", "")
+                    avg_price = float(pos.get("avgPrice", 0))
+                    unrealised_pnl = float(pos.get("unrealisedPnl", 0))
+                    
+                    detected_symbols.add(symbol)
+                    
+                    print(f"[MultiSymbol] 📊 Found open position: {symbol} {side} size={size} entry=${avg_price:.2f} PnL=${unrealised_pnl:.2f}")
+                    
+                    # Добавляем символ в active_symbols, если его там нет
+                    if symbol not in self.settings.active_symbols:
+                        print(f"[MultiSymbol] ➕ Auto-adding {symbol} to active symbols (has open position)")
+                        self.settings.active_symbols.append(symbol)
+                    
+                    # Создаем воркер, если его нет
+                    if symbol not in self.workers:
+                        print(f"[MultiSymbol] ⚙️  Creating worker for {symbol} (auto-detected position)")
+                        self.workers[symbol] = WorkerStatus(
+                            symbol=symbol,
+                            running=False,
+                            settings=self._create_settings_for_symbol(symbol),
+                            stop_event=threading.Event()
+                        )
+            
+            if detected_symbols:
+                print(f"[MultiSymbol] ✅ Auto-detected {len(detected_symbols)} symbols with open positions: {detected_symbols}")
+            else:
+                print("[MultiSymbol] ℹ️  No open positions found on Bybit")
+                
+        except Exception as e:
+            print(f"[MultiSymbol] ⚠️ Error detecting open positions: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return detected_symbols
     
     def _create_settings_for_symbol(self, symbol: str) -> AppSettings:
         """
@@ -330,8 +393,17 @@ class MultiSymbolManager:
                 print("[MultiSymbol] ⚠️ Manager is already running")
                 return
             
+            # 🔍 СНАЧАЛА: Автоматически обнаруживаем и добавляем символы с открытыми позициями
+            print("[MultiSymbol] 🔍 Step 1: Auto-detecting open positions on Bybit...")
+            try:
+                detected_symbols = self._detect_and_add_open_positions()
+                if detected_symbols:
+                    print(f"[MultiSymbol] ✅ Will manage {len(detected_symbols)} symbols with open positions: {detected_symbols}")
+            except Exception as e:
+                print(f"[MultiSymbol] ⚠️ Position detection failed (continuing anyway): {e}")
+            
             if not self.settings.active_symbols or len(self.settings.active_symbols) == 0:
-                print("[MultiSymbol] ❌ Error: No active symbols configured")
+                print("[MultiSymbol] ❌ Error: No active symbols configured and no open positions found")
                 raise ValueError("No active symbols configured. Please configure at least one symbol.")
             
             self.running = True
@@ -727,12 +799,39 @@ class MultiSymbolManager:
         """
         Фоновый поток для мониторинга состояния воркеров и автоматического рестарта упавших.
         """
+        position_check_counter = 0  # Счетчик для проверки позиций (каждые 5 циклов = 2.5 минуты)
+        
         while self.running:
             try:
                 time.sleep(self.monitor_interval)
                 
                 if not self.running:
                     break
+                
+                # Периодически проверяем открытые позиции (каждые 5 циклов мониторинга)
+                position_check_counter += 1
+                if position_check_counter >= 5:  # ~2.5 минуты при monitor_interval=30s
+                    position_check_counter = 0
+                    try:
+                        with self.lock:
+                            detected = self._detect_and_add_open_positions()
+                            # Если обнаружены новые символы, запускаем для них воркеры
+                            for symbol in detected:
+                                worker = self.workers.get(symbol)
+                                if worker and not worker.running and (not worker.thread or not worker.thread.is_alive()):
+                                    print(f"[MultiSymbol] 🚀 Starting worker for newly detected position: {symbol}")
+                                    worker.settings = self._create_settings_for_symbol(symbol)
+                                    worker.stop_event.clear()
+                                    worker.thread = threading.Thread(
+                                        target=self._worker_thread,
+                                        args=(symbol, worker.settings),
+                                        name=f"BotWorker-{symbol}",
+                                        daemon=True
+                                    )
+                                    worker.thread._start_time = time.time()
+                                    worker.thread.start()
+                    except Exception as e:
+                        print(f"[MultiSymbol] ⚠️ Error in periodic position check: {e}")
                 
                 # Получаем обновления статуса из run_live_from_api
                 status_updates = get_worker_status_updates()
