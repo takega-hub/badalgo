@@ -989,24 +989,29 @@ def _ensure_tp_sl_set(
                     print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is not better than base SL ({base_sl:.2f}), keeping base SL")
             
             if use_breakeven:
-                # Если текущий SL хуже безубытка, перемещаем его
-                if sl_set:
-                    try:
-                        current_sl_val = float(current_sl)
-                        if position_bias == Bias.LONG and current_sl_val < breakeven_sl:
-                            target_sl = breakeven_sl
-                            print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
-                        elif position_bias == Bias.SHORT and current_sl_val > breakeven_sl:
-                            target_sl = breakeven_sl
-                            print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
-                        else:
-                            print(f"[live] ✅ Current SL ({current_sl_val:.2f}) is already better than breakeven ({breakeven_sl:.2f}), keeping it")
-                    except (ValueError, TypeError):
-                        target_sl = breakeven_sl
-                        print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
+                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Убеждаемся, что безубыток не меньше 7% от маржи
+                if breakeven_sl_pct_from_margin < min_sl_pct_from_margin:
+                    print(f"[live] 🚨 CRITICAL: Breakeven SL ({breakeven_sl:.2f}) is too small ({breakeven_sl_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), NOT setting it. Keeping base SL ({base_sl:.2f})")
+                    use_breakeven = False
                 else:
-                    target_sl = breakeven_sl
-                    print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} (profit: {max_profit_pct:.2f}%)")
+                    # Если текущий SL хуже безубытка, перемещаем его
+                    if sl_set:
+                        try:
+                            current_sl_val = float(current_sl)
+                            if position_bias == Bias.LONG and current_sl_val < breakeven_sl:
+                                target_sl = breakeven_sl
+                                print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                            elif position_bias == Bias.SHORT and current_sl_val > breakeven_sl:
+                                target_sl = breakeven_sl
+                                print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                            else:
+                                print(f"[live] ✅ Current SL ({current_sl_val:.2f}) is already better than breakeven ({breakeven_sl:.2f}), keeping it")
+                        except (ValueError, TypeError):
+                            target_sl = breakeven_sl
+                            print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                    else:
+                        target_sl = breakeven_sl
+                        print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
             else:
                 print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is worse than base SL ({base_sl:.2f}) or too small, keeping base SL")
         
