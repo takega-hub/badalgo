@@ -3205,14 +3205,29 @@ def api_chart_data():
         # Информация о текущей позиции
         position_info = None
         if position:
-            position_info = {
-                "side": position["side"],
-                "size": float(position["size"]),
-                "entry_price": float(position["avg_price"]),
-                "unrealised_pnl": float(position["unrealised_pnl"]),
-                "take_profit": position.get("takeProfit", "") or position.get("take_profit", ""),
-                "stop_loss": position.get("stopLoss", "") or position.get("stop_loss", ""),
-            }
+            try:
+                tp_val = position.get("takeProfit") or position.get("take_profit")
+                sl_val = position.get("stopLoss") or position.get("stop_loss")
+                
+                position_info = {
+                    "side": position["side"],
+                    "size": float(position["size"]),
+                    "entry_price": float(position["avg_price"]),
+                    "unrealised_pnl": float(position["unrealised_pnl"]),
+                    "take_profit": float(tp_val) if tp_val and str(tp_val).strip() != "0" else 0.0,
+                    "stop_loss": float(sl_val) if sl_val and str(sl_val).strip() != "0" else 0.0,
+                }
+            except Exception as e:
+                print(f"[web] Error formatting position info: {e}")
+                # Fallback к сырым данным если конвертация не удалась
+                position_info = {
+                    "side": position.get("side", ""),
+                    "size": position.get("size", 0),
+                    "entry_price": position.get("avg_price", 0),
+                    "unrealised_pnl": position.get("unrealised_pnl", 0),
+                    "take_profit": 0.0,
+                    "stop_loss": 0.0,
+                }
         
         return jsonify({
             "candles": candles,

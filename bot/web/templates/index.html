@@ -1352,6 +1352,50 @@
                     }
                 }
 
+                // === ПОЗИЦИЯ (Entry, SL, TP) ===
+                if (data.position) {
+                    const pos = data.position;
+                    const entryPrice = parseFloat(pos.entry_price);
+                    
+                    if (entryPrice > 0) {
+                        // Линия входа (Entry)
+                        window.activeTVCandleSeries.createPriceLine({
+                            price: entryPrice,
+                            color: '#2962FF',
+                            lineWidth: 2,
+                            lineStyle: LightweightCharts.LineStyle.Solid,
+                            axisLabelVisible: true,
+                            title: `Entry (${pos.side})`,
+                        });
+
+                        // Линия Stop Loss
+                        const sl = parseFloat(pos.stop_loss);
+                        if (sl > 0) {
+                            window.activeTVCandleSeries.createPriceLine({
+                                price: sl,
+                                color: '#ff4444',
+                                lineWidth: 2,
+                                lineStyle: LightweightCharts.LineStyle.Dashed,
+                                axisLabelVisible: true,
+                                title: 'SL',
+                            });
+                        }
+
+                        // Линия Take Profit
+                        const tp = parseFloat(pos.take_profit);
+                        if (tp > 0) {
+                            window.activeTVCandleSeries.createPriceLine({
+                                price: tp,
+                                color: '#00ff88',
+                                lineWidth: 2,
+                                lineStyle: LightweightCharts.LineStyle.Dashed,
+                                axisLabelVisible: true,
+                                title: 'TP',
+                            });
+                        }
+                    }
+                }
+
                 // Авто-масштабирование
                 chart.timeScale().fitContent();
 
@@ -1859,6 +1903,7 @@
                             'flat': '📊 Flat Strategy',
                             'momentum': '⚡ Momentum Strategy',
                             'liquidity': '💧 Liquidity Sweep',
+                            'smc': '🟣 Smart Money Concepts',
                             'hybrid': '🔄 Hybrid',
                             'unknown': 'Unknown'
                         };
@@ -2633,6 +2678,7 @@
                         'ml': '<span style="color: #9933ff;">ML</span>',
                         'momentum': '<span style="color: #00d4ff;">MOMENTUM</span>',
                         'liquidity': '<span style="color: #ffd93d;">LIQUIDITY</span>',
+                        'smc': '<span style="color: #9d4edd;">SMC</span>',
                         'unknown': '<span style="color: #aaa;">UNKNOWN</span>'
                     };
                     return types[type] || types['unknown'];

@@ -489,19 +489,40 @@ def get_trades(limit: int = 50, strategy_filter: Optional[str] = None, symbol_fi
     return trades_sorted
 
 
-def get_signals(limit: int = 100, symbol_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_signals(limit: int = 100, symbol_filter: Optional[str] = None, include_smc: bool = True) -> List[Dict[str, Any]]:
     """
     Получить последние сигналы.
     
     Args:
         limit: Максимальное количество сигналов
         symbol_filter: Фильтр по символу (если None, возвращаются все сигналы)
+        include_smc: Включать ли SMC сигналы из CSV (по умолчанию True)
     
     Returns:
         Список сигналов, отсортированных от новых к старым
     """
     history = _load_history()
     signals = history.get("signals", [])
+    
+    # Добавляем SMC сигналы из CSV файла
+    if include_smc:
+        try:
+            smc_signals = get_smc_history(limit=500)  # Получаем больше для сортировки
+            for smc_sig in smc_signals:
+                # Конвертируем SMC сигнал в формат общей истории
+                signals.append({
+                    "timestamp": smc_sig.get("timestamp", ""),
+                    "action": smc_sig.get("action", "").lower(),
+                    "reason": smc_sig.get("reason", ""),
+                    "price": float(smc_sig.get("price", 0)),
+                    "symbol": smc_sig.get("symbol", ""),
+                    "strategy_type": "smc",
+                    "stop_loss": smc_sig.get("stop_loss"),
+                    "take_profit": smc_sig.get("take_profit"),
+                    "rr_ratio": smc_sig.get("rr_ratio"),
+                })
+        except Exception as e:
+            print(f"[history] Error loading SMC signals: {e}")
     
     # Фильтруем по символу, если указан
     if symbol_filter:
@@ -535,8 +556,17 @@ def get_signals(limit: int = 100, symbol_filter: Optional[str] = None) -> List[D
         
         return datetime.min.replace(tzinfo=timezone.utc)
     
+    # Удаляем дубликаты по timestamp + symbol + action
+    seen = set()
+    unique_signals = []
+    for sig in signals:
+        key = (sig.get("timestamp", ""), sig.get("symbol", ""), sig.get("action", ""))
+        if key not in seen:
+            seen.add(key)
+            unique_signals.append(sig)
+    
     # Сортируем по timestamp по убыванию (от новых к старым)
-    signals_sorted = sorted(signals, key=get_timestamp, reverse=True)
+    signals_sorted = sorted(unique_signals, key=get_timestamp, reverse=True)
     
     # Возвращаем последние limit сигналов
     return signals_sorted[:limit] if signals_sorted else []
