@@ -3563,16 +3563,19 @@ def run_live_from_api(
                         sig = None
                 elif strategy_priority == "hybrid":
                     # Гибридный режим: Выбираем самый свежий из всех доступных (предпочитая свежие)
+                    print(f"[live] 🔍 Hybrid mode: {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                     if fresh_available:
                         fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                         sig = fresh_available[-1][1]
                         strategy_name = fresh_available[-1][0]
-                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value}")
+                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
                         available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                         sig = available_signals[-1][1]
                         strategy_name = available_signals[-1][0]
-                        print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}")
+                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                        print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                 else:
                     # Режим приоритета конкретной стратегии
                     priority_sig = strategy_signals.get(strategy_priority)
@@ -3618,6 +3621,8 @@ def run_live_from_api(
             # 6. Финальная проверка свежести (предотвращаем торговлю на «протухших» данных)
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
+            strategy_name_for_log = get_strategy_type_from_signal(sig.reason).upper()
+            print(f"[live] 🔍 Freshness check for {strategy_name_for_log} signal: is_fresh={is_fresh_check}, timestamp={ts}")
             
             # Проверяем, является ли это сигналом из будущего или совсем старым
             if not is_fresh_check:
@@ -3703,6 +3708,7 @@ def run_live_from_api(
                 ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
                 print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - already processed (ID: {signal_id})")
                 print(f"[live]   ℹ️  This signal was already processed. Waiting for new signal...")
+                print(f"[live]   📊 Processed signals count: {len(processed_signals)}")
                 if bot_state:
                     bot_state["current_status"] = "Running"
                     bot_state["last_action"] = "Signal already processed, waiting for new signal..."
@@ -3711,6 +3717,8 @@ def run_live_from_api(
                 if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                     break
                 continue
+            
+            print(f"[live] ✅ Signal passed processed check (ID: {signal_id}), proceeding to open position...")
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут
             # Это гарантирует, что мы обрабатываем только актуальные сигналы
@@ -3758,6 +3766,8 @@ def run_live_from_api(
                         if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                             break
                         continue
+                    else:
+                        print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within 15 min limit)")
             except Exception as e:
                 # В случае ошибки при проверке возраста - логируем, но продолжаем обработку
                 print(f"[live] ⚠️ Error checking signal age: {e}, proceeding with signal processing")
@@ -4032,13 +4042,14 @@ def run_live_from_api(
             # Обработка сигналов: автоматическое определение действий на основе сигнала и текущей позиции
             # LONG сигнал
             if sig.action == Action.LONG:
+                print(f"[live] 🔍 Processing LONG signal: position exists={position is not None}")
                 if not position:
                     # Позиции нет → открываем LONG
                     # Если сигналы подтверждают друг друга, это уже учтено в выборе сигнала
                     
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
-                    _log(f"📈 Opening NEW LONG position after close", symbol)
+                    _log(f"📈 Opening NEW LONG position", symbol)
                     _log(f"   Signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})", symbol)
                     
                     # Проверяем историю убыточных сделок перед открытием
