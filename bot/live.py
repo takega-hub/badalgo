@@ -216,8 +216,43 @@ def _calculate_tp_sl_for_signal(
     try:
         # Если в сигнале уже есть рекомендованные уровни (SMC или ML), используем их
         if hasattr(sig, 'stop_loss') and sig.stop_loss and hasattr(sig, 'take_profit') and sig.take_profit:
-            _log(f"Using pre-calculated levels from signal: TP={sig.take_profit}, SL={sig.stop_loss}", settings.symbol)
-            return sig.take_profit, sig.stop_loss
+            # Используем предрассчитанные уровни, но проверяем, что SL соответствует настройкам (7-10% от маржи)
+            pre_tp = sig.take_profit
+            pre_sl = sig.stop_loss
+            
+            # Получаем настройки SL от маржи
+            sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
+            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            
+            # Преобразуем проценты от маржи в проценты от цены
+            min_sl_pct_from_price = 0.07 / leverage  # Минимум 7% от маржи = 0.7% от цены при 10x
+            max_sl_pct_from_price = 0.10 / leverage  # Максимум 10% от маржи = 1% от цены при 10x
+            target_sl_pct_from_price = sl_pct_margin / leverage  # Целевой SL от маржи
+            
+            # Проверяем, соответствует ли предрассчитанный SL настройкам
+            if sig.action == Action.LONG:
+                sl_deviation_pct = abs(entry_price - pre_sl) / entry_price
+            else:  # SHORT
+                sl_deviation_pct = abs(pre_sl - entry_price) / entry_price
+            
+            # Если SL слишком маленький (меньше 7% от маржи), пересчитываем на основе настроек
+            if sl_deviation_pct < min_sl_pct_from_price:
+                _log(f"⚠️ Pre-calculated SL too small ({sl_deviation_pct*100:.2f}% from price < {min_sl_pct_from_price*100:.2f}%), recalculating from settings ({target_sl_pct_from_price*100:.2f}% from price = {sl_pct_margin*100:.0f}% from margin)", settings.symbol)
+                if sig.action == Action.LONG:
+                    pre_sl = entry_price * (1 - target_sl_pct_from_price)
+                else:  # SHORT
+                    pre_sl = entry_price * (1 + target_sl_pct_from_price)
+            elif sl_deviation_pct > max_sl_pct_from_price:
+                _log(f"⚠️ Pre-calculated SL too large ({sl_deviation_pct*100:.2f}% from price > {max_sl_pct_from_price*100:.2f}%), recalculating from settings ({target_sl_pct_from_price*100:.2f}% from price = {sl_pct_margin*100:.0f}% from margin)", settings.symbol)
+                if sig.action == Action.LONG:
+                    pre_sl = entry_price * (1 - target_sl_pct_from_price)
+                else:  # SHORT
+                    pre_sl = entry_price * (1 + target_sl_pct_from_price)
+            else:
+                _log(f"✅ Pre-calculated SL is within range ({sl_deviation_pct*100:.2f}% from price = {sl_deviation_pct*leverage*100:.0f}% from margin)", settings.symbol)
+            
+            _log(f"Using levels: TP={pre_tp:.2f}, SL={pre_sl:.2f} (SL: {abs(entry_price-pre_sl)/entry_price*100:.2f}% from price = {abs(entry_price-pre_sl)/entry_price*leverage*100:.0f}% from margin)", settings.symbol)
+            return pre_tp, pre_sl
 
         strategy_type = None
         if sig.reason.startswith("ml_"):
@@ -315,6 +350,37 @@ def _calculate_tp_sl_for_signal(
                 else:  # SHORT
                     take_profit = entry_price * (1 - tp_pct)
                     stop_loss = entry_price * (1 + sl_pct)
+            
+            # ФИНАЛЬНАЯ ПРОВЕРКА: Убеждаемся, что SL находится в диапазоне 7-10% от маржи
+            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+            
+            if sig.action == Action.LONG:
+                sl_deviation_pct_from_price = abs(entry_price - stop_loss) / entry_price
+            else:  # SHORT
+                sl_deviation_pct_from_price = abs(stop_loss - entry_price) / entry_price
+            
+            sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
+            
+            # Если SL меньше 7% от маржи, увеличиваем до минимума
+            if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                target_sl_pct_from_price = min_sl_pct_from_margin / leverage
+                if sig.action == Action.LONG:
+                    stop_loss = entry_price * (1 - target_sl_pct_from_price)
+                else:  # SHORT
+                    stop_loss = entry_price * (1 + target_sl_pct_from_price)
+                print(f"[live] ⚠️ ML SL too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusted to {min_sl_pct_from_margin*100:.0f}% from margin ({target_sl_pct_from_price*100:.2f}% from price)")
+            # Если SL больше 10% от маржи, уменьшаем до максимума
+            elif sl_deviation_pct_from_margin > max_sl_pct_from_margin:
+                target_sl_pct_from_price = max_sl_pct_from_margin / leverage
+                if sig.action == Action.LONG:
+                    stop_loss = entry_price * (1 - target_sl_pct_from_price)
+                else:  # SHORT
+                    stop_loss = entry_price * (1 + target_sl_pct_from_price)
+                print(f"[live] ⚠️ ML SL too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusted to {max_sl_pct_from_margin*100:.0f}% from margin ({target_sl_pct_from_price*100:.2f}% from price)")
+            else:
+                print(f"[live] ✅ ML SL is within range: {sl_deviation_pct_from_margin*100:.1f}% from margin ({sl_deviation_pct_from_price*100:.2f}% from price)")
             
             return take_profit, stop_loss
             
@@ -471,6 +537,37 @@ def _calculate_tp_sl_for_signal(
                             take_profit = entry_price - (risk * 2.5)
                     
                     print(f"[live] 📊 TP/SL from settings (no levels): TP=${take_profit:.2f}, SL=${stop_loss:.2f}, RR={reward/risk:.2f}:1")
+            
+            # ФИНАЛЬНАЯ ПРОВЕРКА: Убеждаемся, что SL находится в диапазоне 7-10% от маржи
+            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+            
+            if sig.action == Action.LONG:
+                sl_deviation_pct_from_price = abs(entry_price - stop_loss) / entry_price
+            else:  # SHORT
+                sl_deviation_pct_from_price = abs(stop_loss - entry_price) / entry_price
+            
+            sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
+            
+            # Если SL меньше 7% от маржи, увеличиваем до минимума
+            if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                target_sl_pct_from_price = min_sl_pct_from_margin / leverage
+                if sig.action == Action.LONG:
+                    stop_loss = entry_price * (1 - target_sl_pct_from_price)
+                else:  # SHORT
+                    stop_loss = entry_price * (1 + target_sl_pct_from_price)
+                print(f"[live] ⚠️ SL too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusted to {min_sl_pct_from_margin*100:.0f}% from margin ({target_sl_pct_from_price*100:.2f}% from price)")
+            # Если SL больше 10% от маржи, уменьшаем до максимума
+            elif sl_deviation_pct_from_margin > max_sl_pct_from_margin:
+                target_sl_pct_from_price = max_sl_pct_from_margin / leverage
+                if sig.action == Action.LONG:
+                    stop_loss = entry_price * (1 - target_sl_pct_from_price)
+                else:  # SHORT
+                    stop_loss = entry_price * (1 + target_sl_pct_from_price)
+                print(f"[live] ⚠️ SL too large ({sl_deviation_pct_from_margin*100:.1f}% from margin > {max_sl_pct_from_margin*100:.0f}%), adjusted to {max_sl_pct_from_margin*100:.0f}% from margin ({target_sl_pct_from_price*100:.2f}% from price)")
+            else:
+                print(f"[live] ✅ SL is within range: {sl_deviation_pct_from_margin*100:.1f}% from margin ({sl_deviation_pct_from_price*100:.2f}% from price)")
             
             return take_profit, stop_loss
             
@@ -3513,6 +3610,12 @@ def run_live_from_api(
                 continue
             
             # 3. Выбираем основной сигнал на основе приоритета и свежести
+            print(f"[live] 🔍 [{symbol}] Signal selection: {len(available_signals)} available signals")
+            for name, s in available_signals:
+                is_fresh = is_signal_fresh(s, df_ready)
+                ts_str = s.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(s.timestamp, 'strftime') else str(s.timestamp)
+                print(f"[live]   - {name.upper()}: {s.action.value} @ ${s.price:.2f} ({s.reason}) [{ts_str}] fresh={is_fresh}")
+            
             if len(available_signals) == 1:
                 sig = available_signals[0][1]
                 strategy_name = available_signals[0][0]
@@ -3520,6 +3623,7 @@ def run_live_from_api(
             else:
                 # 1. Сначала определяем свежие сигналы
                 fresh_available = [(name, s) for name, s in available_signals if is_signal_fresh(s, df_ready)]
+                print(f"[live] 🔍 [{symbol}] Fresh signals: {len(fresh_available)}/{len(available_signals)}")
                 
                 if strategy_priority == "confluence":
                     # Режим Конфлюэнции: Требуется подтверждение минимум от двух стратегий
@@ -4042,7 +4146,63 @@ def run_live_from_api(
             # Обработка сигналов: автоматическое определение действий на основе сигнала и текущей позиции
             # LONG сигнал
             if sig.action == Action.LONG:
-                print(f"[live] 🔍 Processing LONG signal: position exists={position is not None}")
+                print(f"[live] 🔍 Processing LONG signal: position exists={position is not None}, position_bias={current_position_bias if position else 'None'}")
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть SHORT позиция и приходит LONG сигнал - закрываем SHORT и открываем LONG
+                if position and current_position_bias == Bias.SHORT:
+                    strategy_type = get_strategy_type_from_signal(sig.reason)
+                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                    _log(f"🔄 REVERSAL: Closing SHORT position to open LONG (signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f})", symbol)
+                    
+                    # Закрываем SHORT позицию
+                    close_qty = position.get("size", 0)
+                    if close_qty > 0:
+                        try:
+                            resp = client.place_order(
+                                symbol=symbol,
+                                side="Buy",  # Buy закрывает SHORT
+                                qty=close_qty,
+                                reduce_only=True,
+                            )
+                            if resp.get("retCode") == 0:
+                                print(f"[live] [{symbol}] ✅ SHORT position closed for reversal to LONG")
+                                # Ждем немного, чтобы позиция закрылась
+                                import time as time_module
+                                time_module.sleep(1.0)
+                                # Перезагружаем информацию о позиции из API
+                                try:
+                                    pos_resp = client.get_position_info(symbol=symbol)
+                                    if pos_resp.get("retCode") == 0:
+                                        pos_list = pos_resp.get("result", {}).get("list", [])
+                                        position = None
+                                        current_position_bias = None
+                                        for pos_item in pos_list:
+                                            if float(pos_item.get("size", 0)) > 0:
+                                                position = pos_item
+                                                current_position_bias = Bias.LONG if pos_item.get("side") == "Buy" else Bias.SHORT
+                                                break
+                                        if position is None:
+                                            print(f"[live] [{symbol}] ✅ Position confirmed closed, proceeding to open LONG")
+                                        else:
+                                            print(f"[live] [{symbol}] ⚠️ Position still exists after close attempt, skipping LONG open")
+                                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                                break
+                                            continue
+                                except Exception as e:
+                                    print(f"[live] [{symbol}] ⚠️ Error reloading position info: {e}, assuming closed")
+                                    position = None
+                                    current_position_bias = None
+                            else:
+                                print(f"[live] [{symbol}] ⚠️ Failed to close SHORT position: {resp.get('retMsg', 'Unknown error')}")
+                                if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                    break
+                                continue
+                        except Exception as e:
+                            print(f"[live] [{symbol}] ⚠️ Error closing SHORT position: {e}")
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
+                
                 if not position:
                     # Позиции нет → открываем LONG
                     # Если сигналы подтверждают друг друга, это уже учтено в выборе сигнала
@@ -4578,6 +4738,63 @@ def run_live_from_api(
             
             # SHORT сигнал
             elif sig.action == Action.SHORT:
+                print(f"[live] 🔍 Processing SHORT signal: position exists={position is not None}, position_bias={current_position_bias if position else 'None'}")
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть LONG позиция и приходит SHORT сигнал - закрываем LONG и открываем SHORT
+                if position and current_position_bias == Bias.LONG:
+                    strategy_type = get_strategy_type_from_signal(sig.reason)
+                    ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                    _log(f"🔄 REVERSAL: Closing LONG position to open SHORT (signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f})", symbol)
+                    
+                    # Закрываем LONG позицию
+                    close_qty = position.get("size", 0)
+                    if close_qty > 0:
+                        try:
+                            resp = client.place_order(
+                                symbol=symbol,
+                                side="Sell",  # Sell закрывает LONG
+                                qty=close_qty,
+                                reduce_only=True,
+                            )
+                            if resp.get("retCode") == 0:
+                                print(f"[live] [{symbol}] ✅ LONG position closed for reversal to SHORT")
+                                # Ждем немного, чтобы позиция закрылась
+                                import time as time_module
+                                time_module.sleep(1.0)
+                                # Перезагружаем информацию о позиции из API
+                                try:
+                                    pos_resp = client.get_position_info(symbol=symbol)
+                                    if pos_resp.get("retCode") == 0:
+                                        pos_list = pos_resp.get("result", {}).get("list", [])
+                                        position = None
+                                        current_position_bias = None
+                                        for pos_item in pos_list:
+                                            if float(pos_item.get("size", 0)) > 0:
+                                                position = pos_item
+                                                current_position_bias = Bias.LONG if pos_item.get("side") == "Buy" else Bias.SHORT
+                                                break
+                                        if position is None:
+                                            print(f"[live] [{symbol}] ✅ Position confirmed closed, proceeding to open SHORT")
+                                        else:
+                                            print(f"[live] [{symbol}] ⚠️ Position still exists after close attempt, skipping SHORT open")
+                                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                                break
+                                            continue
+                                except Exception as e:
+                                    print(f"[live] [{symbol}] ⚠️ Error reloading position info: {e}, assuming closed")
+                                    position = None
+                                    current_position_bias = None
+                            else:
+                                print(f"[live] [{symbol}] ⚠️ Failed to close LONG position: {resp.get('retMsg', 'Unknown error')}")
+                                if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                    break
+                                continue
+                        except Exception as e:
+                            print(f"[live] [{symbol}] ⚠️ Error closing LONG position: {e}")
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
+                
                 if not position:
                     # Позиции нет → открываем SHORT
                     
