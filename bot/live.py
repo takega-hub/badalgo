@@ -3454,8 +3454,8 @@ def run_live_from_api(
                     btc_df = client.get_kline_df(symbol="BTCUSDT", interval=_timeframe_to_bybit_interval(current_settings.timeframe), limit=50)
                     if not btc_df.empty and len(btc_df) >= 20:
                         # Используем EMA 20 для определения тренда
-                        from bot.indicators import compute_ema
-                        btc_df = compute_ema(btc_df, length=20)
+                        from bot.indicators import compute_ema_indicators
+                        btc_df = compute_ema_indicators(btc_df, ema_fast_length=20, ema_slow_length=50)
                         if 'ema_20' in btc_df.columns:
                             current_btc_price = float(btc_df.iloc[-1]['close'])
                             btc_ema_20 = float(btc_df.iloc[-1]['ema_20'])
@@ -3523,6 +3523,7 @@ def run_live_from_api(
                 
                 if strategy_priority == "confluence":
                     # Режим Конфлюэнции: Требуется подтверждение минимум от двух стратегий
+                    # Но разрешаем открытие при 1 свежем сигнале от приоритетной стратегии (SMC, ML), если нет конфликта
                     long_fresh = [s for name, s in fresh_available if s.action == Action.LONG]
                     short_fresh = [s for name, s in fresh_available if s.action == Action.SHORT]
                     
@@ -3537,6 +3538,26 @@ def run_live_from_api(
                     elif long_fresh and short_fresh:
                         print(f"[live] ⚠️ Confluence conflict: LONG vs SHORT fresh signals. Skipping.")
                         sig = None
+                    elif len(long_fresh) == 1 and not short_fresh:
+                        # 1 свежий LONG сигнал, нет конфликта - проверяем приоритет
+                        sig = long_fresh[0]
+                        sig_name = next((name for name, s in fresh_available if s == sig), "Unknown")
+                        # Проверяем, что это приоритетная стратегия (SMC или ML)
+                        if sig_name.lower() in ["smc", "ml"]:
+                            print(f"[live] 💎 CONFLUENCE LONG (PRIORITY): 1 {sig_name.upper()} signal, no conflict. Using: {sig.reason}")
+                        else:
+                            print(f"[live] ⏳ Confluence: 1 fresh signal ({sig_name}), but not from priority strategy (SMC/ML). Waiting for confirmation.")
+                            sig = None
+                    elif len(short_fresh) == 1 and not long_fresh:
+                        # 1 свежий SHORT сигнал, нет конфликта - проверяем приоритет
+                        sig = short_fresh[0]
+                        sig_name = next((name for name, s in fresh_available if s == sig), "Unknown")
+                        # Проверяем, что это приоритетная стратегия (SMC или ML)
+                        if sig_name.lower() in ["smc", "ml"]:
+                            print(f"[live] 💎 CONFLUENCE SHORT (PRIORITY): 1 {sig_name.upper()} signal, no conflict. Using: {sig.reason}")
+                        else:
+                            print(f"[live] ⏳ Confluence: 1 fresh signal ({sig_name}), but not from priority strategy (SMC/ML). Waiting for confirmation.")
+                            sig = None
                     else:
                         print(f"[live] ⏳ Confluence: Waiting for confirmation (fresh: {len(fresh_available)}).")
                         sig = None
