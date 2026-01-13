@@ -253,9 +253,14 @@ def _calculate_tp_sl_for_signal(
                     nearest_support = float(last_row["bb_support"])
                 
                 # Используем уровни, если они найдены и находятся в пределах настроек TP/SL
-                # Получаем максимальные границы из настроек
-                max_tp_pct = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.21
-                max_sl_pct = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.07
+                # Получаем максимальные границы из настроек (от маржи)
+                max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
+                max_sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
+                
+                # Преобразуем проценты от маржи в проценты от цены: / leverage
+                leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+                max_tp_pct = max_tp_pct_margin / leverage
+                max_sl_pct = max_sl_pct_margin / leverage
                 
                 if sig.action == Action.LONG:
                     # Для LONG: сопротивление должно быть в пределах max_tp_pct, поддержка в пределах max_sl_pct
@@ -317,20 +322,26 @@ def _calculate_tp_sl_for_signal(
             # Для TREND/FLAT стратегий используем настройки как МАКСИМАЛЬНЫЕ границы
             # Бот сам определяет TP/SL на основе уровней поддержки/сопротивления
             # с соотношением риска 2-3:1 в пределах этих границ
-            max_tp_pct = settings.risk.take_profit_pct  # Максимальный TP (например, 0.21 для 21%)
-            max_sl_pct = settings.risk.stop_loss_pct    # Максимальный SL (например, 0.07 для 7%)
+            # ВАЖНО: Проценты интерпретируются как проценты от МАРЖИ с учетом плеча!
+            max_tp_pct_margin = settings.risk.take_profit_pct  # Максимальный TP от маржи (например, 0.30 для 30%)
+            max_sl_pct_margin = settings.risk.stop_loss_pct    # Максимальный SL от маржи (например, 0.15 для 15%)
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: Если проценты > 1.0 (100%), вероятно они не разделены на 100
-            if max_tp_pct > 1.0:
-                print(f"[live] 🚨 CRITICAL: take_profit_pct={max_tp_pct} is > 1.0 (100%)! Dividing by 100.")
-                max_tp_pct = max_tp_pct / 100.0
-            if max_sl_pct > 1.0:
-                print(f"[live] 🚨 CRITICAL: stop_loss_pct={max_sl_pct} is > 1.0 (100%)! Dividing by 100.")
-                max_sl_pct = max_sl_pct / 100.0
+            if max_tp_pct_margin > 1.0:
+                print(f"[live] 🚨 CRITICAL: take_profit_pct={max_tp_pct_margin} is > 1.0 (100%)! Dividing by 100.")
+                max_tp_pct_margin = max_tp_pct_margin / 100.0
+            if max_sl_pct_margin > 1.0:
+                print(f"[live] 🚨 CRITICAL: stop_loss_pct={max_sl_pct_margin} is > 1.0 (100%)! Dividing by 100.")
+                max_sl_pct_margin = max_sl_pct_margin / 100.0
+            
+            # Преобразуем проценты от маржи в проценты от цены: / leverage
+            max_tp_pct = max_tp_pct_margin / settings.leverage
+            max_sl_pct = max_sl_pct_margin / settings.leverage
+            
             min_rr_ratio = 2.0  # Минимальное соотношение риска 2:1
             max_rr_ratio = 3.0  # Максимальное соотношение риска 3:1
             
-            # Вычисляем границы
+            # Вычисляем границы (теперь в процентах от цены)
             if sig.action == Action.LONG:
                 max_tp_price = entry_price * (1 + max_tp_pct)
                 max_sl_price = entry_price * (1 - max_sl_pct)
@@ -651,30 +662,41 @@ def _ensure_tp_sl_set(
             strategy_name = "ML"
         else:
             # Обычные стратегии: используем стандартные TP/SL
-            print(f"[live] 📊 TREND/FLAT TP/SL calculation:")
-            print(f"[live]   take_profit_pct={settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}%)")
-            print(f"[live]   stop_loss_pct={settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}%)")
+            # ВАЖНО: Проценты интерпретируются как проценты от МАРЖИ с учетом плеча, а не от цены входа!
+            # Формула: TP = Entry * (1 + take_profit_pct / Leverage)
+            # Например: Entry=$3128.84, Leverage=10x, TP=30% от маржи
+            #   → TP = $3128.84 * (1 + 0.30 / 10) = $3128.84 * 1.03 = $3222.71 (3% от цены = 30% от маржи)
+            print(f"[live] 📊 TREND/FLAT TP/SL calculation (from MARGIN %):")
+            print(f"[live]   take_profit_pct={settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}% of margin)")
+            print(f"[live]   stop_loss_pct={settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}% of margin)")
+            print(f"[live]   leverage={settings.leverage}x")
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: Убеждаемся, что проценты в правильном формате (доли, не проценты)
-            # Если take_profit_pct > 1.0, это ошибка - должно быть < 1.0 (например, 0.21 для 21%)
+            # Если take_profit_pct > 1.0 (100%), это явная ошибка - должно быть < 1.0 (например, 0.30 для 30%)
             if settings.risk.take_profit_pct > 1.0:
-                print(f"[live] 🚨 ERROR: take_profit_pct={settings.risk.take_profit_pct} is > 1.0! Should be < 1.0 (e.g., 0.21 for 21%)")
-                print(f"[live]   Dividing by 10 to correct...")
-                settings.risk.take_profit_pct = settings.risk.take_profit_pct / 10.0
+                print(f"[live] 🚨 ERROR: take_profit_pct={settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}%) is > 100%!")
+                print(f"[live]   This is definitely wrong. Dividing by 100 to correct...")
+                settings.risk.take_profit_pct = settings.risk.take_profit_pct / 100.0
                 print(f"[live]   Corrected to: {settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}%)")
             
             if settings.risk.stop_loss_pct > 1.0:
-                print(f"[live] 🚨 ERROR: stop_loss_pct={settings.risk.stop_loss_pct} is > 1.0! Should be < 1.0 (e.g., 0.07 for 7%)")
-                print(f"[live]   Dividing by 10 to correct...")
-                settings.risk.stop_loss_pct = settings.risk.stop_loss_pct / 10.0
+                print(f"[live] 🚨 ERROR: stop_loss_pct={settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}%) is > 100%!")
+                print(f"[live]   This is definitely wrong. Dividing by 100 to correct...")
+                settings.risk.stop_loss_pct = settings.risk.stop_loss_pct / 100.0
                 print(f"[live]   Corrected to: {settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}%)")
             
+            # Преобразуем проценты от маржи в проценты от цены: / leverage
+            tp_pct_from_price = settings.risk.take_profit_pct / settings.leverage
+            sl_pct_from_price = settings.risk.stop_loss_pct / settings.leverage
+            
+            print(f"[live]   → Converted to price %: TP={tp_pct_from_price*100:.2f}%, SL={sl_pct_from_price*100:.2f}% (from margin % with {settings.leverage}x leverage)")
+            
             if position_bias == Bias.LONG:
-                base_tp = avg_price * (1 + settings.risk.take_profit_pct)
-                base_sl = avg_price * (1 - settings.risk.stop_loss_pct)
+                base_tp = avg_price * (1 + tp_pct_from_price)
+                base_sl = avg_price * (1 - sl_pct_from_price)
             else:  # SHORT
-                base_tp = avg_price * (1 - settings.risk.take_profit_pct)
-                base_sl = avg_price * (1 + settings.risk.stop_loss_pct)
+                base_tp = avg_price * (1 - tp_pct_from_price)
+                base_sl = avg_price * (1 + sl_pct_from_price)
             
             print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
             
