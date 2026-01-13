@@ -827,10 +827,11 @@
                         <option value="momentum">Momentum Breakout Priority</option>
                         <option value="liquidity">Liquidity Sweep Priority</option>
                         <option value="smc">Smart Money Concepts Priority</option>
-                        <option value="hybrid">Hybrid (все стратегии равноправны, при конфликте используем самый свежий сигнал)</option>
+                        <option value="hybrid">Hybrid (использовать любой самый свежий сигнал)</option>
+                        <option value="confluence">Confluence (только если 2+ стратегии подтверждают направление)</option>
                     </select>
                     <p style="color: #888; font-size: 0.85em; margin-top: 8px; margin-bottom: 0;">
-                        Приоритетная стратегия используется когда сигналы от разных стратегий противоречат друг другу. В режиме Hybrid выбирается самый свежий сигнал.
+                        Приоритетная стратегия используется когда сигналы от разных стратегий противоречат друг другу. В режиме <b>Hybrid</b> выбирается самый свежий сигнал. В режиме <b>Confluence</b> сделка открывается только при подтверждении от двух и более стратегий.
                     </p>
                 </div>
                 
@@ -1101,31 +1102,29 @@
         window.activeTVChart = null;
         window.activeTVCandleSeries = null;
         window.activeTVVolumeSeries = null;
+        window.activeTVIndicatorSeries = []; // Массив для всех доп. серий (индикаторы)
+        window.lastChartSymbol = null;
 
-        window.loadChartLW = async function() {
+        window.loadChartLW = async function(forceRefresh = false) {
             try {
-                console.log("Starting loadChartLW...");
                 const container = document.getElementById('chart-container');
-                if (!container) {
-                    console.error("Chart container not found");
-                    return;
-                }
+                if (!container) return;
 
                 const symbolSelect = document.getElementById('primary-symbol-select');
-                const symbol = symbolSelect ? symbolSelect.value : 'BTCUSDT';
-                console.log("Loading chart for:", symbol);
+                const symbol = symbolSelect ? symbolSelect.value : (window.currentSymbol || 'BTCUSDT');
                 
-                // Очистка старого графика
-                if (window.activeTVChart) {
-                    try {
-                        window.activeTVChart.remove();
-                        console.log("Previous chart removed");
-                    } catch(e) {
-                        console.error("Error removing previous chart:", e);
+                // Если символ не изменился и график уже есть, просто обновляем данные
+                const isSameSymbol = window.lastChartSymbol === symbol;
+                
+                if (!isSameSymbol || forceRefresh || !window.activeTVChart) {
+                    console.log(`[Chart] Creating/Recreating chart for ${symbol}`);
+                    if (window.activeTVChart) {
+                        try { window.activeTVChart.remove(); } catch(e) {}
+                        window.activeTVChart = null;
                     }
-                    window.activeTVChart = null;
+                    container.innerHTML = '<div class="loading">Loading chart data...</div>';
+                    window.lastChartSymbol = symbol;
                 }
-                container.innerHTML = '<div class="loading">Loading chart data...</div>';
 
                 const response = await fetch(`/api/chart/data?symbol=${encodeURIComponent(symbol)}`);
                 const data = await response.json();
@@ -1134,72 +1133,62 @@
                     container.innerHTML = `<p style="color: #ff4444; padding: 20px;">${data.error || 'No data available for ' + symbol}</p>`;
                     return;
                 }
-                console.log("Data received, candles:", data.candles.length);
 
-                // Проверка библиотеки
                 if (typeof LightweightCharts === 'undefined') {
-                    console.error("LightweightCharts library is not loaded!");
-                    container.innerHTML = `<p style="color: #ff4444; padding: 20px;">Error: Chart library not loaded. Please refresh the page.</p>`;
+                    container.innerHTML = `<p style="color: #ff4444; padding: 20px;">Error: Chart library not loaded.</p>`;
                     return;
                 }
 
-                container.innerHTML = '';
+                const candleData = data.candles.map((c, i) => ({
+                    time: Math.floor(data.times[i] / 1000),
+                    open: parseFloat(c.open), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close)
+                }));
 
-                // Создание графика
+                // Если график уже существует и символ тот же, обновляем
+                if (window.activeTVChart && isSameSymbol && !forceRefresh) {
+                    window.activeTVCandleSeries.setData(candleData);
+                    
+                    if (window.activeTVVolumeSeries) {
+                        const volumeData = data.candles.map((c, i) => ({
+                            time: Math.floor(data.times[i] / 1000),
+                            value: parseFloat(c.volume),
+                            color: parseFloat(c.close) >= parseFloat(c.open) ? 'rgba(0, 255, 136, 0.3)' : 'rgba(255, 68, 68, 0.3)',
+                        }));
+                        window.activeTVVolumeSeries.setData(volumeData);
+                    }
+                    
+                    // Удаляем старые индикаторы и рисуем новые
+                    window.activeTVIndicatorSeries.forEach(s => { try { window.activeTVChart.removeSeries(s); } catch(e) {} });
+                    window.activeTVIndicatorSeries = [];
+                    
+                    renderIndicators(window.activeTVChart, data);
+                    updateMarkers(data);
+                    updatePositionLines(data);
+                    return;
+                }
+
+                // Иначе создаем новый график
+                container.innerHTML = '';
                 const chart = LightweightCharts.createChart(container, {
                     width: container.clientWidth,
                     height: 500,
-                    layout: {
-                        background: { type: 'solid', color: '#1a1a1a' },
-                        textColor: '#d1d4dc',
-                    },
-                    grid: {
-                        vertLines: { color: '#2b2b2b' },
-                        horzLines: { color: '#2b2b2b' },
-                    },
-                    crosshair: {
-                        mode: LightweightCharts.CrosshairMode.Normal,
-                    },
-                    rightPriceScale: {
-                        borderColor: '#2b2b2b',
-                    },
-                    timeScale: {
-                        borderColor: '#2b2b2b',
-                        timeVisible: true,
-                        secondsVisible: false,
-                    },
+                    layout: { background: { type: 'solid', color: '#1a1a1a' }, textColor: '#d1d4dc' },
+                    grid: { vertLines: { color: '#2b2b2b' }, horzLines: { color: '#2b2b2b' } },
+                    timeScale: { timeVisible: true, borderColor: '#2b2b2b' },
                 });
 
                 window.activeTVChart = chart;
-
-                // === СВЕЧИ ===
                 window.activeTVCandleSeries = chart.addCandlestickSeries({
-                    upColor: '#00ff88',
-                    downColor: '#ff4444',
-                    borderVisible: false,
-                    wickUpColor: '#00ff88',
-                    wickDownColor: '#ff4444',
+                    upColor: '#00ff88', downColor: '#ff4444', borderVisible: false,
+                    wickUpColor: '#00ff88', wickDownColor: '#ff4444',
                 });
-
-                const candleData = data.candles.map((c, i) => ({
-                    time: Math.floor(data.times[i] / 1000),
-                    open: parseFloat(c.open),
-                    high: parseFloat(c.high),
-                    low: parseFloat(c.low),
-                    close: parseFloat(c.close)
-                }));
                 window.activeTVCandleSeries.setData(candleData);
 
-                // === ОБЪЕМ ===
-                const showVolume = document.getElementById('show-volume')?.checked;
-                if (showVolume) {
+                if (document.getElementById('show-volume')?.checked) {
                     window.activeTVVolumeSeries = chart.addHistogramSeries({
-                        color: '#26a69a',
-                        priceFormat: { type: 'volume' },
-                        priceScaleId: '',
+                        color: '#26a69a', priceFormat: { type: 'volume' }, priceScaleId: '',
                         scaleMargins: { top: 0.85, bottom: 0 },
                     });
-
                     const volumeData = data.candles.map((c, i) => ({
                         time: Math.floor(data.times[i] / 1000),
                         value: parseFloat(c.volume),
@@ -1208,219 +1197,123 @@
                     window.activeTVVolumeSeries.setData(volumeData);
                 }
 
-                // === SMA20 ===
-                const showSMA = document.getElementById('show-sma')?.checked;
-                if (showSMA && data.indicators?.sma) {
-                    const smaLine = chart.addLineSeries({ 
-                        color: '#2962FF', 
-                        lineWidth: 2, 
-                        title: 'SMA20',
-                        lastValueVisible: true,
-                        priceLineVisible: false,
-                    });
-                    const smaData = data.indicators.sma
-                        .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
-                        .filter(d => d.value && !isNaN(d.value));
-                    if (smaData.length > 0) {
-                        smaLine.setData(smaData);
-                    }
-                }
-
-                // === BOLLINGER BANDS ===
-                const showBB = document.getElementById('show-bb')?.checked;
-                if (showBB && data.indicators?.bb_upper && data.indicators?.bb_lower) {
-                    // Upper Band
-                    const bbUpperLine = chart.addLineSeries({ 
-                        color: 'rgba(173, 216, 230, 0.6)', 
-                        lineWidth: 1, 
-                        title: 'BB Upper',
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    const bbUpperData = data.indicators.bb_upper
-                        .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
-                        .filter(d => d.value && !isNaN(d.value));
-                    if (bbUpperData.length > 0) {
-                        bbUpperLine.setData(bbUpperData);
-                    }
-
-                    // Middle Band (SMA of BB)
-                    if (data.indicators.bb_middle) {
-                        const bbMiddleLine = chart.addLineSeries({ 
-                            color: 'rgba(173, 216, 230, 0.4)', 
-                            lineWidth: 1, 
-                            lineStyle: 2, // Dashed
-                            title: 'BB Middle',
-                            lastValueVisible: false,
-                            priceLineVisible: false,
-                        });
-                        const bbMiddleData = data.indicators.bb_middle
-                            .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
-                            .filter(d => d.value && !isNaN(d.value));
-                        if (bbMiddleData.length > 0) {
-                            bbMiddleLine.setData(bbMiddleData);
-                        }
-                    }
-
-                    // Lower Band
-                    const bbLowerLine = chart.addLineSeries({ 
-                        color: 'rgba(173, 216, 230, 0.6)', 
-                        lineWidth: 1, 
-                        title: 'BB Lower',
-                        lastValueVisible: false,
-                        priceLineVisible: false,
-                    });
-                    const bbLowerData = data.indicators.bb_lower
-                        .map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) }))
-                        .filter(d => d.value && !isNaN(d.value));
-                    if (bbLowerData.length > 0) {
-                        bbLowerLine.setData(bbLowerData);
-                    }
-                }
-
-                // === СИГНАЛЫ (МАРКЕРЫ) ===
-                const showSignals = document.getElementById('show-signals')?.checked;
-                console.log("Show signals:", showSignals, "Signals count:", data.signals?.length || 0);
+                renderIndicators(chart, data);
+                updateMarkers(data);
+                updatePositionLines(data);
                 
-                if (showSignals && data.signals && data.signals.length > 0) {
-                    // Получаем диапазон времени свечей
-                    const candleTimes = candleData.map(c => c.time);
-                    const minTime = Math.min(...candleTimes);
-                    const maxTime = Math.max(...candleTimes);
-                    
-                    const markers = [];
-                    for (const sig of data.signals) {
-                        // API возвращает action в нижнем регистре: "long", "short"
-                        const action = (sig.action || '').toLowerCase();
-                        if (action !== 'long' && action !== 'short') continue;
-                        
-                        let sigTime;
-                        try {
-                            // API возвращает время в поле "time" как ISO строку
-                            const timeField = sig.time || sig.timestamp;
-                            if (!timeField) {
-                                console.warn("Signal has no time field:", sig);
-                                continue;
-                            }
-                            const sigDate = new Date(timeField);
-                            sigTime = Math.floor(sigDate.getTime() / 1000);
-                        } catch(e) {
-                            console.error("Error parsing signal time:", sig, e);
-                            continue;
-                        }
-                        
-                        // Находим ближайшую свечу для сигнала
-                        let closestTime = candleTimes[0];
-                        let minDiff = Math.abs(sigTime - candleTimes[0]);
-                        for (const ct of candleTimes) {
-                            const diff = Math.abs(sigTime - ct);
-                            if (diff < minDiff) {
-                                minDiff = diff;
-                                closestTime = ct;
-                            }
-                        }
-                        
-                        // Если сигнал в пределах 30 минут от свечи, привязываем к ней
-                        if (minDiff <= 30 * 60) {
-                            markers.push({
-                                time: closestTime,
-                                position: action === 'long' ? 'belowBar' : 'aboveBar',
-                                color: action === 'long' ? '#00ff88' : '#ff4444',
-                                shape: action === 'long' ? 'arrowUp' : 'arrowDown',
-                                text: action,
-                                size: 2,
-                            });
-                        }
-                    }
-                    
-                    if (markers.length > 0) {
-                        // Сортируем по времени
-                        markers.sort((a, b) => a.time - b.time);
-                        
-                        // Удаляем дубликаты по времени
-                        const uniqueMarkers = [];
-                        const seenTimes = new Set();
-                        for (let i = markers.length - 1; i >= 0; i--) {
-                            if (!seenTimes.has(markers[i].time)) {
-                                seenTimes.add(markers[i].time);
-                                uniqueMarkers.unshift(markers[i]);
-                            }
-                        }
-                        
-                        window.activeTVCandleSeries.setMarkers(uniqueMarkers);
-                        console.log("✅ Added", uniqueMarkers.length, "signal markers");
-                    }
-                }
-
-                // === ПОЗИЦИЯ (Entry, SL, TP) ===
-                if (data.position) {
-                    const pos = data.position;
-                    const entryPrice = parseFloat(pos.entry_price);
-                    
-                    if (entryPrice > 0) {
-                        // Линия входа (Entry)
-                        window.activeTVCandleSeries.createPriceLine({
-                            price: entryPrice,
-                            color: '#2962FF',
-                            lineWidth: 2,
-                            lineStyle: LightweightCharts.LineStyle.Solid,
-                            axisLabelVisible: true,
-                            title: `Entry (${pos.side})`,
-                        });
-
-                        // Линия Stop Loss
-                        const sl = parseFloat(pos.stop_loss);
-                        if (sl > 0) {
-                            window.activeTVCandleSeries.createPriceLine({
-                                price: sl,
-                                color: '#ff4444',
-                                lineWidth: 2,
-                                lineStyle: LightweightCharts.LineStyle.Dashed,
-                                axisLabelVisible: true,
-                                title: 'SL',
-                            });
-                        }
-
-                        // Линия Take Profit
-                        const tp = parseFloat(pos.take_profit);
-                        if (tp > 0) {
-                            window.activeTVCandleSeries.createPriceLine({
-                                price: tp,
-                                color: '#00ff88',
-                                lineWidth: 2,
-                                lineStyle: LightweightCharts.LineStyle.Dashed,
-                                axisLabelVisible: true,
-                                title: 'TP',
-                            });
-                        }
-                    }
-                }
-
-                // Авто-масштабирование
                 chart.timeScale().fitContent();
 
-                // Обработчик ресайза
-                const handleResize = () => {
-                    if (window.activeTVChart && container) {
-                        window.activeTVChart.applyOptions({ width: container.clientWidth });
-                    }
-                };
-                window.removeEventListener('resize', handleResize);
+                // Resize handler
+                const handleResize = () => { if (window.activeTVChart) window.activeTVChart.applyOptions({ width: container.clientWidth }); };
                 window.addEventListener('resize', handleResize);
 
-                console.log("Chart loaded successfully!");
-
             } catch (e) {
-                console.error('Chart Error:', e);
-                document.getElementById('chart-container').innerHTML = `
-                    <div style="color: #ff4444; padding: 20px; border: 1px solid #ff4444; border-radius: 8px; background: rgba(255,68,68,0.1);">
-                        <h3>Chart Error</h3>
-                        <p>${e.message}</p>
-                    </div>`;
+                console.error("Chart Error:", e);
+                container.innerHTML = `<div class="card" style="color:#ff4444">Error loading chart: ${e.message}</div>`;
+            }
+        };
+
+        function updateMarkers(data) {
+            if (!window.activeTVCandleSeries) return;
+            const showSignals = document.getElementById('show-signals')?.checked;
+            if (showSignals && data.signals && data.signals.length > 0) {
+                const markers = data.signals.map(sig => {
+                    const action = (sig.action || '').toLowerCase();
+                    const reason = (sig.reason || '').toLowerCase();
+                    
+                    // Краткое название стратегии
+                    let stratPrefix = '';
+                    if (reason.startsWith('ml_')) stratPrefix = 'ML:';
+                    else if (reason.startsWith('smc_')) stratPrefix = 'SMC:';
+                    else if (reason.startsWith('trend_')) stratPrefix = 'TRN:';
+                    else if (reason.startsWith('range_')) stratPrefix = 'FLT:';
+                    else if (reason.startsWith('momentum_')) stratPrefix = 'MOM:';
+                    else if (reason.startsWith('liquidity_')) stratPrefix = 'LIQ:';
+                    
+                    return {
+                        time: Math.floor(sig.time / 1000),
+                        position: action === 'long' ? 'belowBar' : 'aboveBar',
+                        color: action === 'long' ? '#00ff88' : '#ff4444',
+                        shape: action === 'long' ? 'arrowUp' : 'arrowDown',
+                        text: `${stratPrefix}${action.toUpperCase()}`
+                    };
+                }).filter(m => m.time && !isNaN(m.time));
+                window.activeTVCandleSeries.setMarkers(markers);
+            } else {
+                window.activeTVCandleSeries.setMarkers([]);
             }
         }
-        
-        // Старый код...
+
+        function renderIndicators(chart, data) {
+            const showSMA = document.getElementById('show-sma')?.checked;
+            if (showSMA && data.indicators?.sma) {
+                const s = chart.addLineSeries({ 
+                    color: '#2962FF', 
+                    lineWidth: 2, 
+                    title: 'SMA20', 
+                    priceLineVisible: false,
+                    lastValueVisible: false // Убираем подпись на шкале цен
+                });
+                s.setData(data.indicators.sma.map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) })).filter(d => !isNaN(d.value)));
+                window.activeTVIndicatorSeries.push(s);
+            }
+            
+            const showBB = document.getElementById('show-bb')?.checked;
+            if (showBB && data.indicators?.bb_upper && data.indicators?.bb_lower) {
+                const color = 'rgba(173, 216, 230, 0.4)';
+                const u = chart.addLineSeries({ 
+                    color, 
+                    lineWidth: 1, 
+                    title: 'BB Upper', 
+                    priceLineVisible: false,
+                    lastValueVisible: false // Убираем подпись на шкале цен
+                });
+                u.setData(data.indicators.bb_upper.map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) })).filter(d => !isNaN(d.value)));
+                window.activeTVIndicatorSeries.push(u);
+                
+                const l = chart.addLineSeries({ 
+                    color, 
+                    lineWidth: 1, 
+                    title: 'BB Lower', 
+                    priceLineVisible: false,
+                    lastValueVisible: false // Убираем подпись на шкале цен
+                });
+                l.setData(data.indicators.bb_lower.map((v, i) => ({ time: Math.floor(data.times[i]/1000), value: parseFloat(v) })).filter(d => !isNaN(d.value)));
+                window.activeTVIndicatorSeries.push(l);
+            }
+        }
+
+        function updatePositionLines(data) {
+            if (!window.activeTVCandleSeries) return;
+            // Очищаем старые линии
+            try {
+                // В Lightweight Charts нет метода clearPriceLines, нужно хранить ссылки или полагаться на удаление серии
+                // Для простоты мы пересоздаем серии индикаторов, но линии цены привязаны к CandleSeries
+                // Поэтому при обновлении без пересоздания графика нам нужно иметь способ их удалить.
+                // В текущей версии API LW Charts проще всего пересоздать серию или не использовать PriceLines если они мешают.
+                // Но мы можем попробовать удалять их если сохраним ссылки.
+                if (window.activeTVEntryLine) window.activeTVCandleSeries.removePriceLine(window.activeTVEntryLine);
+                if (window.activeTVSLLine) window.activeTVCandleSeries.removePriceLine(window.activeTVSLLine);
+                if (window.activeTVTPLine) window.activeTVCandleSeries.removePriceLine(window.activeTVTPLine);
+            } catch(e) {}
+
+            if (data.position && parseFloat(data.position.entry_price) > 0) {
+                const pos = data.position;
+                window.activeTVEntryLine = window.activeTVCandleSeries.createPriceLine({
+                    price: parseFloat(pos.entry_price), color: '#2962FF', lineWidth: 2, lineStyle: 0, title: `Entry (${pos.side})`
+                });
+                if (parseFloat(pos.stop_loss) > 0) {
+                    window.activeTVSLLine = window.activeTVCandleSeries.createPriceLine({
+                        price: parseFloat(pos.stop_loss), color: '#ff4444', lineWidth: 2, lineStyle: 2, title: 'SL'
+                    });
+                }
+                if (parseFloat(pos.take_profit) > 0) {
+                    window.activeTVTPLine = window.activeTVCandleSeries.createPriceLine({
+                        price: parseFloat(pos.take_profit), color: '#00ff88', lineWidth: 2, lineStyle: 2, title: 'TP'
+                    });
+                }
+            }
+        }
 
         // КРИТИЧЕСКИ ВАЖНО: Определяем функции СРАЗУ в самом начале скрипта
         // Это гарантирует их доступность для onclick атрибутов
@@ -2414,6 +2307,15 @@
                     } else if (strategyType === 'ml') {
                         strategyDisplay = 'ML';
                         strategyColor = '#9933ff';
+                    } else if (strategyType === 'momentum') {
+                        strategyDisplay = 'MOMENTUM';
+                        strategyColor = '#00d4ff';
+                    } else if (strategyType === 'liquidity') {
+                        strategyDisplay = 'LIQUIDITY';
+                        strategyColor = '#ffd93d';
+                    } else if (strategyType === 'smc') {
+                        strategyDisplay = 'SMC';
+                        strategyColor = '#9d4edd';
                     } else if (strategyType === 'hybrid') {
                         strategyDisplay = 'HYBRID';
                         strategyColor = '#00d4ff';
@@ -3024,13 +2926,16 @@
                         checkbox.checked = data.active_symbols.includes(checkbox.value);
                     });
                     
-                    // Обновляем селектор основного символа
+                    // Обновляем селектор основного символа (ТОЛЬКО если он еще не выбран пользователем или при первой загрузке)
                     const primarySelect = document.getElementById('symbols-primary-select');
                     const topSelect = document.getElementById('primary-symbol-select');
+                    
                     if (primarySelect) {
                         primarySelect.value = data.primary_symbol;
                     }
-                    if (topSelect) {
+                    
+                    // Не переопределяем topSelect, если пользователь уже что-то выбрал вручную
+                    if (topSelect && (!currentSymbol || currentSymbol === data.primary_symbol)) {
                         topSelect.value = data.primary_symbol;
                         currentSymbol = data.primary_symbol;
                     }
@@ -3127,37 +3032,40 @@
         
         async function changePrimarySymbol(symbol) {
             try {
-                currentSymbol = symbol;
+                console.log(`[UI] Hard switch to symbol: ${symbol}`);
+                window.currentSymbol = symbol;
                 
-                // Обновляем селектор в вкладке Symbols
+                // Фиксируем выбор во всех селекторах
+                const topSelect = document.getElementById('primary-symbol-select');
+                if (topSelect) topSelect.value = symbol;
+                
                 const symbolsSelect = document.getElementById('symbols-primary-select');
-                if (symbolsSelect) {
-                    symbolsSelect.value = symbol;
+                if (symbolsSelect) symbolsSelect.value = symbol;
+                
+                // Перезагружаем график (forceRefresh = true для чистой смены)
+                if (typeof loadChartLW === 'function') {
+                    loadChartLW(true);
                 }
                 
-                // Перезагружаем график с новым символом
-                if (typeof loadChart !== 'undefined') {
-                    loadChartLW();
-                }
-                
-                // Обновляем статус
-                if (typeof updateStatus !== 'undefined') {
+                // Обновляем статус немедленно
+                if (typeof updateStatus === 'function') {
                     updateStatus();
                 }
                 
-                // Перезагружаем таблицы, если соответствующие вкладки открыты
+                // Перезагружаем активную вкладку
                 const activeTab = document.querySelector('.tab-content.active');
                 if (activeTab) {
-                    const activeTabId = activeTab.id;
-                    if (activeTabId === 'trades' && typeof loadTrades !== 'undefined') {
-                        loadTrades();
-                    } else if (activeTabId === 'signals' && typeof loadSignals !== 'undefined') {
-                        loadSignals();
+                    const id = activeTab.id;
+                    if (id === 'trades') loadTrades();
+                    else if (id === 'signals') loadSignals();
+                    else if (id === 'smc_history') loadSMCHistory();
+                    else if (id === 'strategies') {
+                        loadStrategyStats();
+                        loadMLModelInfo();
                     }
                 }
             } catch (error) {
                 console.error('Error changing primary symbol:', error);
-                alert('Error changing primary symbol: ' + error.message);
             }
         }
         
@@ -3330,51 +3238,7 @@
             if (typeof window.loadChartLW === 'function') {
                 return await window.loadChartLW();
             }
-            try {
-                document.getElementById('chart-container').innerHTML = '<div class="loading">Loading chart...</div>';
-                
-                // Получаем выбранный символ из селектора или используем сохраненный
-                const symbolSelect = document.getElementById('primary-symbol-select');
-                const selectedSymbol = symbolSelect ? symbolSelect.value : (typeof currentSymbol !== 'undefined' && currentSymbol ? currentSymbol : 'BTCUSDT');
-                currentSymbol = selectedSymbol;
-                
-                // Передаем символ в query параметре
-                const response = await fetch(`/api/chart/data?symbol=${encodeURIComponent(selectedSymbol)}`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    document.getElementById('chart-container').innerHTML = `<p style="color: #ff4444; padding: 20px;">Error: ${data.error}</p>`;
-                    if (data.traceback) {
-                        console.error('Chart error traceback:', data.traceback);
-                    }
-                    return;
-                }
-                
-                const candles = data.candles || [];
-                const indicators = data.indicators || {};
-                const signals = data.signals || [];
-                const times = data.times || [];
-                
-                if (candles.length === 0 || times.length === 0) {
-                    document.getElementById('chart-container').innerHTML = '<p style="color: #aaa; padding: 20px;">No chart data available</p>';
-                    return;
-                }
-                
-                // Убеждаемся, что все массивы имеют одинаковую длину
-                const dataLength = Math.min(candles.length, times.length);
-                const trimmedTimes = times.slice(-dataLength);
-                const trimmedCandles = candles.slice(-dataLength);
-                
-                // Подготавливаем данные для свечей с улучшенным hover
-                const candlestick = {
-                    x: trimmedTimes,
-                    open: trimmedCandles.map(c => c?.open || 0),
-                    high: trimmedCandles.map(c => c?.high || 0),
-                    low: trimmedCandles.map(c => c?.low || 0),
-                    close: trimmedCandles.map(c => c?.close || 0),
-                    type: 'candlestick',
-                    name: 'Price',
-                    increasing: { line: { color: '#00ff88', width: 1.5 }, fillcolor: '#00ff88' },
+        }
                     decreasing: { line: { color: '#ff4444', width: 1.5 }, fillcolor: '#ff4444' },
                     xaxis: 'x',
                     yaxis: 'y',
@@ -4310,7 +4174,8 @@
                         'momentum': 'Momentum Breakout Priority',
                         'liquidity': 'Liquidity Sweep Priority',
                         'smc': 'Smart Money Concepts Priority',
-                        'hybrid': 'Hybrid (Latest Signal)'
+                        'hybrid': 'Hybrid (Latest Signal)',
+                        'confluence': 'Confluence (Double Confirmation)'
                     };
                     const enabledStrategies = [];
                     if (trendCheckbox.checked) enabledStrategies.push('Trend');
@@ -5296,7 +5161,14 @@
         window.loadChart = loadChart;
         // startBot и stopBot уже определены глобально выше (строки 2106 и 2227)
         
-        setInterval(loadChart, 60000); // 60000 мс = 1 минута
+        // Автоматически обновляем данные на графике (без полной перезагрузки)
+        setInterval(() => {
+            if (window.activeTVChart && typeof loadChartLW === 'function') {
+                // Вызываем loadChartLW БЕЗ forceRefresh, чтобы обновить только данные внутри серий
+                // Это сохранит масштаб, прокрутку и не вызовет мерцания
+                loadChartLW(false);
+            }
+        }, 60000); // 1 минута
         
         // Загружаем настройки при загрузке страницы (с небольшой задержкой для гарантии загрузки DOM)
         setTimeout(() => {
