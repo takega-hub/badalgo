@@ -445,6 +445,8 @@ def _ensure_tp_sl_set(
                     print(f"[live]   Will FORCE reset SL to correct value")
                     sl_is_anomalous = True
                     sl_set = False  # Считаем как не установленный
+            except (ValueError, TypeError):
+                pass
         
         # Определяем, какая стратегия используется для расчета TP/SL
         # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
