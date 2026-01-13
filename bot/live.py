@@ -1188,17 +1188,18 @@ def _get_position_bias_from_position(position: Dict[str, Any]) -> Optional[Bias]
 
 def get_strategy_type_from_signal(signal_reason: str) -> str:
     """Определяет тип стратегии по reason сигнала."""
-    if signal_reason.startswith("ml_"):
+    reason_lower = signal_reason.lower()
+    if reason_lower.startswith("ml_"):
         return "ml"
-    elif signal_reason.startswith("trend_"):
+    elif reason_lower.startswith("trend_"):
         return "trend"
-    elif signal_reason.startswith("range_"):
+    elif reason_lower.startswith("range_"):
         return "flat"
-    elif signal_reason.startswith("momentum_"):
+    elif reason_lower.startswith("momentum_"):
         return "momentum"
-    elif signal_reason.startswith("liquidity_"):
+    elif reason_lower.startswith("liquidity_"):
         return "liquidity"
-    elif signal_reason.startswith("smc_"):
+    elif reason_lower.startswith("smc_"):
         return "smc"
     else:
         return "unknown"
@@ -2269,17 +2270,18 @@ def run_live_from_api(
             # Определяем тип стратегии из сигнала (для логирования)
             def get_strategy_type_from_signal(signal_reason: str) -> str:
                 """Определяет тип стратегии по reason сигнала."""
-                if signal_reason.startswith("ml_"):
+                reason_lower = signal_reason.lower()
+                if reason_lower.startswith("ml_"):
                     return "ml"
-                elif signal_reason.startswith("trend_"):
+                elif reason_lower.startswith("trend_"):
                     return "trend"
-                elif signal_reason.startswith("range_"):
+                elif reason_lower.startswith("range_"):
                     return "flat"
-                elif signal_reason.startswith("momentum_"):
+                elif reason_lower.startswith("momentum_"):
                     return "momentum"
-                elif signal_reason.startswith("liquidity_"):
+                elif reason_lower.startswith("liquidity_"):
                     return "liquidity"
-                elif signal_reason.startswith("smc_"):
+                elif reason_lower.startswith("smc_"):
                     return "smc"
                 else:
                     return "unknown"
@@ -2574,7 +2576,7 @@ def run_live_from_api(
             ml_signals_only = [s for s in all_signals if s.reason.startswith("ml_") and s.action in (Action.LONG, Action.SHORT)]
             momentum_signals_only = [s for s in all_signals if s.reason.startswith("momentum_") and s.action in (Action.LONG, Action.SHORT)]
             liquidity_signals_only = [s for s in all_signals if s.reason.startswith("liquidity_") and s.action in (Action.LONG, Action.SHORT)]
-            smc_signals_only = [s for s in all_signals if s.reason.startswith("smc_") and s.action in (Action.LONG, Action.SHORT)]
+            smc_signals_only = [s for s in all_signals if s.reason.lower().startswith("smc_") and s.action in (Action.LONG, Action.SHORT)]
             
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only
