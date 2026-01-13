@@ -124,6 +124,76 @@ def _save_processed_signals(processed_signals: set, processed_signals_file: Path
         print(f"[live] ⚠️ Error saving processed signals: {e}")
 
 
+def _load_bot_state(symbol: str) -> Dict[str, Any]:
+    """Загрузить состояние бота для конкретного символа из файла."""
+    state_file = Path(__file__).parent.parent / f"bot_state_{symbol}.json"
+    if state_file.exists():
+        try:
+            import json
+            with open(state_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[live] [{symbol}] ⚠️ Error loading bot state: {e}")
+    return {}
+
+
+def _save_bot_state(symbol: str, state: Dict[str, Any]) -> None:
+    """Сохранить состояние бота для конкретного символа в файл."""
+    state_file = Path(__file__).parent.parent / f"bot_state_{symbol}.json"
+    try:
+        import json
+        with open(state_file, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[live] [{symbol}] ⚠️ Error saving bot state: {e}")
+
+
+def _update_and_save_position_state(
+    symbol: str,
+    position_strategy: Dict[str, str],
+    position_order_id: Dict[str, str],
+    position_order_link_id: Dict[str, str],
+    position_add_count: Dict[str, int],
+    position_entry_price: Dict[str, float],
+    strategy_type: Optional[str] = None,
+    order_id: Optional[str] = None,
+    order_link_id: Optional[str] = None,
+    add_count: Optional[int] = None,
+    entry_price: Optional[float] = None,
+) -> None:
+    """Обновляет состояние позиции и сохраняет его в файл."""
+    if strategy_type is not None:
+        position_strategy[symbol] = strategy_type
+    if order_id is not None:
+        position_order_id[symbol] = order_id
+    if order_link_id is not None:
+        position_order_link_id[symbol] = order_link_id
+    if add_count is not None:
+        position_add_count[symbol] = add_count
+    if entry_price is not None:
+        position_entry_price[symbol] = entry_price
+        
+    state = {
+        "strategy_type": position_strategy.get(symbol, "unknown"),
+        "order_id": position_order_id.get(symbol, ""),
+        "order_link_id": position_order_link_id.get(symbol, ""),
+        "add_count": position_add_count.get(symbol, 0),
+        "entry_price": position_entry_price.get(symbol, 0.0),
+        "last_updated": datetime.now(timezone.utc).isoformat()
+    }
+    _save_bot_state(symbol, state)
+
+
+def _clear_bot_state(symbol: str) -> None:
+    """Удаляет файл состояния бота для символа."""
+    state_file = Path(__file__).parent.parent / f"bot_state_{symbol}.json"
+    if state_file.exists():
+        try:
+            state_file.unlink()
+        except Exception as e:
+            print(f"[live] [{symbol}] ⚠️ Error deleting bot state file: {e}")
+
+
 def _calculate_tp_sl_for_signal(
     sig,
     settings: AppSettings,
@@ -1244,7 +1314,7 @@ def _determine_strategy_with_fallback(
                 # Ищем соответствующий сигнал в истории
                 try:
                     from bot.web.history import get_signals
-                    all_signals = get_signals(limit=1000)
+                    all_signals = get_signals(limit=1000, symbol_filter=symbol)
                     
                     for hist_signal in all_signals:
                         # Сначала проверяем сохраненный signal_id в истории
@@ -1307,9 +1377,9 @@ def _determine_strategy_with_fallback(
     if entry_time:
         try:
             from bot.web.history import get_signals
-            # Ищем сигналы в диапазоне ±10 минут от времени открытия позиции (увеличено для лучшего поиска)
-            time_window = timedelta(minutes=10)
-            all_signals = get_signals(limit=500)
+            # Ищем сигналы в диапазоне ±60 минут от времени открытия позиции (увеличено для лучшего поиска)
+            time_window = timedelta(minutes=60)
+            all_signals = get_signals(limit=1000, symbol_filter=symbol)
             
             # Сортируем сигналы по времени (новые первыми)
             signals_with_time = []
@@ -1491,7 +1561,7 @@ def _sync_closed_positions_from_bybit(
                     # Ищем соответствующий сигнал в истории
                     try:
                         from bot.web.history import get_signals
-                        all_signals = get_signals(limit=1000)  # Берем больше, чтобы найти старые сигналы
+                        all_signals = get_signals(limit=1000, symbol_filter=symbol)  # Берем только для этого символа
                         
                         for hist_signal in all_signals:
                             # Проверяем, соответствует ли signal_id сигналу из истории
@@ -1546,9 +1616,9 @@ def _sync_closed_positions_from_bybit(
                 if strategy_type == "unknown":
                     try:
                         from bot.web.history import get_signals
-                        # Расширяем временное окно до ±30 минут для лучшего поиска старых позиций
-                        time_window = timedelta(minutes=30)
-                        all_signals = get_signals(limit=2000)  # Берем больше сигналов для старых позиций
+                        # Расширяем временное окно до ±60 минут (увеличено с 30 для надежности)
+                        time_window = timedelta(minutes=60)
+                        all_signals = get_signals(limit=2000, symbol_filter=symbol)  # Берем только для этого символа
                         
                         for hist_signal in all_signals:
                             hist_time_str = hist_signal.get("timestamp", "")
@@ -1823,14 +1893,17 @@ def run_live_from_api(
     processed_signals_file = Path(__file__).parent.parent / f"processed_signals_{symbol}.json"
     processed_signals = _load_processed_signals(processed_signals_file)
     
+    # Загружаем сохраненное состояние бота (если есть)
+    saved_state = _load_bot_state(symbol)
+    
     position_max_profit: Dict[str, float] = {}
     position_max_price: Dict[str, float] = {}
     position_partial_closed: Dict[str, bool] = {}
-    position_strategy: Dict[str, str] = {}  # Хранит стратегию, которая открыла позицию {symbol: "trend"|"flat"|"ml"|"hybrid"|"unknown"}
-    position_order_id: Dict[str, str] = {}  # Хранит orderId открытой позиции {symbol: orderId}
-    position_order_link_id: Dict[str, str] = {}  # Хранит orderLinkId открытой позиции {symbol: orderLinkId}
-    position_add_count: Dict[str, int] = {}  # Счётчик докупок {symbol: count}
-    position_entry_price: Dict[str, float] = {}  # Цена входа в первоначальную позицию {symbol: price}
+    position_strategy: Dict[str, str] = {symbol: saved_state.get("strategy_type", "unknown")}
+    position_order_id: Dict[str, str] = {symbol: saved_state.get("order_id", "")}
+    position_order_link_id: Dict[str, str] = {symbol: saved_state.get("order_link_id", "")}
+    position_add_count: Dict[str, int] = {symbol: saved_state.get("add_count", 0)}
+    position_entry_price: Dict[str, float] = {symbol: saved_state.get("entry_price", 0.0)}
     last_handled_signal: Optional[tuple] = None  # (timestamp, action)
     seen_signal_keys_cycle: set = set()  # Отслеживание сохраненных сигналов за цикл
     previous_position: Optional[Dict[str, Any]] = None  # Хранит предыдущую позицию для обнаружения закрытия
@@ -2080,6 +2153,7 @@ def run_live_from_api(
                     position_order_link_id.pop(symbol, None)
                     position_add_count.pop(symbol, None)
                     position_entry_price.pop(symbol, None)
+                    _clear_bot_state(symbol)
             
             # Обновляем previous_position для следующего цикла
             previous_position = position.copy() if position else None
@@ -3115,182 +3189,94 @@ def run_live_from_api(
                     break
                 continue
             
-            # Если только один сигнал - используем его
+            # 3. Выбираем основной сигнал на основе приоритета и свежести
             if len(available_signals) == 1:
                 sig = available_signals[0][1]
                 strategy_name = available_signals[0][0]
                 print(f"[live] ✅ Selected {strategy_name.upper()} signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
             else:
-                # Несколько сигналов - используем приоритет
-                if strategy_priority == "hybrid":
-                    # В hybrid режиме выбираем самый свежий сигнал
-                    available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                    sig = available_signals[-1][1]
-                    strategy_name = available_signals[-1][0]
-                    print(f"[live] ✅ Hybrid mode: Selected {strategy_name.upper()} signal (latest): {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
-                elif strategy_priority in strategy_signals and strategy_signals[strategy_priority] is not None:
-                    # Приоритетная стратегия имеет сигнал - используем его
-                    sig = strategy_signals[strategy_priority]
-                    print(f"[live] ✅ Priority mode ({strategy_priority}): Selected {strategy_priority.upper()} signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
-                else:
-                    # Приоритетная стратегия не имеет сигнала - используем самый свежий
-                    available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                    sig = available_signals[-1][1]
-                    strategy_name = available_signals[-1][0]
-                    print(f"[live] ⚠️ Priority strategy ({strategy_priority}) has no signal, using latest ({strategy_name}): {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
-            
-            # Проверяем, что сигнал выбран
-            if sig is None:
-                # Есть сигналы от обеих стратегий
-                # КРИТИЧЕСКИ ВАЖНО: Приоритет имеет самый свежий сигнал по времени
-                main_sig_time = get_timestamp_for_sort(main_sig)
-                ml_sig_time = get_timestamp_for_sort(ml_sig)
+                # 1. Сначала определяем свежие сигналы
+                fresh_available = [(name, s) for name, s in available_signals if is_signal_fresh(s, df_ready)]
                 
-                # Определяем, какой сигнал свежее
-                if ml_sig_time > main_sig_time:
-                    # ML сигнал свежее - используем его как основной
-                    fresher_sig = ml_sig
-                    older_sig = main_sig
-                    fresher_strategy = "ML"
-                    older_strategy = "TREND/FLAT"
-                    time_diff_minutes = (ml_sig_time - main_sig_time).total_seconds() / 60
-                elif main_sig_time > ml_sig_time:
-                    # TREND/FLAT сигнал свежее - используем его как основной
-                    fresher_sig = main_sig
-                    older_sig = ml_sig
-                    fresher_strategy = "TREND/FLAT"
-                    older_strategy = "ML"
-                    time_diff_minutes = (main_sig_time - ml_sig_time).total_seconds() / 60
-                else:
-                    # Timestamp'ы одинаковые - используем логику приоритета стратегий
-                    fresher_sig = None
-                    older_sig = None
-                    time_diff_minutes = 0
-                
-                if fresher_sig:
-                    # Есть более свежий сигнал - используем его
-                    if fresher_sig.action == older_sig.action:
-                        # Сигналы подтверждают друг друга (оба LONG или оба SHORT)
-                        sig = fresher_sig
-                        if position and current_position_bias == fresher_sig.action:
-                            # Позиция уже открыта в этом направлении - добавляем к позиции
-                            should_add_to_position = True
-                            print(f"[live] ✅ Signals confirm each other ({fresher_sig.action.value}): {fresher_strategy} + {older_strategy}, using {fresher_strategy} (newer by {time_diff_minutes:.1f} min), adding to position")
-                        else:
-                            print(f"[live] ✅ Signals confirm each other ({fresher_sig.action.value}): {fresher_strategy} + {older_strategy}, using {fresher_strategy} signal (newer by {time_diff_minutes:.1f} min)")
-                    else:
-                        # Сигналы противоречат друг другу - используем более свежий
-                        sig = fresher_sig
-                        print(f"[live] ⚠️ Signals conflict: {fresher_strategy}={fresher_sig.action.value}, {older_strategy}={older_sig.action.value}, using {fresher_strategy} signal (newer by {time_diff_minutes:.1f} min)")
-                else:
-                    # Timestamp'ы одинаковые - используем логику приоритета стратегий
-                    if main_sig.action == ml_sig.action:
-                        # Сигналы подтверждают друг друга (оба LONG или оба SHORT)
-                        if position and current_position_bias == main_sig.action:
-                            # Позиция уже открыта в этом направлении - добавляем к позиции
-                            sig = main_sig  # Используем основной сигнал для логирования
-                            should_add_to_position = True
-                            print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), adding to position")
-                        else:
-                            # Нет позиции или позиция в другом направлении - открываем/разворачиваем как обычно
-                            # При подтверждении используем приоритет из настроек
-                            strategy_priority = current_settings.strategy_priority
-                            if strategy_priority == "ml":
-                                sig = ml_sig
-                                print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), using ML strategy (priority)")
-                            elif strategy_priority == "hybrid":
-                                # В гибридном режиме при подтверждении используем основной сигнал (TREND/FLAT)
-                                sig = main_sig
-                                print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), using TREND/FLAT strategy (hybrid mode)")
-                            else:  # "trend" по умолчанию
-                                sig = main_sig
-                                print(f"[live] ✅ Signals confirm each other ({main_sig.action.value}): TREND/FLAT + ML (same timestamp), using TREND/FLAT strategy")
-                    else:
-                        # Сигналы противоречат друг другу - используем приоритет из настроек
-                        strategy_priority = current_settings.strategy_priority
-                        if strategy_priority == "ml":
-                            sig = ml_sig
-                            priority_strategy = "ML"
-                            print(f"[live] ⚠️ Signals conflict: TREND/FLAT={main_sig.action.value}, ML={ml_sig.action.value} (same timestamp), using ML strategy (priority)")
-                        elif strategy_priority == "hybrid":
-                            # В гибридном режиме при конфликте используем последний сигнал (или можно выбрать по силе)
-                            sig = ml_sig if ml_sig.timestamp > main_sig.timestamp else main_sig
-                            priority_strategy = "Hybrid (latest signal)"
-                            print(f"[live] ⚠️ Signals conflict: TREND/FLAT={main_sig.action.value}, ML={ml_sig.action.value} (same timestamp), using {sig.reason[:8]} signal (hybrid mode)")
-                        else:  # "trend" по умолчанию
-                            sig = main_sig
-                            priority_strategy = "TREND/FLAT"
-                            print(f"[live] ⚠️ Signals conflict: TREND/FLAT={main_sig.action.value}, ML={ml_sig.action.value} (same timestamp), using TREND/FLAT strategy (priority)")
+                if strategy_priority == "confluence":
+                    # Режим Конфлюэнции: Требуется подтверждение минимум от двух стратегий
+                    long_fresh = [s for name, s in fresh_available if s.action == Action.LONG]
+                    short_fresh = [s for name, s in fresh_available if s.action == Action.SHORT]
                     
-                    # Детальное логирование
-                    if main_sig.indicators_info and ml_sig.indicators_info:
-                        main_info = main_sig.indicators_info
-                        ml_info = ml_sig.indicators_info
-                        if fresher_sig:
-                            print(f"[live] 📊 Signal details:")
-                            print(f"[live]   {fresher_strategy} ({fresher_sig.action.value}): {main_info.get('indicators', 'N/A') if fresher_strategy == 'TREND/FLAT' else ml_info.get('indicators', 'N/A')}")
-                            print(f"[live]   {older_strategy} ({older_sig.action.value}): {main_info.get('indicators', 'N/A') if older_strategy == 'TREND/FLAT' else ml_info.get('indicators', 'N/A')}")
-                        else:
-                            print(f"[live] 📊 Signal details:")
-                            print(f"[live]   TREND/FLAT ({main_sig.action.value}): {main_info.get('indicators', 'N/A')}")
-                            print(f"[live]   ML ({ml_sig.action.value}): {ml_info.get('indicators', 'N/A')}")
-            elif main_sig:
-                # Только основной сигнал
-                sig = main_sig
-                # Если есть открытая позиция в том же направлении, усиливаем её
-                if position and current_position_bias == main_sig.action:
-                    should_add_to_position = True
-                    print(f"[live] ✅ Selected TREND/FLAT signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f} - adding to existing position")
+                    if len(long_fresh) >= 2:
+                        long_fresh.sort(key=get_timestamp_for_sort)
+                        sig = long_fresh[-1]
+                        print(f"[live] 💎 CONFLUENCE LONG: {len(long_fresh)} strategies agree! Using latest: {sig.reason}")
+                    elif len(short_fresh) >= 2:
+                        short_fresh.sort(key=get_timestamp_for_sort)
+                        sig = short_fresh[-1]
+                        print(f"[live] 💎 CONFLUENCE SHORT: {len(short_fresh)} strategies agree! Using latest: {sig.reason}")
+                    elif long_fresh and short_fresh:
+                        print(f"[live] ⚠️ Confluence conflict: LONG vs SHORT fresh signals. Skipping.")
+                        sig = None
+                    else:
+                        print(f"[live] ⏳ Confluence: Waiting for confirmation (fresh: {len(fresh_available)}).")
+                        sig = None
+                elif strategy_priority == "hybrid":
+                    # Гибридный режим: Выбираем самый свежий из всех доступных (предпочитая свежие)
+                    if fresh_available:
+                        fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                        sig = fresh_available[-1][1]
+                        strategy_name = fresh_available[-1][0]
+                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value}")
+                    else:
+                        available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                        sig = available_signals[-1][1]
+                        strategy_name = available_signals[-1][0]
+                        print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}")
                 else:
-                    print(f"[live] ✅ Selected TREND/FLAT signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
-            elif ml_sig:
-                # Только ML сигнал
-                sig = ml_sig
-                print(f"[live] ✅ Selected ML signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
-            elif all_signals:
-                # КРИТИЧЕСКИ ВАЖНО: Выбираем самый свежий сигнал из всех доступных
-                # Сортируем все сигналы по timestamp (от старых к новым) и берем последний (самый свежий)
-                all_signals_sorted = sorted(all_signals, key=get_timestamp_for_sort)
-                sig = all_signals_sorted[-1]  # Самый свежий сигнал
-                
-                # Проверяем, что это не HOLD
-                if sig.action == Action.HOLD:
-                    if bot_state:
-                        bot_state["current_status"] = "Running"
-                        bot_state["last_action"] = "HOLD signal, no action"
-                        bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                    update_worker_status(symbol, current_status="Running", last_action="HOLD signal, no action")
-                    if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
-                        break
-                    continue
-                print(f"[live] ⚠️ Selected last signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
-            else:
+                    # Режим приоритета конкретной стратегии
+                    priority_sig = strategy_signals.get(strategy_priority)
+                    if priority_sig and is_signal_fresh(priority_sig, df_ready):
+                        sig = priority_sig
+                        print(f"[live] ✅ Priority {strategy_priority.upper()} (FRESH): {sig.action.value}")
+                    elif fresh_available:
+                        # Если приоритетная не свежая, но есть другие свежие - берем самую свежую
+                        fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                        sig = fresh_available[-1][1]
+                        strategy_name = fresh_available[-1][0]
+                        print(f"[live] ⚡ Priority {strategy_priority.upper()} no fresh signal. Using fresh {strategy_name.upper()}: {sig.action.value}")
+                    elif priority_sig:
+                        sig = priority_sig
+                        print(f"[live] ⚠️ Using fallback priority {strategy_priority.upper()} (not fresh)")
+                    else:
+                        available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                        sig = available_signals[-1][1]
+                        strategy_name = available_signals[-1][0]
+                        print(f"[live] ⚠️ No priority or fresh signals. Using latest from {strategy_name.upper()}")
+
+            # 4. Проверяем подтверждение (agreement) для добавления к позиции
+            if sig and sig.action != Action.HOLD:
+                # Если другие стратегии также имеют сигнал в том же направлении, разрешаем добавление к позиции
+                agreeing_strategies = [name for name, s in available_signals if s and s.action == sig.action and s != sig]
+                if agreeing_strategies:
+                    should_add_to_position = True
+                    print(f"[live] 🤝 Agreement found! {sig.action.value} confirmed by: {', '.join(agreeing_strategies)}")
+
+            # 5. Если сигнал так и не определен (или отклонен логикой выше), пропускаем цикл
+            if sig is None or sig.action == Action.HOLD:
                 if bot_state:
                     bot_state["current_status"] = "Running"
-                    bot_state["last_action"] = "No signals found, waiting..."
+                    bot_state["last_action"] = "No actionable signal, waiting..."
                     bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                update_worker_status(symbol, current_status="Running", last_action="No signals found, waiting...")
+                update_worker_status(symbol, current_status="Running", last_action="No actionable signal, waiting...")
                 if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                     break
                 continue
             
-            # Проверяем свежесть выбранного сигнала (дополнительная проверка, хотя уже отфильтровано)
-            # Но на всякий случай проверяем еще раз
-            # ВАЖНО: Если сигнал был выбран как fallback (не свежий, но последний), мы все равно его обрабатываем
+            # --- КОНЕЦ ВЫБОРА СИГНАЛА ---
+
+            # 6. Финальная проверка свежести (предотвращаем торговлю на «протухших» данных)
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
             
-            # Проверяем, является ли это fallback сигналом (не свежий, но последний из доступных)
-            is_fallback = False
+            # Проверяем, является ли это сигналом из будущего или совсем старым
             if not is_fresh_check:
-                # Если сигнал не свежий, но он был выбран как последний из доступных - это fallback
-                if main_sig and sig == main_sig and not fresh_main_signals:
-                    is_fallback = True
-                elif ml_sig and sig == ml_sig and not fresh_ml_signals:
-                    is_fallback = True
-            
-            # Если это fallback сигнал, обрабатываем его (не фильтруем)
-            if not is_fresh_check and not is_fallback:
                 ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
                 strategy_name = get_strategy_type_from_signal(sig.reason).upper()
                 
@@ -3528,6 +3514,7 @@ def run_live_from_api(
                         position_partial_closed.pop(symbol, None)
                         # Используем сохраненную стратегию, которая открыла позицию
                         strategy_type = position_strategy.pop(symbol, "unknown")
+                        _clear_bot_state(symbol)
                         # Если стратегия unknown, пытаемся определить с fallback логикой
                         if strategy_type == "unknown":
                             strategy_type = _determine_strategy_with_fallback(
@@ -3624,6 +3611,7 @@ def run_live_from_api(
                         position_partial_closed.pop(symbol, None)
                         # Используем сохраненную стратегию, которая открыла позицию
                         strategy_type = position_strategy.pop(symbol, "unknown")
+                        _clear_bot_state(symbol)
                         # Если стратегия unknown, пытаемся определить с fallback логикой
                         if strategy_type == "unknown":
                             strategy_type = _determine_strategy_with_fallback(
@@ -3900,20 +3888,25 @@ def run_live_from_api(
                         processed_signals.add(signal_id)
                         _save_processed_signals(processed_signals, processed_signals_file)
                         last_handled_signal = (ts, sig.action.value)
-                        # Сохраняем стратегию, которая открыла позицию
-                        position_strategy[symbol] = strategy_type
-                        # Сохраняем orderId и orderLinkId из ответа
+                        
+                        # Сохраняем состояние позиции
                         result = resp.get("result", {})
-                        if result:
-                            order_id = result.get("orderId", "")
-                            order_link_id_result = result.get("orderLinkId", unique_order_link_id)
-                            if order_id:
-                                position_order_id[symbol] = order_id
-                            if order_link_id_result:
-                                position_order_link_id[symbol] = order_link_id_result
-                        # Инициализируем счётчик докупок и сохраняем цену входа
-                        position_add_count[symbol] = 0
-                        position_entry_price[symbol] = sig.price
+                        order_id = result.get("orderId", "") if result else ""
+                        order_link_id_result = result.get("orderLinkId", unique_order_link_id) if result else unique_order_link_id
+                        
+                        _update_and_save_position_state(
+                            symbol=symbol,
+                            position_strategy=position_strategy,
+                            position_order_id=position_order_id,
+                            position_order_link_id=position_order_link_id,
+                            position_add_count=position_add_count,
+                            position_entry_price=position_entry_price,
+                            strategy_type=strategy_type,
+                            order_id=order_id,
+                            order_link_id=order_link_id_result,
+                            add_count=0,
+                            entry_price=sig.price
+                        )
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
@@ -4202,17 +4195,25 @@ def run_live_from_api(
                             processed_signals.add(signal_id)
                             _save_processed_signals(processed_signals, processed_signals_file)
                             last_handled_signal = (ts, sig.action.value)
-                            # Сохраняем стратегию, которая открыла позицию (реверс)
-                            position_strategy[symbol] = strategy_type
-                            # Сохраняем orderId и orderLinkId из ответа
+                            
+                            # Сохраняем состояние позиции (реверс)
                             result = resp.get("result", {})
-                            if result:
-                                order_id = result.get("orderId", "")
-                                order_link_id_result = result.get("orderLinkId", unique_order_link_id_reverse)
-                                if order_id:
-                                    position_order_id[symbol] = order_id
-                                if order_link_id_result:
-                                    position_order_link_id[symbol] = order_link_id_result
+                            order_id = result.get("orderId", "") if result else ""
+                            order_link_id_result = result.get("orderLinkId", unique_order_link_id_reverse) if result else unique_order_link_id_reverse
+                            
+                            _update_and_save_position_state(
+                                symbol=symbol,
+                                position_strategy=position_strategy,
+                                position_order_id=position_order_id,
+                                position_order_link_id=position_order_link_id,
+                                position_add_count=position_add_count,
+                                position_entry_price=position_entry_price,
+                                strategy_type=strategy_type,
+                                order_id=order_id,
+                                order_link_id=order_link_id_result,
+                                add_count=0,
+                                entry_price=sig.price
+                            )
                         else:
                             strategy_type = get_strategy_type_from_signal(sig.reason)
                             print(f"[live] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open LONG position: {resp.get('retMsg', 'Unknown error')}")
@@ -4420,20 +4421,25 @@ def run_live_from_api(
                         processed_signals.add(signal_id)
                         _save_processed_signals(processed_signals, processed_signals_file)
                         last_handled_signal = (ts, sig.action.value)
-                        # Сохраняем стратегию, которая открыла позицию
-                        position_strategy[symbol] = strategy_type
-                        # Сохраняем orderId и orderLinkId из ответа
+                        
+                        # Сохраняем состояние позиции
                         result = resp.get("result", {})
-                        if result:
-                            order_id = result.get("orderId", "")
-                            order_link_id_result = result.get("orderLinkId", unique_order_link_id)
-                            if order_id:
-                                position_order_id[symbol] = order_id
-                            if order_link_id_result:
-                                position_order_link_id[symbol] = order_link_id_result
-                        # Инициализируем счётчик докупок и сохраняем цену входа
-                        position_add_count[symbol] = 0
-                        position_entry_price[symbol] = sig.price
+                        order_id = result.get("orderId", "") if result else ""
+                        order_link_id_result = result.get("orderLinkId", unique_order_link_id) if result else unique_order_link_id
+                        
+                        _update_and_save_position_state(
+                            symbol=symbol,
+                            position_strategy=position_strategy,
+                            position_order_id=position_order_id,
+                            position_order_link_id=position_order_link_id,
+                            position_add_count=position_add_count,
+                            position_entry_price=position_entry_price,
+                            strategy_type=strategy_type,
+                            order_id=order_id,
+                            order_link_id=order_link_id_result,
+                            add_count=0,
+                            entry_price=sig.price
+                        )
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
@@ -4718,17 +4724,25 @@ def run_live_from_api(
                             processed_signals.add(signal_id)
                             _save_processed_signals(processed_signals, processed_signals_file)
                             last_handled_signal = (ts, sig.action.value)
-                            # Сохраняем стратегию, которая открыла позицию (реверс)
-                            position_strategy[symbol] = strategy_type
-                            # Сохраняем orderId и orderLinkId из ответа
+                            
+                            # Сохраняем состояние позиции (реверс)
                             result = resp.get("result", {})
-                            if result:
-                                order_id = result.get("orderId", "")
-                                order_link_id_result = result.get("orderLinkId", unique_order_link_id)
-                                if order_id:
-                                    position_order_id[symbol] = order_id
-                                if order_link_id_result:
-                                    position_order_link_id[symbol] = order_link_id_result
+                            order_id = result.get("orderId", "") if result else ""
+                            order_link_id_result = result.get("orderLinkId", unique_order_link_id) if result else unique_order_link_id
+                            
+                            _update_and_save_position_state(
+                                symbol=symbol,
+                                position_strategy=position_strategy,
+                                position_order_id=position_order_id,
+                                position_order_link_id=position_order_link_id,
+                                position_add_count=position_add_count,
+                                position_entry_price=position_entry_price,
+                                strategy_type=strategy_type,
+                                order_id=order_id,
+                                order_link_id=order_link_id_result,
+                                add_count=0,
+                                entry_price=sig.price
+                            )
                         elif resp.get("retCode") == 110072:
                             # Ошибка дубликата order_link_id - сигнал уже обработан
                             print(f"[live] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
@@ -4938,6 +4952,7 @@ def run_live_from_api(
                         position_partial_closed.pop(symbol, None)
                         # Используем сохраненную стратегию, которая открыла позицию
                         strategy_type = position_strategy.pop(symbol, "unknown")
+                        _clear_bot_state(symbol)
                         # Если стратегия unknown, пытаемся определить с fallback логикой
                         if strategy_type == "unknown":
                             strategy_type = _determine_strategy_with_fallback(

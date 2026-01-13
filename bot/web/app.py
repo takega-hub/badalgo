@@ -1175,7 +1175,7 @@ def api_update_settings():
                             return jsonify({"error": f"Invalid ml_confidence_threshold: {value}. Must be a number between 0 and 1. Error: {e}"}), 400
                     elif key == "strategy_priority":
                         # Проверяем допустимые значения приоритета стратегии
-                        allowed_priorities = ["trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid"]
+                        allowed_priorities = ["trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid", "confluence"]
                         if value in allowed_priorities:
                             setattr(settings, key, value)
                             print(f"[web] Strategy priority updated: {value}")
