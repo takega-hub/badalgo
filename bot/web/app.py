@@ -2904,6 +2904,7 @@ def api_chart_data():
                                             print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart} (matches type: {model_type_preference})")
                                         else:
                                             # Убрано verbose сообщение о несовпадении модели - это нормальное поведение
+                                            pass
                                     else:
                                         model_path_for_chart = str(model_path_obj)
                                         print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart}")
