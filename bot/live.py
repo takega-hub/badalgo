@@ -507,6 +507,10 @@ def _ensure_tp_sl_set(
             strategy_name = "ML"
         else:
             # Обычные стратегии: используем стандартные TP/SL
+            print(f"[live] 📊 TREND/FLAT TP/SL calculation:")
+            print(f"[live]   take_profit_pct={settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}%)")
+            print(f"[live]   stop_loss_pct={settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}%)")
+            
             if position_bias == Bias.LONG:
                 base_tp = avg_price * (1 + settings.risk.take_profit_pct)
                 base_sl = avg_price * (1 - settings.risk.stop_loss_pct)
@@ -514,7 +518,32 @@ def _ensure_tp_sl_set(
                 base_tp = avg_price * (1 - settings.risk.take_profit_pct)
                 base_sl = avg_price * (1 + settings.risk.stop_loss_pct)
             
+            print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
+            
             strategy_name = "TREND/FLAT"
+        
+        # КРИТИЧЕСКАЯ ВАЛИДАЦИЯ: Проверяем, что вычисленные TP/SL находятся в разумных пределах
+        # Если отклонение > 50% от entry price, это явно ошибка
+        tp_deviation_pct = abs((base_tp - avg_price) / avg_price) * 100 if avg_price > 0 else 0
+        sl_deviation_pct = abs((base_sl - avg_price) / avg_price) * 100 if avg_price > 0 else 0
+        
+        if tp_deviation_pct > 50:
+            print(f"[live] 🚨 CRITICAL: Calculated TP has {tp_deviation_pct:.0f}% deviation from entry! This is an error.")
+            print(f"[live]   Entry: ${avg_price:.2f}, Calculated TP: ${base_tp:.2f}")
+            print(f"[live]   Using safe defaults: TP = entry * 1.02 (2%)")
+            if position_bias == Bias.LONG:
+                base_tp = avg_price * 1.02
+            else:
+                base_tp = avg_price * 0.98
+        
+        if sl_deviation_pct > 50:
+            print(f"[live] 🚨 CRITICAL: Calculated SL has {sl_deviation_pct:.0f}% deviation from entry! This is an error.")
+            print(f"[live]   Entry: ${avg_price:.2f}, Calculated SL: ${base_sl:.2f}")
+            print(f"[live]   Using safe defaults: SL = entry * 0.99 (1%)")
+            if position_bias == Bias.LONG:
+                base_sl = avg_price * 0.99
+            else:
+                base_sl = avg_price * 1.01
         
         # ВАЛИДАЦИЯ: Проверяем, что TP/SL корректны для направления позиции
         if position_bias == Bias.LONG:

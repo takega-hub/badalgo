@@ -739,14 +739,32 @@ def load_settings() -> AppSettings:
     stop_loss_pct = os.getenv("STOP_LOSS_PCT", "").strip()
     if stop_loss_pct:
         try:
-            settings.risk.stop_loss_pct = float(stop_loss_pct)
+            sl_value = float(stop_loss_pct)
+            # Если значение > 1, считаем что это проценты и преобразуем в доли
+            if sl_value > 1.0:
+                sl_value = sl_value / 100.0
+                print(f"[config] ⚠️ STOP_LOSS_PCT={stop_loss_pct} interpreted as percentage, converted to {sl_value:.4f} (fraction)")
+            # Валидация: SL должен быть от 0.1% до 50%
+            if sl_value < 0.001 or sl_value > 0.5:
+                print(f"[config] ⚠️ WARNING: STOP_LOSS_PCT={sl_value:.4f} ({sl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.01 (1%)")
+                sl_value = 0.01
+            settings.risk.stop_loss_pct = sl_value
         except ValueError:
             pass
     
     take_profit_pct = os.getenv("TAKE_PROFIT_PCT", "").strip()
     if take_profit_pct:
         try:
-            settings.risk.take_profit_pct = float(take_profit_pct)
+            tp_value = float(take_profit_pct)
+            # Если значение > 1, считаем что это проценты и преобразуем в доли
+            if tp_value > 1.0:
+                tp_value = tp_value / 100.0
+                print(f"[config] ⚠️ TAKE_PROFIT_PCT={take_profit_pct} interpreted as percentage, converted to {tp_value:.4f} (fraction)")
+            # Валидация: TP должен быть от 0.5% до 100%
+            if tp_value < 0.005 or tp_value > 1.0:
+                print(f"[config] ⚠️ WARNING: TAKE_PROFIT_PCT={tp_value:.4f} ({tp_value*100:.2f}%) is out of reasonable range (0.5%-100%), using default 0.02 (2%)")
+                tp_value = 0.02
+            settings.risk.take_profit_pct = tp_value
         except ValueError:
             pass
     
