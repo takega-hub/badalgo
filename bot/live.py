@@ -319,6 +319,14 @@ def _calculate_tp_sl_for_signal(
             # с соотношением риска 2-3:1 в пределах этих границ
             max_tp_pct = settings.risk.take_profit_pct  # Максимальный TP (например, 0.21 для 21%)
             max_sl_pct = settings.risk.stop_loss_pct    # Максимальный SL (например, 0.07 для 7%)
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Если проценты > 1.0 (100%), вероятно они не разделены на 100
+            if max_tp_pct > 1.0:
+                print(f"[live] 🚨 CRITICAL: take_profit_pct={max_tp_pct} is > 1.0 (100%)! Dividing by 100.")
+                max_tp_pct = max_tp_pct / 100.0
+            if max_sl_pct > 1.0:
+                print(f"[live] 🚨 CRITICAL: stop_loss_pct={max_sl_pct} is > 1.0 (100%)! Dividing by 100.")
+                max_sl_pct = max_sl_pct / 100.0
             min_rr_ratio = 2.0  # Минимальное соотношение риска 2:1
             max_rr_ratio = 3.0  # Максимальное соотношение риска 3:1
             
@@ -647,6 +655,20 @@ def _ensure_tp_sl_set(
             print(f"[live]   take_profit_pct={settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}%)")
             print(f"[live]   stop_loss_pct={settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}%)")
             
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Убеждаемся, что проценты в правильном формате (доли, не проценты)
+            # Если take_profit_pct > 1.0, это ошибка - должно быть < 1.0 (например, 0.21 для 21%)
+            if settings.risk.take_profit_pct > 1.0:
+                print(f"[live] 🚨 ERROR: take_profit_pct={settings.risk.take_profit_pct} is > 1.0! Should be < 1.0 (e.g., 0.21 for 21%)")
+                print(f"[live]   Dividing by 10 to correct...")
+                settings.risk.take_profit_pct = settings.risk.take_profit_pct / 10.0
+                print(f"[live]   Corrected to: {settings.risk.take_profit_pct:.6f} ({settings.risk.take_profit_pct*100:.2f}%)")
+            
+            if settings.risk.stop_loss_pct > 1.0:
+                print(f"[live] 🚨 ERROR: stop_loss_pct={settings.risk.stop_loss_pct} is > 1.0! Should be < 1.0 (e.g., 0.07 for 7%)")
+                print(f"[live]   Dividing by 10 to correct...")
+                settings.risk.stop_loss_pct = settings.risk.stop_loss_pct / 10.0
+                print(f"[live]   Corrected to: {settings.risk.stop_loss_pct:.6f} ({settings.risk.stop_loss_pct*100:.2f}%)")
+            
             if position_bias == Bias.LONG:
                 base_tp = avg_price * (1 + settings.risk.take_profit_pct)
                 base_sl = avg_price * (1 - settings.risk.stop_loss_pct)
@@ -891,6 +913,37 @@ def _ensure_tp_sl_set(
                                 print(f"[live] 🔧 Correcting final_tp: {final_tp:.2f} / {divisor} = {corrected:.2f}")
                                 final_tp = corrected
                                 break
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если значения слишком большие (умножены на 10), делим на 10
+                if final_tp is not None and avg_price > 0:
+                    tp_deviation_pct = abs(final_tp - avg_price) / avg_price * 100
+                    # Если отклонение > 300%, вероятно значение умножено на 10
+                    if tp_deviation_pct > 300:
+                        # Пробуем разделить на 10
+                        if position_bias == Bias.LONG:
+                            corrected_tp = avg_price + (final_tp - avg_price) / 10.0
+                        else:  # SHORT
+                            corrected_tp = avg_price - (avg_price - final_tp) / 10.0
+                        corrected_deviation_pct = abs(corrected_tp - avg_price) / avg_price * 100
+                        # Если после деления на 10 отклонение стало разумным (< 50%)
+                        if corrected_deviation_pct < 50:
+                            print(f"[live] 🔧 CORRECTING TP: ${final_tp:.2f} ({tp_deviation_pct:.0f}%) → ${corrected_tp:.2f} ({corrected_deviation_pct:.0f}%)")
+                            final_tp = corrected_tp
+                
+                if final_sl is not None and avg_price > 0:
+                    sl_deviation_pct = abs(final_sl - avg_price) / avg_price * 100
+                    # Если отклонение > 300%, вероятно значение умножено на 10
+                    if sl_deviation_pct > 300:
+                        # Пробуем разделить на 10
+                        if position_bias == Bias.LONG:
+                            corrected_sl = avg_price - (avg_price - final_sl) / 10.0
+                        else:  # SHORT
+                            corrected_sl = avg_price + (final_sl - avg_price) / 10.0
+                        corrected_deviation_pct = abs(corrected_sl - avg_price) / avg_price * 100
+                        # Если после деления на 10 отклонение стало разумным (< 50%)
+                        if corrected_deviation_pct < 50:
+                            print(f"[live] 🔧 CORRECTING SL: ${final_sl:.2f} ({sl_deviation_pct:.0f}%) → ${corrected_sl:.2f} ({corrected_deviation_pct:.0f}%)")
+                            final_sl = corrected_sl
                 
                 print(f"[live] 📤 Sending TP/SL to API: TP={final_tp}, SL={final_sl} (entry: {avg_price:.2f})")
                 tp_sl_resp = client.set_trading_stop(

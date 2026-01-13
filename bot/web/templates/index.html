@@ -2165,14 +2165,29 @@
                         <label>Range Volume Multiplier:</label>
                         <input type="number" name="range_volume_mult" value="${strategy.range_volume_mult}" step="0.1">
                     </div>
-                    <div class="form-group">
-                        <label>Range TP Aggressive:</label>
-                        <input type="checkbox" name="range_tp_aggressive" ${strategy.range_tp_aggressive ? 'checked' : ''}>
-                    </div>
-                    <div class="form-group">
-                        <label>Range Stop Loss %:</label>
-                        <input type="number" name="range_stop_loss_pct" value="${(strategy.range_stop_loss_pct * 100).toFixed(2)}" step="0.1" min="0.1" max="50">
-                        <small style="color: #aaa; display: block; margin-top: 5px;">Введите значение в процентах (например, 1.5 для 1.5%)</small>
+                    <div class="form-group" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 5px; border-left: 3px solid #ffaa00;">
+                        <label style="color: #ffaa00;">📊 FLAT (Range) Strategy Settings:</label>
+                        <small style="color: #aaa; display: block; margin-bottom: 10px;">
+                            Эти настройки используются только для FLAT стратегии (торговля в диапазоне).<br>
+                            Если FLAT стратегия отключена, эти настройки не используются.
+                        </small>
+                        
+                        <div style="margin-top: 10px;">
+                            <label>Range TP Aggressive:</label>
+                            <input type="checkbox" name="range_tp_aggressive" ${strategy.range_tp_aggressive ? 'checked' : ''}>
+                            <small style="color: #aaa; display: block; margin-top: 5px;">
+                                Если включено: закрывает позицию при достижении противоположной границы Bollinger Bands (верхней для LONG, нижней для SHORT)
+                            </small>
+                        </div>
+                        
+                        <div style="margin-top: 15px;">
+                            <label>Range Stop Loss %:</label>
+                            <input type="number" name="range_stop_loss_pct" value="${(strategy.range_stop_loss_pct * 100).toFixed(2)}" step="0.1" min="0.1" max="50">
+                            <small style="color: #aaa; display: block; margin-top: 5px;">
+                                Стоп-лосс для FLAT стратегии в процентах (например, 1.5 для 1.5%).<br>
+                                <strong style="color: #ff4444;">⚠️ ВАЖНО:</strong> Это НЕ основной SL из Risk Management! Это отдельный SL только для FLAT стратегии.
+                            </small>
+                        </div>
                     </div>
                     <button type="submit" class="btn">Save Strategy Settings</button>
                 </form>

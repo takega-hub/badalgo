@@ -703,7 +703,18 @@ def load_settings() -> AppSettings:
     range_stop_loss_pct = os.getenv("RANGE_STOP_LOSS_PCT", "").strip()
     if range_stop_loss_pct:
         try:
-            settings.strategy.range_stop_loss_pct = float(range_stop_loss_pct)
+            rsl_value = float(range_stop_loss_pct)
+            # Преобразуем проценты в доли
+            # Если значение >= 1, делим на 100 (например, 1.5 -> 0.015 = 1.5%)
+            # Если значение < 1, считаем что это уже доли (например, 0.015 = 1.5%)
+            if rsl_value >= 1.0:
+                rsl_value = rsl_value / 100.0  # Преобразуем проценты в доли (1.5 -> 0.015 = 1.5%)
+                print(f"[config] ⚠️ RANGE_STOP_LOSS_PCT={range_stop_loss_pct} interpreted as percentage, converted to {rsl_value:.4f} (fraction, divided by 100)")
+            # Валидация: Range SL должен быть от 0.1% до 50%
+            if rsl_value < 0.001 or rsl_value > 0.5:
+                print(f"[config] ⚠️ WARNING: RANGE_STOP_LOSS_PCT={rsl_value:.4f} ({rsl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.015 (1.5%)")
+                rsl_value = 0.015
+            settings.strategy.range_stop_loss_pct = rsl_value
         except ValueError:
             pass
     
