@@ -252,16 +252,22 @@ def _calculate_tp_sl_for_signal(
                 elif pd.notna(last_row.get("bb_support")):
                     nearest_support = float(last_row["bb_support"])
                 
-                # Используем уровни, если они найдены и находятся в разумных пределах (не более 10% от цены входа)
+                # Используем уровни, если они найдены и находятся в пределах настроек TP/SL
+                # Получаем максимальные границы из настроек
+                max_tp_pct = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.21
+                max_sl_pct = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.07
+                
                 if sig.action == Action.LONG:
-                    if nearest_resistance and nearest_resistance > entry_price and (nearest_resistance - entry_price) / entry_price <= 0.10:
+                    # Для LONG: сопротивление должно быть в пределах max_tp_pct, поддержка в пределах max_sl_pct
+                    if nearest_resistance and nearest_resistance > entry_price and (nearest_resistance - entry_price) / entry_price <= max_tp_pct:
                         use_sr_levels = True
-                    if nearest_support and nearest_support < entry_price and (entry_price - nearest_support) / entry_price <= 0.10:
+                    if nearest_support and nearest_support < entry_price and (entry_price - nearest_support) / entry_price <= max_sl_pct:
                         use_sr_levels = True
                 else:  # SHORT
-                    if nearest_support and nearest_support < entry_price and (entry_price - nearest_support) / entry_price <= 0.10:
+                    # Для SHORT: поддержка должна быть в пределах max_tp_pct, сопротивление в пределах max_sl_pct
+                    if nearest_support and nearest_support < entry_price and (entry_price - nearest_support) / entry_price <= max_tp_pct:
                         use_sr_levels = True
-                    if nearest_resistance and nearest_resistance > entry_price and (nearest_resistance - entry_price) / entry_price <= 0.10:
+                    if nearest_resistance and nearest_resistance > entry_price and (nearest_resistance - entry_price) / entry_price <= max_sl_pct:
                         use_sr_levels = True
             except Exception as e:
                 print(f"[live] ⚠️ Error extracting support/resistance levels: {e}")
@@ -308,28 +314,144 @@ def _calculate_tp_sl_for_signal(
             return take_profit, stop_loss
             
         else:
-            # Для TREND/FLAT стратегий используем стандартные настройки (уже в долях, например 0.02 для 2%)
-            tp_pct = settings.risk.take_profit_pct  # Уже в долях (например, 0.02 для 2%)
-            sl_pct = settings.risk.stop_loss_pct    # Уже в долях (например, 0.01 для 1%)
+            # Для TREND/FLAT стратегий используем настройки как МАКСИМАЛЬНЫЕ границы
+            # Бот сам определяет TP/SL на основе уровней поддержки/сопротивления
+            # с соотношением риска 2-3:1 в пределах этих границ
+            max_tp_pct = settings.risk.take_profit_pct  # Максимальный TP (например, 0.21 для 21%)
+            max_sl_pct = settings.risk.stop_loss_pct    # Максимальный SL (например, 0.07 для 7%)
+            min_rr_ratio = 2.0  # Минимальное соотношение риска 2:1
+            max_rr_ratio = 3.0  # Максимальное соотношение риска 3:1
             
-            # Используем уровни поддержки/сопротивления, если доступны
-            if use_sr_levels:
-                if sig.action == Action.LONG:
-                    # Для LONG: TP на сопротивление, SL на поддержку
-                    take_profit = nearest_resistance if nearest_resistance and nearest_resistance > entry_price else entry_price * (1 + tp_pct)
-                    stop_loss = nearest_support if nearest_support and nearest_support < entry_price else entry_price * (1 - sl_pct)
-                else:  # SHORT
-                    # Для SHORT: TP на поддержку, SL на сопротивление
-                    take_profit = nearest_support if nearest_support and nearest_support < entry_price else entry_price * (1 - tp_pct)
-                    stop_loss = nearest_resistance if nearest_resistance and nearest_resistance > entry_price else entry_price * (1 + sl_pct)
-            else:
-                # Fallback на фиксированные проценты
-                if sig.action == Action.LONG:
-                    take_profit = entry_price * (1 + tp_pct)
-                    stop_loss = entry_price * (1 - sl_pct)
-                else:  # SHORT
-                    take_profit = entry_price * (1 - tp_pct)
-                    stop_loss = entry_price * (1 + sl_pct)
+            # Вычисляем границы
+            if sig.action == Action.LONG:
+                max_tp_price = entry_price * (1 + max_tp_pct)
+                max_sl_price = entry_price * (1 - max_sl_pct)
+                
+                # ПРИОРИТЕТ 1: Используем уровни поддержки/сопротивления, если они найдены
+                if use_sr_levels and nearest_resistance and nearest_support:
+                    # Используем уровни, но ограничиваем границами
+                    tp_from_level = min(nearest_resistance, max_tp_price) if nearest_resistance > entry_price else max_tp_price
+                    sl_from_level = max(nearest_support, max_sl_price) if nearest_support < entry_price else max_sl_price
+                    
+                    # Проверяем соотношение риска
+                    risk = entry_price - sl_from_level
+                    reward = tp_from_level - entry_price
+                    
+                    if risk > 0:
+                        current_rr = reward / risk
+                        
+                        # Если RR < 2, пытаемся увеличить TP или уменьшить SL (в пределах границ)
+                        if current_rr < min_rr_ratio:
+                            # Пытаемся увеличить TP до достижения RR = 2.5
+                            target_tp = entry_price + (risk * 2.5)
+                            if target_tp <= max_tp_price:
+                                tp_from_level = target_tp
+                                current_rr = 2.5
+                            else:
+                                # Если TP на максимуме, уменьшаем SL
+                                target_sl = entry_price - (reward / 2.5)
+                                if target_sl >= max_sl_price:
+                                    sl_from_level = target_sl
+                                    current_rr = 2.5
+                        
+                        # Если RR > 3, можно немного уменьшить TP для оптимизации (опционально)
+                        elif current_rr > max_rr_ratio:
+                            target_tp = entry_price + (risk * 2.5)
+                            if target_tp >= entry_price * 1.01:  # Минимум 1% прибыли
+                                tp_from_level = target_tp
+                                current_rr = 2.5
+                        
+                        take_profit = tp_from_level
+                        stop_loss = sl_from_level
+                        print(f"[live] 📊 TP/SL from levels: TP=${take_profit:.2f}, SL=${stop_loss:.2f}, RR={current_rr:.2f}:1")
+                    else:
+                        # Если risk <= 0, используем настройки
+                        take_profit = max_tp_price
+                        stop_loss = max_sl_price
+                        print(f"[live] ⚠️ Invalid levels, using max settings: TP=${take_profit:.2f}, SL=${stop_loss:.2f}")
+                else:
+                    # ПРИОРИТЕТ 2: Если уровни не найдены, используем настройки с проверкой RR
+                    take_profit = max_tp_price
+                    stop_loss = max_sl_price
+                    
+                    risk = entry_price - stop_loss
+                    reward = take_profit - entry_price
+                    
+                    if risk > 0:
+                        current_rr = reward / risk
+                        # Корректируем для достижения RR 2-3:1
+                        if current_rr < min_rr_ratio:
+                            # Увеличиваем TP
+                            target_tp = entry_price + (risk * 2.5)
+                            if target_tp <= max_tp_price:
+                                take_profit = target_tp
+                        elif current_rr > max_rr_ratio:
+                            # Уменьшаем TP до RR = 2.5
+                            take_profit = entry_price + (risk * 2.5)
+                    
+                    print(f"[live] 📊 TP/SL from settings (no levels): TP=${take_profit:.2f}, SL=${stop_loss:.2f}, RR={reward/risk:.2f}:1")
+                
+            else:  # SHORT
+                max_tp_price = entry_price * (1 - max_tp_pct)  # Для SHORT TP ниже entry
+                max_sl_price = entry_price * (1 + max_sl_pct)  # Для SHORT SL выше entry
+                
+                # ПРИОРИТЕТ 1: Используем уровни поддержки/сопротивления
+                if use_sr_levels and nearest_resistance and nearest_support:
+                    # Используем уровни, но ограничиваем границами
+                    tp_from_level = max(nearest_support, max_tp_price) if nearest_support < entry_price else max_tp_price
+                    sl_from_level = min(nearest_resistance, max_sl_price) if nearest_resistance > entry_price else max_sl_price
+                    
+                    # Проверяем соотношение риска
+                    risk = sl_from_level - entry_price
+                    reward = entry_price - tp_from_level
+                    
+                    if risk > 0:
+                        current_rr = reward / risk
+                        
+                        # Если RR < 2, пытаемся увеличить TP или уменьшить SL
+                        if current_rr < min_rr_ratio:
+                            target_tp = entry_price - (risk * 2.5)
+                            if target_tp >= max_tp_price:
+                                tp_from_level = target_tp
+                                current_rr = 2.5
+                            else:
+                                target_sl = entry_price + (reward / 2.5)
+                                if target_sl <= max_sl_price:
+                                    sl_from_level = target_sl
+                                    current_rr = 2.5
+                        
+                        # Если RR > 3, оптимизируем
+                        elif current_rr > max_rr_ratio:
+                            target_tp = entry_price - (risk * 2.5)
+                            if target_tp <= entry_price * 0.99:  # Минимум 1% прибыли
+                                tp_from_level = target_tp
+                                current_rr = 2.5
+                        
+                        take_profit = tp_from_level
+                        stop_loss = sl_from_level
+                        print(f"[live] 📊 TP/SL from levels: TP=${take_profit:.2f}, SL=${stop_loss:.2f}, RR={current_rr:.2f}:1")
+                    else:
+                        take_profit = max_tp_price
+                        stop_loss = max_sl_price
+                        print(f"[live] ⚠️ Invalid levels, using max settings: TP=${take_profit:.2f}, SL=${stop_loss:.2f}")
+                else:
+                    # ПРИОРИТЕТ 2: Используем настройки с проверкой RR
+                    take_profit = max_tp_price
+                    stop_loss = max_sl_price
+                    
+                    risk = stop_loss - entry_price
+                    reward = entry_price - take_profit
+                    
+                    if risk > 0:
+                        current_rr = reward / risk
+                        if current_rr < min_rr_ratio:
+                            target_tp = entry_price - (risk * 2.5)
+                            if target_tp >= max_tp_price:
+                                take_profit = target_tp
+                        elif current_rr > max_rr_ratio:
+                            take_profit = entry_price - (risk * 2.5)
+                    
+                    print(f"[live] 📊 TP/SL from settings (no levels): TP=${take_profit:.2f}, SL=${stop_loss:.2f}, RR={reward/risk:.2f}:1")
             
             return take_profit, stop_loss
             
@@ -439,9 +561,23 @@ def _ensure_tp_sl_set(
             try:
                 current_sl_val = float(current_sl)
                 sl_deviation_pct = abs(current_sl_val - avg_price) / avg_price * 100
-                if sl_deviation_pct > 500:  # Более 500% отклонение - явно ошибка
+                
+                # Проверяем, что SL находится в разумных пределах (не более 50% от entry)
+                # Для LONG: SL должен быть ниже entry, отклонение не должно быть > 50%
+                # Для SHORT: SL должен быть выше entry, отклонение не должно быть > 50%
+                is_sl_reasonable = False
+                if position_bias == Bias.LONG:
+                    # Для LONG: SL должен быть ниже entry
+                    if current_sl_val < avg_price and sl_deviation_pct <= 50:
+                        is_sl_reasonable = True
+                else:  # SHORT
+                    # Для SHORT: SL должен быть выше entry
+                    if current_sl_val > avg_price and sl_deviation_pct <= 50:
+                        is_sl_reasonable = True
+                
+                if not is_sl_reasonable or sl_deviation_pct > 500:
                     print(f"[live] 🚨 ANOMALY DETECTED: Current SL=${current_sl_val:.2f} is {sl_deviation_pct:.0f}% away from entry ${avg_price:.2f}")
-                    print(f"[live]   This looks like a SL from another asset")
+                    print(f"[live]   This looks like an incorrect SL value (should be within 50% of entry)")
                     print(f"[live]   Will FORCE reset SL to correct value")
                     sl_is_anomalous = True
                     sl_set = False  # Считаем как не установленный
@@ -3235,8 +3371,60 @@ def run_live_from_api(
             # Получаем приоритет стратегии
             strategy_priority = current_settings.strategy_priority
             
+            # Проверяем тренд BTC для фильтрации сигналов других пар
+            btc_trend = None  # "bullish", "bearish", или None (если BTC не в активных парах или это сам BTC)
+            if symbol != "BTCUSDT" and "BTCUSDT" in current_settings.active_symbols:
+                try:
+                    # Получаем данные BTC для определения тренда
+                    btc_df = client.get_kline_df(symbol="BTCUSDT", interval=_timeframe_to_bybit_interval(current_settings.timeframe), limit=50)
+                    if not btc_df.empty and len(btc_df) >= 20:
+                        # Используем EMA 20 для определения тренда
+                        from bot.indicators import compute_ema
+                        btc_df = compute_ema(btc_df, length=20)
+                        if 'ema_20' in btc_df.columns:
+                            current_btc_price = float(btc_df.iloc[-1]['close'])
+                            btc_ema_20 = float(btc_df.iloc[-1]['ema_20'])
+                            
+                            # Если цена выше EMA 20 - бычий тренд, ниже - медвежий
+                            if current_btc_price > btc_ema_20 * 1.001:  # 0.1% запас для фильтрации шума
+                                btc_trend = "bullish"
+                                _log(f"📈 BTC Trend: BULLISH (Price: ${current_btc_price:.2f} > EMA20: ${btc_ema_20:.2f}) - приоритет LONG для {symbol}", symbol)
+                            elif current_btc_price < btc_ema_20 * 0.999:  # 0.1% запас
+                                btc_trend = "bearish"
+                                _log(f"📉 BTC Trend: BEARISH (Price: ${current_btc_price:.2f} < EMA20: ${btc_ema_20:.2f}) - приоритет SHORT для {symbol}", symbol)
+                            else:
+                                _log(f"➡️ BTC Trend: NEUTRAL (Price: ${current_btc_price:.2f} ≈ EMA20: ${btc_ema_20:.2f}) - нет фильтрации для {symbol}", symbol)
+                except Exception as e:
+                    _log(f"⚠️ Error getting BTC trend: {e}", symbol)
+            
             # Собираем все доступные сигналы (не None)
             available_signals = [(name, sig_obj) for name, sig_obj in strategy_signals.items() if sig_obj is not None]
+            
+            # Фильтруем сигналы по тренду BTC (если BTC в активных парах и это не сам BTC)
+            if btc_trend and available_signals:
+                filtered_signals = []
+                for name, sig in available_signals:
+                    # Если BTC бычий - приоритет LONG, если медвежий - приоритет SHORT
+                    if btc_trend == "bullish" and sig.action == Action.LONG:
+                        filtered_signals.append((name, sig))
+                        _log(f"✅ Signal {name} ({sig.action.value}) passed BTC bullish filter", symbol)
+                    elif btc_trend == "bearish" and sig.action == Action.SHORT:
+                        filtered_signals.append((name, sig))
+                        _log(f"✅ Signal {name} ({sig.action.value}) passed BTC bearish filter", symbol)
+                    elif btc_trend == "bullish" and sig.action == Action.SHORT:
+                        _log(f"⏸️ Signal {name} ({sig.action.value}) filtered out (BTC bullish, prefer LONG)", symbol)
+                    elif btc_trend == "bearish" and sig.action == Action.LONG:
+                        _log(f"⏸️ Signal {name} ({sig.action.value}) filtered out (BTC bearish, prefer SHORT)", symbol)
+                    else:
+                        # HOLD сигналы всегда проходят
+                        filtered_signals.append((name, sig))
+                
+                # Если после фильтрации остались сигналы - используем их, иначе используем все
+                if filtered_signals:
+                    available_signals = filtered_signals
+                    _log(f"📊 BTC filter applied: {len(filtered_signals)}/{len(strategy_signals)} signals passed", symbol)
+                else:
+                    _log(f"⚠️ BTC filter removed all signals, using all available signals", symbol)
             
             if not available_signals:
                 # Нет сигналов вообще

@@ -741,15 +741,11 @@ def load_settings() -> AppSettings:
         try:
             sl_value = float(stop_loss_pct)
             # Преобразуем проценты в доли
-            # Если значение >= 10, делим на 1000 (например, 70 -> 0.07 = 7%)
-            # Если значение >= 1 и < 10, делим на 100 (например, 1.5 -> 0.015 = 1.5%)
+            # Если значение >= 1, делим на 100 (например, 7 -> 0.07 = 7%)
             # Если значение < 1, считаем что это уже доли (например, 0.01 = 1%)
-            if sl_value >= 10.0:
-                sl_value = sl_value / 1000.0  # Сокращаем на 10 (70 -> 0.07 = 7%)
-                print(f"[config] ⚠️ STOP_LOSS_PCT={stop_loss_pct} (>=10) interpreted as percentage, converted to {sl_value:.4f} (fraction, divided by 1000)")
-            elif sl_value >= 1.0:
-                sl_value = sl_value / 100.0  # Обычное преобразование (1.5 -> 0.015 = 1.5%)
-                print(f"[config] ⚠️ STOP_LOSS_PCT={stop_loss_pct} (1-10) interpreted as percentage, converted to {sl_value:.4f} (fraction, divided by 100)")
+            if sl_value >= 1.0:
+                sl_value = sl_value / 100.0  # Преобразуем проценты в доли (7 -> 0.07 = 7%)
+                print(f"[config] ⚠️ STOP_LOSS_PCT={stop_loss_pct} interpreted as percentage, converted to {sl_value:.4f} (fraction, divided by 100)")
             # Валидация: SL должен быть от 0.1% до 50%
             if sl_value < 0.001 or sl_value > 0.5:
                 print(f"[config] ⚠️ WARNING: STOP_LOSS_PCT={sl_value:.4f} ({sl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.01 (1%)")
@@ -763,15 +759,11 @@ def load_settings() -> AppSettings:
         try:
             tp_value = float(take_profit_pct)
             # Преобразуем проценты в доли
-            # Если значение >= 10, делим на 1000 (например, 210 -> 0.21 = 21%)
-            # Если значение >= 1 и < 10, делим на 100 (например, 2.1 -> 0.021 = 2.1%)
+            # Если значение >= 1, делим на 100 (например, 21 -> 0.21 = 21%)
             # Если значение < 1, считаем что это уже доли (например, 0.02 = 2%)
-            if tp_value >= 10.0:
-                tp_value = tp_value / 1000.0  # Сокращаем на 10 (210 -> 0.21 = 21%)
-                print(f"[config] ⚠️ TAKE_PROFIT_PCT={take_profit_pct} (>=10) interpreted as percentage, converted to {tp_value:.4f} (fraction, divided by 1000)")
-            elif tp_value >= 1.0:
-                tp_value = tp_value / 100.0  # Обычное преобразование (2.1 -> 0.021 = 2.1%)
-                print(f"[config] ⚠️ TAKE_PROFIT_PCT={take_profit_pct} (1-10) interpreted as percentage, converted to {tp_value:.4f} (fraction, divided by 100)")
+            if tp_value >= 1.0:
+                tp_value = tp_value / 100.0  # Преобразуем проценты в доли (21 -> 0.21 = 21%)
+                print(f"[config] ⚠️ TAKE_PROFIT_PCT={take_profit_pct} interpreted as percentage, converted to {tp_value:.4f} (fraction, divided by 100)")
             # Валидация: TP должен быть от 0.5% до 100%
             if tp_value < 0.005 or tp_value > 1.0:
                 print(f"[config] ⚠️ WARNING: TAKE_PROFIT_PCT={tp_value:.4f} ({tp_value*100:.2f}%) is out of reasonable range (0.5%-100%), using default 0.02 (2%)")

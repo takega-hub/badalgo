@@ -720,14 +720,20 @@
         <div id="symbols" class="tab-content">
             <div class="card">
                 <h2>📊 Trading Symbols Management</h2>
-                <p style="color: #aaa; margin-bottom: 20px;">Manage active trading pairs and select the primary symbol for display.</p>
+                <p style="color: #aaa; margin-bottom: 20px;">
+                    <strong>Бот работает со ВСЕМИ включенными парами одновременно.</strong><br>
+                    Выбор пары ниже нужен только для просмотра графика, сигналов и сделок в интерфейсе.
+                </p>
                 
                 <div class="form-group" style="margin-bottom: 20px;">
-                    <label style="color: #aaa; display: block; margin-bottom: 10px;">Available Symbols:</label>
+                    <label style="color: #aaa; display: block; margin-bottom: 10px;">
+                        <strong>Active Symbols (включенные пары для торговли):</strong>
+                    </label>
                     <div id="available-symbols-list" style="display: flex; flex-direction: column; gap: 10px;">
                         <label style="display: flex; align-items: center; cursor: pointer; padding: 10px; background: #2a2a2a; border-radius: 5px;">
                             <input type="checkbox" value="BTCUSDT" class="symbol-checkbox" style="margin-right: 10px; width: 20px; height: 20px;">
                             <span style="color: #e0e0e0; font-weight: bold;">BTCUSDT</span>
+                            <span style="color: #ffaa00; margin-left: 10px; font-size: 0.9em;">(Главная пара - тренд BTC влияет на остальные)</span>
                         </label>
                         <label style="display: flex; align-items: center; cursor: pointer; padding: 10px; background: #2a2a2a; border-radius: 5px;">
                             <input type="checkbox" value="ETHUSDT" class="symbol-checkbox" style="margin-right: 10px; width: 20px; height: 20px;">
@@ -738,16 +744,25 @@
                             <span style="color: #e0e0e0; font-weight: bold;">SOLUSDT</span>
                         </label>
                     </div>
+                    <small style="color: #888; display: block; margin-top: 10px;">
+                        ✅ Бот автоматически управляет позициями по ВСЕМ включенным парам.<br>
+                        💡 Если BTC растет → приоритет LONG сигналов для других пар. Если BTC падает → приоритет SHORT.
+                    </small>
                 </div>
                 
                 <div class="form-group" style="margin-bottom: 20px;">
-                    <label style="color: #aaa; display: block; margin-bottom: 10px;">Primary Symbol (for display):</label>
+                    <label style="color: #aaa; display: block; margin-bottom: 10px;">
+                        <strong>Symbol for Display (только для просмотра):</strong>
+                    </label>
                     <select id="symbols-primary-select" style="padding: 10px 15px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 5px; font-size: 1em; width: 200px;">
                         <option value="BTCUSDT">BTCUSDT</option>
                         <option value="ETHUSDT">ETHUSDT</option>
                         <option value="SOLUSDT">SOLUSDT</option>
                     </select>
-                    <p style="color: #666; font-size: 0.9em; margin-top: 5px;">This symbol will be used for the main chart and dashboard display.</p>
+                    <p style="color: #666; font-size: 0.9em; margin-top: 5px;">
+                        Эта пара используется только для отображения графика, сигналов и сделок в интерфейсе.<br>
+                        <strong>Не влияет на торговлю</strong> - бот работает со всеми включенными парами.
+                    </p>
                 </div>
                 
                 <div style="margin-top: 30px;">
@@ -2156,7 +2171,8 @@
                     </div>
                     <div class="form-group">
                         <label>Range Stop Loss %:</label>
-                        <input type="number" name="range_stop_loss_pct" value="${strategy.range_stop_loss_pct}" step="0.001">
+                        <input type="number" name="range_stop_loss_pct" value="${(strategy.range_stop_loss_pct * 100).toFixed(2)}" step="0.1" min="0.1" max="50">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">Введите значение в процентах (например, 1.5 для 1.5%)</small>
                     </div>
                     <button type="submit" class="btn">Save Strategy Settings</button>
                 </form>
@@ -2179,33 +2195,42 @@
                         <input type="number" name="add_order_usd" value="${risk.add_order_usd}" step="0.01">
                     </div>
                     <div class="form-group">
-                        <label>Stop Loss %:</label>
-                        <input type="number" name="stop_loss_pct" value="${risk.stop_loss_pct}" step="0.001">
+                        <label>Stop Loss % (Максимум):</label>
+                        <input type="number" name="stop_loss_pct" value="${(risk.stop_loss_pct * 100).toFixed(2)}" step="0.1" min="0.1" max="50">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">
+                            <strong>Граница для SL:</strong> Бот сам определяет SL на основе уровней поддержки/сопротивления.<br>
+                            Это значение - максимальный SL (например, 7%). Бот выберет оптимальный SL в пределах этой границы с соотношением риска 2-3:1.
+                        </small>
                     </div>
                     <div class="form-group">
-                        <label>Take Profit %:</label>
-                        <input type="number" name="take_profit_pct" value="${risk.take_profit_pct}" step="0.001">
+                        <label>Take Profit % (Максимум):</label>
+                        <input type="number" name="take_profit_pct" value="${(risk.take_profit_pct * 100).toFixed(2)}" step="0.1" min="0.5" max="100">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">
+                            <strong>Граница для TP:</strong> Бот сам определяет TP на основе уровней сопротивления/поддержки.<br>
+                            Это значение - максимальный TP (например, 21%). Бот выберет оптимальный TP в пределах этой границы с соотношением риска 2-3:1.
+                        </small>
                     </div>
                     <div class="form-group">
                         <label>Balance % Per Trade:</label>
                         <input type="number" name="balance_percent_per_trade" value="${risk.balance_percent_per_trade}" step="0.1">
                     </div>
                     <h3 style="margin-top: 20px; color: #00d4ff;">App Settings</h3>
-                    <div class="form-group">
-                        <label>Symbol:</label>
-                        <input type="text" name="symbol" value="${app.symbol}">
-                    </div>
-                    <div class="form-group">
-                        <label>Timeframe:</label>
-                        <input type="text" name="timeframe" value="${app.timeframe}">
-                    </div>
+                    <!-- Скрытые поля для обратной совместимости -->
+                    <input type="hidden" name="symbol" value="${app.symbol}">
+                    <input type="hidden" name="timeframe" value="${app.timeframe || '15m'}">
+                    <input type="hidden" name="live_poll_seconds" value="${app.live_poll_seconds || 60}">
+                    
                     <div class="form-group">
                         <label>Leverage:</label>
-                        <input type="number" name="leverage" value="${app.leverage}">
+                        <input type="number" name="leverage" value="${app.leverage}" min="1" max="125" step="1">
+                        <small style="color: #aaa; display: block; margin-top: 5px;">Торговое плечо (1-125). Используется для расчета размера позиции и TP/SL для ML стратегии.</small>
                     </div>
-                    <div class="form-group">
-                        <label>Live Poll Seconds:</label>
-                        <input type="number" name="live_poll_seconds" value="${app.live_poll_seconds}">
+                    
+                    <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 0.9em; color: #aaa;">
+                        <strong style="color: #888;">Скрытые настройки (используются автоматически):</strong><br>
+                        • <strong>Symbol:</strong> Управляется через "Active Symbols" выше<br>
+                        • <strong>Timeframe:</strong> Фиксирован на 15 минут (стандарт для всех стратегий)<br>
+                        • <strong>Live Poll Seconds:</strong> Фиксирован на 60 секунд (стандартный интервал проверки)
                     </div>
                     <h3 style="margin-top: 20px; color: #9933ff;">ML Strategy Settings</h3>
                     <div class="form-group">
@@ -2247,7 +2272,14 @@
                 // Обрабатываем запятую как разделитель десятичных дробей (для локализованного ввода)
                 const normalizedValue = String(value).replace(',', '.');
                 const numValue = parseFloat(normalizedValue);
-                data[key] = isNaN(numValue) ? value : numValue;
+                
+                // Преобразуем проценты в доли для stop_loss_pct, take_profit_pct и range_stop_loss_pct
+                if (key === 'stop_loss_pct' || key === 'take_profit_pct' || key === 'range_stop_loss_pct') {
+                    // Пользователь вводит проценты (например, 7 для 7%), преобразуем в доли (0.07)
+                    data[key] = isNaN(numValue) ? value : numValue / 100.0;
+                } else {
+                    data[key] = isNaN(numValue) ? value : numValue;
+                }
             }
             
             // Проверяем checkbox отдельно для strategy секции
