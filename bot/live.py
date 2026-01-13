@@ -2279,6 +2279,8 @@ def run_live_from_api(
                     return "momentum"
                 elif signal_reason.startswith("liquidity_"):
                     return "liquidity"
+                elif signal_reason.startswith("smc_"):
+                    return "smc"
                 else:
                     return "unknown"
             
@@ -2572,6 +2574,7 @@ def run_live_from_api(
             ml_signals_only = [s for s in all_signals if s.reason.startswith("ml_") and s.action in (Action.LONG, Action.SHORT)]
             momentum_signals_only = [s for s in all_signals if s.reason.startswith("momentum_") and s.action in (Action.LONG, Action.SHORT)]
             liquidity_signals_only = [s for s in all_signals if s.reason.startswith("liquidity_") and s.action in (Action.LONG, Action.SHORT)]
+            smc_signals_only = [s for s in all_signals if s.reason.startswith("smc_") and s.action in (Action.LONG, Action.SHORT)]
             
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only
@@ -2636,6 +2639,7 @@ def run_live_from_api(
             fresh_flat_signals = [s for s in flat_signals_only if is_signal_fresh(s, df_ready)]
             fresh_momentum_signals = [s for s in momentum_signals_only if is_signal_fresh(s, df_ready)]
             fresh_liquidity_signals = [s for s in liquidity_signals_only if is_signal_fresh(s, df_ready)]
+            fresh_smc_signals = [s for s in smc_signals_only if is_signal_fresh(s, df_ready)]
             
             # ДИАГНОСТИКА: Логируем, если есть сигналы, но нет свежих
             if main_strategy_signals and not fresh_main_signals:
@@ -2681,6 +2685,11 @@ def run_live_from_api(
             _log(f"  • ML: {len(ml_signals_only)} generated, latest: {len(fresh_ml_signals)} selected", symbol)
             _log(f"  • MOMENTUM: {len(momentum_signals_only)} generated, latest: {len(fresh_momentum_signals)} selected", symbol)
             _log(f"  • LIQUIDITY: {len(liquidity_signals_only)} generated, latest: {len(fresh_liquidity_signals)} selected", symbol)
+            _log(f"  • SMC: {len(smc_signals_only)} generated, latest: {len(fresh_smc_signals)} selected", symbol)
+            if fresh_smc_signals:
+                sig = fresh_smc_signals[-1]
+                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                _log(f"    Latest SMC: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
             _log(f"  • Total actionable: {len(all_signals)} signals", symbol)
             if ml_filtered:
                 _log(f"  • ML filtered out: {len(ml_filtered)} weak signals", symbol)
@@ -2709,6 +2718,15 @@ def run_live_from_api(
                 ml_sig = ml_signals_only[-1]
                 # Убираем логи о fallback сигналах - это нормальная ситуация
             
+            # SMC сигнал
+            smc_sig = None
+            if fresh_smc_signals:
+                # Берем самый последний сигнал (самый свежий по timestamp)
+                smc_sig = fresh_smc_signals[-1]
+            elif smc_signals_only:
+                # Если нет свежих SMC сигналов, но есть сигналы вообще - используем последний
+                smc_sig = smc_signals_only[-1]
+            
             if main_sig:
                 ts_str = main_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(main_sig.timestamp, 'strftime') else str(main_sig.timestamp)
                 is_fresh = is_signal_fresh(main_sig, df_ready)
@@ -2719,6 +2737,11 @@ def run_live_from_api(
                 is_fresh = is_signal_fresh(ml_sig, df_ready)
                 freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
                 print(f"[live]   🎯 Latest ML signal ({freshness_marker}): {ml_sig.action.value} @ ${ml_sig.price:.2f} ({ml_sig.reason}) [{ts_str}]")
+            if smc_sig:
+                ts_str = smc_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(smc_sig.timestamp, 'strftime') else str(smc_sig.timestamp)
+                is_fresh = is_signal_fresh(smc_sig, df_ready)
+                freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
+                print(f"[live]   🎯 Latest SMC signal ({freshness_marker}): {smc_sig.action.value} @ ${smc_sig.price:.2f} ({smc_sig.reason}) [{ts_str}]")
             
             # Функция для сохранения latest сигнала в историю (строго один сигнал от каждой стратегии)
             def save_latest_signal_to_history(sig, strategy_type_name: str, strategy_key: str):
@@ -2827,6 +2850,14 @@ def run_live_from_api(
                     liquidity_sig_latest = liquidity_signals_only[-1] if liquidity_signals_only else None
                     if liquidity_sig_latest:
                         save_latest_signal_to_history(liquidity_sig_latest, "LIQUIDITY", "LIQUIDITY_LATEST")
+                
+                # SMC стратегия
+                smc_sig_save = None
+                if smc_signals_only:
+                    smc_signals_only.sort(key=get_timestamp_for_sort)
+                    smc_sig_save = smc_signals_only[-1] if smc_signals_only else None
+                    if smc_sig_save:
+                        save_latest_signal_to_history(smc_sig_save, "SMC", "SMC_LATEST")
                 
                 # ДОПОЛНИТЕЛЬНО: Сохраняем ВСЕ сигналы от всех стратегий (не только свежие)
                 # Это позволяет видеть все сигналы в истории для анализа
@@ -3045,6 +3076,7 @@ def run_live_from_api(
             ml_sig_latest = get_latest_fresh_signal(ml_signals_only, df_ready)
             momentum_sig = get_latest_fresh_signal(momentum_signals_only, df_ready)
             liquidity_sig = get_latest_fresh_signal(liquidity_signals_only, df_ready)
+            smc_sig_latest = get_latest_fresh_signal(smc_signals_only, df_ready)
             
             # Создаем словарь всех сигналов для удобства
             strategy_signals = {
@@ -3053,6 +3085,7 @@ def run_live_from_api(
                 "ml": ml_sig_latest,
                 "momentum": momentum_sig,
                 "liquidity": liquidity_sig,
+                "smc": smc_sig_latest,
             }
             
             # Для обратной совместимости сохраняем main_sig и ml_sig
