@@ -966,22 +966,25 @@ def _ensure_tp_sl_set(
                 breakeven_sl_pct_from_price = abs(breakeven_sl - avg_price) / avg_price
                 breakeven_sl_pct_from_margin = breakeven_sl_pct_from_price * leverage
             
-            # Проверяем, что безубыток лучше базового SL
-            # ВАЖНО: Безубыток может быть меньше 7% от маржи, если позиция в прибыли
-            # Но если базовый SL уже 7% от маржи, безубыток не должен быть хуже базового SL
+            # Проверяем, что безубыток лучше базового SL И не меньше 7% от маржи
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Безубыток не должен быть меньше 7% от маржи
             use_breakeven = False
-            if position_bias == Bias.LONG:
+            
+            # Проверяем, что безубыток не меньше 7% от маржи
+            if breakeven_sl_pct_from_margin < min_sl_pct_from_margin:
+                print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is too small ({breakeven_sl_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), not using it. Keeping base SL ({base_sl:.2f})")
+            elif position_bias == Bias.LONG:
                 # Для LONG: безубыток должен быть выше базового SL (ближе к цене входа)
                 if breakeven_sl > base_sl:
                     use_breakeven = True
-                    print(f"[live] ✅ Breakeven SL ({breakeven_sl:.2f}) is better than base SL ({base_sl:.2f}) for LONG position")
+                    print(f"[live] ✅ Breakeven SL ({breakeven_sl:.2f}, {breakeven_sl_pct_from_margin*100:.1f}% from margin) is better than base SL ({base_sl:.2f}) for LONG position")
                 else:
                     print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is not better than base SL ({base_sl:.2f}), keeping base SL")
             else:  # SHORT
                 # Для SHORT: безубыток должен быть ниже базового SL (ближе к цене входа)
                 if breakeven_sl < base_sl:
                     use_breakeven = True
-                    print(f"[live] ✅ Breakeven SL ({breakeven_sl:.2f}) is better than base SL ({base_sl:.2f}) for SHORT position")
+                    print(f"[live] ✅ Breakeven SL ({breakeven_sl:.2f}, {breakeven_sl_pct_from_margin*100:.1f}% from margin) is better than base SL ({base_sl:.2f}) for SHORT position")
                 else:
                     print(f"[live] ⚠️ Breakeven SL ({breakeven_sl:.2f}) is not better than base SL ({base_sl:.2f}), keeping base SL")
             
@@ -1176,10 +1179,20 @@ def _ensure_tp_sl_set(
                         sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                         
                         # ВАЖНО: Если это безубыток (близко к цене входа, в пределах 0.5% от цены), 
-                        # и он лучше базового SL, не перезаписываем его
+                        # и он лучше базового SL И не меньше 7% от маржи, не перезаписываем его
                         is_breakeven = sl_deviation_pct_from_price < 0.005  # 0.5% от цены
-                        if is_breakeven and final_sl > base_sl_for_check:
-                            print(f"[live] ✅ Final SL is breakeven ({final_sl:.2f}), better than base SL ({base_sl_for_check:.2f}), keeping it")
+                        if is_breakeven:
+                            if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                                # Безубыток слишком маленький (< 7% от маржи), не используем его
+                                print(f"[live] 🚨 CRITICAL FIX: Breakeven SL ({final_sl:.2f}) is too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
+                                final_sl = avg_price * (1 - min_sl_pct_from_price)
+                            elif final_sl > base_sl_for_check:
+                                # Безубыток правильный (>= 7% от маржи) и лучше базового SL
+                                print(f"[live] ✅ Final SL is breakeven ({final_sl:.2f}, {sl_deviation_pct_from_margin*100:.1f}% from margin), better than base SL ({base_sl_for_check:.2f}), keeping it")
+                            else:
+                                # Безубыток не лучше базового SL, используем базовый SL
+                                print(f"[live] ⚠️ Breakeven SL ({final_sl:.2f}) is not better than base SL ({base_sl_for_check:.2f}), adjusting to base SL")
+                                final_sl = base_sl_for_check
                         elif sl_deviation_pct_from_margin < min_sl_pct_from_margin:
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 - min_sl_pct_from_price)
@@ -1199,10 +1212,20 @@ def _ensure_tp_sl_set(
                         sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                         
                         # ВАЖНО: Если это безубыток (близко к цене входа, в пределах 0.5% от цены), 
-                        # и он лучше базового SL, не перезаписываем его
+                        # и он лучше базового SL И не меньше 7% от маржи, не перезаписываем его
                         is_breakeven = sl_deviation_pct_from_price < 0.005  # 0.5% от цены
-                        if is_breakeven and final_sl < base_sl_for_check:
-                            print(f"[live] ✅ Final SL is breakeven ({final_sl:.2f}), better than base SL ({base_sl_for_check:.2f}), keeping it")
+                        if is_breakeven:
+                            if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                                # Безубыток слишком маленький (< 7% от маржи), не используем его
+                                print(f"[live] 🚨 CRITICAL FIX: Breakeven SL ({final_sl:.2f}) is too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
+                                final_sl = avg_price * (1 + min_sl_pct_from_price)
+                            elif final_sl < base_sl_for_check:
+                                # Безубыток правильный (>= 7% от маржи) и лучше базового SL
+                                print(f"[live] ✅ Final SL is breakeven ({final_sl:.2f}, {sl_deviation_pct_from_margin*100:.1f}% from margin), better than base SL ({base_sl_for_check:.2f}), keeping it")
+                            else:
+                                # Безубыток не лучше базового SL, используем базовый SL
+                                print(f"[live] ⚠️ Breakeven SL ({final_sl:.2f}) is not better than base SL ({base_sl_for_check:.2f}), adjusting to base SL")
+                                final_sl = base_sl_for_check
                         elif sl_deviation_pct_from_margin < min_sl_pct_from_margin:
                             print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
                             final_sl = avg_price * (1 + min_sl_pct_from_price)
@@ -3145,21 +3168,33 @@ def run_live_from_api(
                 try:
                     # SMC требует много истории (минимум 1000 свечей для надежности)
                     if len(df_ready) >= 200:
+                        _log(f"🔍 SMC: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         smc_signals = build_smc_signals(df_ready, current_settings.strategy, symbol=symbol)
                         smc_generated = [s for s in smc_signals if s.action in (Action.LONG, Action.SHORT)]
                         _log(f"📊 SMC strategy: generated {len(smc_signals)} total, {len(smc_generated)} actionable (LONG/SHORT)", symbol)
                         
                         # Диагностика, если нет сигналов
-                        if not smc_generated and len(smc_signals) == 0:
-                            if len(df_ready) < 1000:
-                                _log(f"  💡 SMC works best with 1000+ candles. Current: {len(df_ready)} candles. Try increasing KLINE_LIMIT in .env", symbol)
+                        if not smc_generated:
+                            if len(smc_signals) == 0:
+                                if len(df_ready) < 1000:
+                                    _log(f"  💡 SMC works best with 1000+ candles. Current: {len(df_ready)} candles. Try increasing KLINE_LIMIT in .env", symbol)
+                                else:
+                                    _log(f"  💡 SMC: No zones found matching current trend and session filters. This is normal - waiting for setup", symbol)
                             else:
-                                _log(f"  💡 SMC: No zones found matching current trend and session filters. This is normal - waiting for setup", symbol)
+                                # Есть сигналы, но все HOLD
+                                hold_count = len([s for s in smc_signals if s.action == Action.HOLD])
+                                _log(f"  💡 SMC: Generated {len(smc_signals)} signals, but all are HOLD (no actionable signals). Hold count: {hold_count}", symbol)
+                        
+                        # Логируем детали сгенерированных сигналов
+                        if smc_generated:
+                            for sig in smc_generated:
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                _log(f"  ✅ SMC signal: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
                         for sig in smc_generated:
                             all_signals.append(sig)
                     else:
-                        _log(f"⚠️ SMC strategy requires more history. Current: {len(df_ready)} candles", symbol)
+                        _log(f"⚠️ SMC strategy requires more history. Current: {len(df_ready)} candles (need >= 200)", symbol)
                 except Exception as e:
                     _log(f"❌ Error in SMC strategy: {e}", symbol)
                     import traceback
