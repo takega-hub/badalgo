@@ -170,7 +170,7 @@ class AppSettings:
     enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности)
     enable_smc_strategy: bool = False  # Smart Money Concepts стратегия
     # Приоритетная стратегия при конфликте сигналов
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "liquidity", "hybrid"
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid", "confluence"
     
     def __post_init__(self):
         """Инициализация после создания dataclass"""
@@ -399,7 +399,7 @@ def load_settings() -> AppSettings:
     if not strategy_priority_raw:
         strategy_priority_raw = cleaned_env_values.get("STRATEGY_PRIORITY", "")
     strategy_priority = strategy_priority_raw.strip().lower() if strategy_priority_raw else ""
-    allowed_priorities = ("trend", "flat", "ml", "momentum", "liquidity", "hybrid")
+    allowed_priorities = ("trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid", "confluence")
     if strategy_priority in allowed_priorities:
         settings.strategy_priority = strategy_priority
         print(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")

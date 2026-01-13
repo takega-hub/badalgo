@@ -3126,77 +3126,62 @@ def api_chart_data():
             "market_phase": market_phases,
         }
         
-        # Сигналы (точки входа) с конвертацией времени в МСК
+        # Сигналы (точки входа) - конвертируем время в Unix timestamp (миллисекунды) для графика
         entry_signals = []
+        print(f"[web] Processing signals for chart: total={len(signals) if signals else 0}")
         if signals and isinstance(signals, list) and len(signals) > 0:
             for sig in signals:
                 try:
                     if sig and hasattr(sig, 'action') and sig.action and hasattr(sig.action, 'value'):
-                        action_value = sig.action.value
+                        action_value = sig.action.value.lower()
                         # Проверяем, является ли сигнал actionable для графика
                         if action_value in ("long", "short"):
-                            timestamp_str = ""
+                            timestamp_ms = None
                             if hasattr(sig, 'timestamp') and sig.timestamp:
                                 try:
-                                    # Конвертируем время сигнала в МСК
+                                    # Конвертируем в Unix timestamp (миллисекунды)
                                     if isinstance(sig.timestamp, pd.Timestamp):
-                                        # Если время без таймзоны, считаем его UTC (как приходит от Bybit)
                                         if sig.timestamp.tzinfo is None:
-                                            utc_time = utc_tz.localize(sig.timestamp)
+                                            utc_time = sig.timestamp.tz_localize('UTC')
                                         else:
-                                            utc_time = sig.timestamp.astimezone(utc_tz)
-                                        # Конвертируем в МСК
-                                        msk_time = utc_time.astimezone(msk_tz)
-                                        timestamp_str = msk_time.isoformat()
-                                    elif hasattr(sig.timestamp, 'isoformat'):
-                                        # Если это datetime объект
-                                        dt = sig.timestamp
-                                        if hasattr(dt, 'tzinfo') and dt.tzinfo is None:
-                                            # Без timezone, считаем UTC
-                                            utc_time = utc_tz.localize(dt)
-                                        elif hasattr(dt, 'astimezone'):
-                                            utc_time = dt.astimezone(utc_tz)
-                                        else:
-                                            utc_time = utc_tz.localize(dt.replace(tzinfo=None))
-                                        msk_time = utc_time.astimezone(msk_tz)
-                                        timestamp_str = msk_time.isoformat()
+                                            utc_time = sig.timestamp.tz_convert('UTC')
+                                        timestamp_ms = int(utc_time.timestamp() * 1000)
+                                    elif hasattr(sig.timestamp, 'timestamp'):
+                                        # datetime объект
+                                        timestamp_ms = int(sig.timestamp.timestamp() * 1000)
                                     else:
-                                        # Строка или другой формат
-                                        try:
-                                            dt = pd.to_datetime(str(sig.timestamp))
-                                            if dt.tzinfo is None:
-                                                utc_time = utc_tz.localize(dt)
-                                            else:
-                                                utc_time = dt.astimezone(utc_tz)
-                                            msk_time = utc_time.astimezone(msk_tz)
-                                            timestamp_str = msk_time.isoformat()
-                                        except:
-                                            timestamp_str = str(sig.timestamp)
+                                        # Строка - парсим
+                                        dt = pd.to_datetime(str(sig.timestamp))
+                                        if dt.tzinfo is None:
+                                            dt = dt.tz_localize('UTC')
+                                        timestamp_ms = int(dt.timestamp() * 1000)
                                 except Exception as e:
-                                    print(f"[web] Error converting timestamp: {e}, timestamp: {sig.timestamp}")
-                                    timestamp_str = str(sig.timestamp) if sig.timestamp else ""
+                                    print(f"[web] Error converting signal timestamp: {e}")
+                                    timestamp_ms = None
+                            
+                            if timestamp_ms is None:
+                                continue  # Пропускаем сигнал без валидного времени
                             
                             signal_price = float(getattr(sig, 'price', 0)) if hasattr(sig, 'price') and sig.price else 0.0
                             signal_reason = getattr(sig, 'reason', '') or ""
                             
                             entry_signals.append({
-                                "time": timestamp_str,
+                                "time": timestamp_ms,  # Unix timestamp в миллисекундах
                                 "action": action_value,
                                 "reason": signal_reason,
                                 "price": signal_price,
-                                "side": "long" if "long" in action_value else "short",
                             })
-                            # Сигналы добавляются на график, логирование не требуется
-                        else:
-                            # Логируем сигналы, которые не попадают на график (для отладки)
-                            print(f"[web] Skipping signal for chart: {action_value} ({getattr(sig, 'reason', 'unknown')}) - not an entry signal")
                 except Exception as e:
-                    print(f"[web] Error processing signal: {e}, sig type: {type(sig)}")
-                    import traceback
-                    print(f"[web] Signal error traceback: {traceback.format_exc()}")
+                    print(f"[web] Error processing signal: {e}")
                     continue
             
-            print(f"[web] Total signals for chart: {len(entry_signals)}")
+            if entry_signals:
+                print(f"[web] ✅ Chart signals: {len(entry_signals)} (LONG: {sum(1 for s in entry_signals if s['action']=='long')}, SHORT: {sum(1 for s in entry_signals if s['action']=='short')})")
+                # Показываем первые 3 сигнала для отладки
+                for i, sig in enumerate(entry_signals[:3]):
+                    print(f"[web]   Signal {i+1}: {sig['action'].upper()} @ ${sig['price']:.2f}, time_ms={sig['time']}, reason={sig['reason'][:30]}")
+            else:
+                print(f"[web] ⚠️ No valid entry signals for chart (from {len(signals) if signals else 0} total signals)")
         
         # Текущая фаза рынка (последний бар)
         current_phase = indicators["market_phase"][-1] if indicators["market_phase"] and len(indicators["market_phase"]) > 0 else "unknown"

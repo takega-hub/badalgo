@@ -1217,28 +1217,49 @@
             if (!window.activeTVCandleSeries) return;
             const showSignals = document.getElementById('show-signals')?.checked;
             if (showSignals && data.signals && data.signals.length > 0) {
+                console.log('[Chart] Processing signals:', data.signals.length);
                 const markers = data.signals.map(sig => {
                     const action = (sig.action || '').toLowerCase();
                     const reason = (sig.reason || '').toLowerCase();
+                    const price = sig.price ? parseFloat(sig.price).toFixed(2) : '';
                     
                     // Краткое название стратегии
-                    let stratPrefix = '';
-                    if (reason.startsWith('ml_')) stratPrefix = 'ML:';
-                    else if (reason.startsWith('smc_')) stratPrefix = 'SMC:';
-                    else if (reason.startsWith('trend_')) stratPrefix = 'TRN:';
-                    else if (reason.startsWith('range_')) stratPrefix = 'FLT:';
-                    else if (reason.startsWith('momentum_')) stratPrefix = 'MOM:';
-                    else if (reason.startsWith('liquidity_')) stratPrefix = 'LIQ:';
+                    let stratName = '';
+                    if (reason.startsWith('ml_')) stratName = 'ML';
+                    else if (reason.startsWith('smc_')) stratName = 'SMC';
+                    else if (reason.startsWith('trend_')) stratName = 'TREND';
+                    else if (reason.startsWith('range_')) stratName = 'FLAT';
+                    else if (reason.startsWith('momentum_')) stratName = 'MOM';
+                    else if (reason.startsWith('liquidity_')) stratName = 'LIQ';
+                    else stratName = 'SIG';
+                    
+                    // Формат: "ML LONG $95000"
+                    const label = price ? `${stratName} ${action.toUpperCase()} $${price}` : `${stratName} ${action.toUpperCase()}`;
+                    
+                    // Конвертируем время (приходит в мс, нужно в секундах)
+                    const timeInSeconds = typeof sig.time === 'number' ? Math.floor(sig.time / 1000) : null;
+                    
+                    if (!timeInSeconds || isNaN(timeInSeconds)) {
+                        console.warn('[Chart] Invalid signal time:', sig.time);
+                        return null;
+                    }
                     
                     return {
-                        time: Math.floor(sig.time / 1000),
+                        time: timeInSeconds,
                         position: action === 'long' ? 'belowBar' : 'aboveBar',
                         color: action === 'long' ? '#00ff88' : '#ff4444',
                         shape: action === 'long' ? 'arrowUp' : 'arrowDown',
-                        text: `${stratPrefix}${action.toUpperCase()}`
+                        text: label,
+                        size: 2  // Увеличенный размер маркера
                     };
-                }).filter(m => m.time && !isNaN(m.time));
-                window.activeTVCandleSeries.setMarkers(markers);
+                }).filter(m => m !== null);
+                
+                console.log('[Chart] Valid markers:', markers.length);
+                if (markers.length > 0) {
+                    window.activeTVCandleSeries.setMarkers(markers);
+                } else {
+                    window.activeTVCandleSeries.setMarkers([]);
+                }
             } else {
                 window.activeTVCandleSeries.setMarkers([]);
             }
