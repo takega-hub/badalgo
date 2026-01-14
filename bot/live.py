@@ -1050,13 +1050,17 @@ def _ensure_tp_sl_set(
                     if trailing_sl > target_sl:
                         old_target_sl = target_sl
                         target_sl = trailing_sl
+                        # Устанавливаем флаг, что это trailing stop (для последующей валидации)
+                        is_trailing_stop_applied = True
                         print(f"[live] 📈 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)")
                         print(f"[live]   Trailing distance: {trailing_distance_pct*100:.2f}% from max price")
                     else:
                         print(f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop ({trailing_sl:.2f}), keeping it")
+                        is_trailing_stop_applied = False
                 else:
                     # Если trailing SL хуже базового SL, не используем его
                     print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
+                    is_trailing_stop_applied = False
             else:  # SHORT
                 # Для SHORT: SL должен быть выше максимальной цены на trailing_distance_pct
                 trailing_sl = max_price * (1 + trailing_distance_pct)
@@ -1066,17 +1070,23 @@ def _ensure_tp_sl_set(
                     if trailing_sl < target_sl:
                         old_target_sl = target_sl
                         target_sl = trailing_sl
+                        # Устанавливаем флаг, что это trailing stop (для последующей валидации)
+                        is_trailing_stop_applied = True
                         print(f"[live] 📉 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)")
                         print(f"[live]   Trailing distance: {trailing_distance_pct*100:.2f}% from max price")
                     else:
                         print(f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop ({trailing_sl:.2f}), keeping it")
+                        is_trailing_stop_applied = False
                 else:
                     # Если trailing SL хуже базового SL, не используем его
                     print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
+                    is_trailing_stop_applied = False
         elif settings.risk.enable_trailing_stop:
             # Trailing stop еще не активирован
             # Убрано verbose сообщение "Trailing stop waiting" - логируется только при активации
-            pass
+            is_trailing_stop_applied = False
+        else:
+            is_trailing_stop_applied = False
         
         # Проверяем, нужно ли обновить TP/SL
         tp_needs_update = not tp_set
@@ -1118,8 +1128,10 @@ def _ensure_tp_sl_set(
         min_activation_pct = max(settings.risk.trailing_stop_activation_pct * 100, half_tp_distance_pct)
         
         # Проверяем, является ли это trailing stop
-        is_trailing_stop = False
-        if settings.risk.enable_trailing_stop and max_profit_pct >= min_activation_pct:
+        # Используем флаг, установленный ранее при активации trailing stop
+        is_trailing_stop = is_trailing_stop_applied if 'is_trailing_stop_applied' in locals() else False
+        # Дополнительная проверка для надежности
+        if not is_trailing_stop and settings.risk.enable_trailing_stop and max_profit_pct >= min_activation_pct:
             if position_bias == Bias.LONG:
                 # Для LONG: trailing stop выше базового SL (может быть выше цены входа)
                 is_trailing_stop = target_sl > base_sl
@@ -1192,10 +1204,14 @@ def _ensure_tp_sl_set(
                         sl_deviation_pct_from_price = abs(avg_price - final_sl) / avg_price
                         sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                         
+                        # ВАЖНО: Если это trailing stop, не проверяем минимальный процент от маржи
+                        # Trailing stop может быть выше входа для LONG (защита прибыли)
+                        if is_trailing_stop and final_sl > base_sl_for_check:
+                            print(f"[live] ✅ Final SL is trailing stop ({final_sl:.2f}), better than base SL ({base_sl_for_check:.2f}), keeping it")
                         # ВАЖНО: Если это безубыток (близко к цене входа, в пределах 0.5% от цены), 
                         # и он лучше базового SL И не меньше 7% от маржи, не перезаписываем его
-                        is_breakeven = sl_deviation_pct_from_price < 0.005  # 0.5% от цены
-                        if is_breakeven:
+                        elif sl_deviation_pct_from_price < 0.005:  # 0.5% от цены
+                            is_breakeven = True
                             if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
                                 # Безубыток слишком маленький (< 7% от маржи), не используем его
                                 print(f"[live] 🚨 CRITICAL FIX: Breakeven SL ({final_sl:.2f}) is too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
@@ -1226,10 +1242,14 @@ def _ensure_tp_sl_set(
                         sl_deviation_pct_from_price = abs(final_sl - avg_price) / avg_price
                         sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                         
+                        # ВАЖНО: Если это trailing stop, не проверяем минимальный процент от маржи
+                        # Trailing stop может быть ниже входа для SHORT (защита прибыли)
+                        if is_trailing_stop and final_sl < base_sl_for_check:
+                            print(f"[live] ✅ Final SL is trailing stop ({final_sl:.2f}), better than base SL ({base_sl_for_check:.2f}), keeping it")
                         # ВАЖНО: Если это безубыток (близко к цене входа, в пределах 0.5% от цены), 
                         # и он лучше базового SL И не меньше 7% от маржи, не перезаписываем его
-                        is_breakeven = sl_deviation_pct_from_price < 0.005  # 0.5% от цены
-                        if is_breakeven:
+                        elif sl_deviation_pct_from_price < 0.005:  # 0.5% от цены
+                            is_breakeven = True
                             if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
                                 # Безубыток слишком маленький (< 7% от маржи), не используем его
                                 print(f"[live] 🚨 CRITICAL FIX: Breakeven SL ({final_sl:.2f}) is too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
