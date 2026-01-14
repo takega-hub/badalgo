@@ -3284,10 +3284,23 @@
             }
         }
         
+        // Глобальная переменная для хранения текущего AbortController
+        let currentSymbolsStatusController = null;
+        
         async function loadSymbolsStatus() {
             try {
+                // Отменяем предыдущий запрос, если он еще выполняется
+                if (currentSymbolsStatusController) {
+                    try {
+                        currentSymbolsStatusController.abort();
+                    } catch (e) {
+                        // Игнорируем ошибки при отмене предыдущего запроса
+                    }
+                }
+                
                 // Увеличиваем timeout для запроса (30 секунд) - api_status() делает много API вызовов
                 const controller = new AbortController();
+                currentSymbolsStatusController = controller;
                 const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 секунд вместо 10
                 
                 const response = await fetch('/api/status', {
@@ -3300,6 +3313,7 @@
                 });
                 
                 clearTimeout(timeoutId);
+                currentSymbolsStatusController = null; // Очищаем ссылку после успешного запроса
                 
                 // Проверяем статус ответа
                 if (!response.ok) {
@@ -3416,6 +3430,15 @@
                     }
                 }
             } catch (error) {
+                // Очищаем ссылку на controller при ошибке
+                currentSymbolsStatusController = null;
+                
+                // AbortError - это нормальная ситуация при отмене запроса (например, при переключении символа)
+                if (error.name === 'AbortError') {
+                    console.log('[UI] Symbols status request was aborted (this is normal when switching symbols or timeout)');
+                    return; // Не показываем ошибку, просто выходим
+                }
+                
                 console.error('[UI] Error loading symbols status:', error);
                 console.error('[UI] Error details:', {
                     name: error.name,
@@ -3427,10 +3450,7 @@
                 
                 // Различаем типы ошибок
                 let errorMsg = '';
-                if (error.name === 'AbortError') {
-                    errorMsg = '<p style="color: #ff4444;">⏱️ Request timeout (server not responding)</p>';
-                    console.warn('[UI] Request timeout - server may be down or slow');
-                } else if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
+                if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
                     errorMsg = '<p style="color: #ff4444;">🌐 Network error: Server unavailable or not responding</p><p style="color: #aaa; font-size: 0.85em; margin-top: 5px;">Please check if the server is running</p>';
                     console.warn('[UI] Failed to fetch - server may be down or unreachable');
                     
@@ -3620,12 +3640,21 @@
                 }
                 
                 // Обновляем статус символов (чтобы обновилась таблица с выделением)
-                try {
-                    await loadSymbolsStatus();
-                } catch (statusError) {
-                    console.error('[UI] Error refreshing symbols status:', statusError);
-                    // Не прерываем процесс переключения из-за ошибки статуса
-                }
+                // Делаем это с небольшой задержкой, чтобы дать время другим запросам завершиться
+                // и избежать конфликтов с AbortController
+                setTimeout(async () => {
+                    try {
+                        await loadSymbolsStatus();
+                    } catch (statusError) {
+                        // AbortError - нормальная ситуация при быстром переключении, не логируем как ошибку
+                        if (statusError.name !== 'AbortError') {
+                            console.error('[UI] Error refreshing symbols status:', statusError);
+                        } else {
+                            console.log('[UI] Symbols status update was cancelled (normal when switching symbols quickly)');
+                        }
+                        // Не прерываем процесс переключения из-за ошибки статуса
+                    }
+                }, 500); // Задержка 500мс для завершения других операций
                 
                 console.log(`[UI] ✅ Successfully switched to ${symbol}`);
                 
