@@ -3302,7 +3302,7 @@
                 // Проверяем, что symbols_status существует и не пустой
                 if (data.symbols_status && Object.keys(data.symbols_status).length > 0) {
                     // Функция для генерации HTML таблицы статуса символов
-                    const generateStatusTable = (symbolsStatus) => {
+                    const generateStatusTable = (symbolsStatus, currentPrimarySymbol = null) => {
                         let html = '<table style="width: 100%; border-collapse: collapse;"><thead><tr><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">Symbol</th><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">Status</th><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">Position</th><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">PnL</th></tr></thead><tbody>';
                         
                         for (const [symbol, status] of Object.entries(symbolsStatus)) {
@@ -3312,8 +3312,22 @@
                             const positionInfo = position && position.side ? `${position.side} ${position.size ? position.size.toFixed(3) : '0.000'} @ $${position.avg_price ? position.avg_price.toFixed(2) : '0.00'}` : 'No position';
                             const pnlDisplay = position ? `$${pnl.toFixed(2)}` : '$0.00';
                             
+                            // Определяем, является ли этот символ текущим primary
+                            const isPrimary = currentPrimarySymbol && symbol === currentPrimarySymbol;
+                            const symbolStyle = isPrimary ? 
+                                'padding: 10px; background: rgba(0, 255, 136, 0.1); border-left: 3px solid #00ff88;' : 
+                                'padding: 10px;';
+                            
+                            // Делаем название символа кликабельным
+                            const symbolLink = `<a href="#" onclick="switchPrimarySymbol('${symbol}'); return false;" 
+                                style="color: ${isPrimary ? '#00ff88' : '#4a9eff'}; text-decoration: none; font-weight: bold; cursor: pointer; 
+                                transition: color 0.2s; padding: 2px 6px; border-radius: 3px; display: inline-block;"
+                                onmouseover="this.style.color='#00ff88'; this.style.background='rgba(0, 255, 136, 0.1)';" 
+                                onmouseout="this.style.color='${isPrimary ? '#00ff88' : '#4a9eff'}'; this.style.background='transparent';"
+                                title="Click to switch to ${symbol}">${symbol}${isPrimary ? ' ⭐' : ''}</a>`;
+                            
                             html += `<tr style="border-bottom: 1px solid #2a2a2a;">
-                                <td style="padding: 10px;"><strong>${symbol}</strong></td>
+                                <td style="${symbolStyle}">${symbolLink}</td>
                                 <td style="padding: 10px;">
                                     <span class="status-indicator ${status.is_running ? 'running' : 'stopped'}"></span>
                                     ${status.status || (status.is_running ? 'Running' : 'Stopped')}
@@ -3327,7 +3341,9 @@
                         return html;
                     };
                     
-                    const statusHtml = generateStatusTable(data.symbols_status);
+                    // Получаем текущий primary_symbol из данных аккаунта
+                    const currentPrimarySymbol = data.account?.primary_symbol || data.account?.symbol || null;
+                    const statusHtml = generateStatusTable(data.symbols_status, currentPrimarySymbol);
                     
                     // Обновляем панель на вкладке Symbols
                     const statusList = document.getElementById('symbols-status-list');
@@ -3402,6 +3418,108 @@
                 if (dashboardStatusList) {
                     dashboardStatusList.innerHTML = errorMsg;
                 }
+            }
+        }
+        
+        // Функция для переключения активной торговой пары
+        async function switchPrimarySymbol(symbol) {
+            try {
+                console.log(`[UI] Switching primary symbol to ${symbol}`);
+                
+                // Показываем индикатор загрузки
+                const statusList = document.getElementById('symbols-status-list');
+                const dashboardStatusList = document.getElementById('dashboard-symbols-status-list');
+                const loadingMsg = '<p style="color: #aaa; font-size: 0.9em;">⏳ Switching to ' + symbol + '...</p>';
+                if (statusList) statusList.innerHTML = loadingMsg;
+                if (dashboardStatusList) dashboardStatusList.innerHTML = loadingMsg;
+                
+                // Получаем текущие активные символы
+                const accountResponse = await fetch('/api/account');
+                const accountData = await accountResponse.json();
+                const activeSymbols = accountData.active_symbols || [];
+                
+                // Проверяем, что символ в списке активных
+                if (!activeSymbols.includes(symbol)) {
+                    alert(`Symbol ${symbol} is not in active symbols list. Please enable it first.`);
+                    await loadSymbolsStatus(); // Обновляем статус
+                    return;
+                }
+                
+                // Отправляем запрос на смену primary_symbol
+                const response = await fetch('/api/symbols/set-active', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        symbols: activeSymbols,
+                        primary: symbol
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log('[UI] Primary symbol switched:', data);
+                
+                // Обновляем все select'ы
+                const primarySelect = document.getElementById('symbols-primary-select');
+                const topSelect = document.getElementById('primary-symbol-select');
+                
+                if (primarySelect) {
+                    primarySelect.value = symbol;
+                }
+                if (topSelect) {
+                    topSelect.value = symbol;
+                }
+                
+                // Обновляем глобальную переменную
+                window.currentSymbol = symbol;
+                
+                // Обновляем статус активных символов
+                const statusSpan = document.getElementById('active-symbols-status');
+                if (statusSpan) {
+                    statusSpan.textContent = `Active: ${activeSymbols.join(', ')} | Primary: ${symbol}`;
+                }
+                
+                // Обновляем график
+                if (typeof window.loadChartLW === 'function') {
+                    console.log('[UI] Refreshing chart...');
+                    await window.loadChartLW(true); // forceRefresh = true
+                }
+                
+                // Обновляем историю сделок
+                if (typeof loadTrades === 'function') {
+                    console.log('[UI] Refreshing trades...');
+                    await loadTrades();
+                }
+                
+                // Обновляем сигналы
+                if (typeof loadSignals === 'function') {
+                    console.log('[UI] Refreshing signals...');
+                    await loadSignals();
+                }
+                
+                // Обновляем статистику стратегий
+                if (typeof loadStrategyStats === 'function') {
+                    console.log('[UI] Refreshing strategy stats...');
+                    await loadStrategyStats();
+                }
+                
+                // Обновляем статус символов (чтобы обновилась таблица с выделением)
+                await loadSymbolsStatus();
+                
+                console.log(`[UI] ✅ Successfully switched to ${symbol}`);
+                
+            } catch (error) {
+                console.error('[UI] Error switching primary symbol:', error);
+                alert(`Error switching to ${symbol}: ${error.message}`);
+                // Восстанавливаем статус символов
+                await loadSymbolsStatus();
             }
         }
         
