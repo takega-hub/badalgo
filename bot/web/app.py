@@ -585,7 +585,15 @@ def api_symbols_set_active():
             # Если основной символ не указан, используем первый активный
             primary_symbol = active_symbols[0]
         
+        # Проверяем, изменились ли активные символы (для торговли)
+        # Если изменился только primary_symbol (для отображения), перезапуск не нужен
+        active_symbols_changed = False
+        if settings.active_symbols != active_symbols:
+            active_symbols_changed = True
+            print(f"[web] Active symbols changed: {settings.active_symbols} -> {active_symbols}")
+        
         # Обновляем настройки
+        old_primary = settings.primary_symbol
         settings.active_symbols = active_symbols
         settings.primary_symbol = primary_symbol
         settings.symbol = primary_symbol  # Для обратной совместимости
@@ -593,39 +601,51 @@ def api_symbols_set_active():
         # Сохраняем в .env
         _save_symbol_settings_to_env(active_symbols, primary_symbol)
         
-        # Обновляем MultiSymbolManager (в фоновом потоке, чтобы не блокировать Flask)
+        # Обновляем MultiSymbolManager только если изменились активные символы
+        # Если изменился только primary_symbol (для отображения), просто обновляем настройки без перезапуска
         if multi_symbol_manager:
-            def update_and_restart():
-                """Обновление настроек и перезапуск в фоновом потоке."""
-                global multi_symbol_manager
+            if active_symbols_changed:
+                # Активные символы изменились - нужен перезапуск
+                def update_and_restart():
+                    """Обновление настроек и перезапуск в фоновом потоке."""
+                    global multi_symbol_manager
+                    try:
+                        print("[web] [background] Updating MultiSymbolManager settings from api_symbols_set_active...")
+                        multi_symbol_manager.update_settings(settings)
+                        print("[web] [background] Settings updated successfully")
+                        
+                        # Если менеджер уже запущен, перезапускаем его с новыми настройками
+                        if multi_symbol_manager.running:
+                            print(f"[web] [background] Restarting MultiSymbolManager with new active symbols: {active_symbols}")
+                            multi_symbol_manager.stop()
+                            # Даем время на остановку
+                            import time
+                            time.sleep(2)
+                            multi_symbol_manager.start()
+                            print("[web] [background] MultiSymbolManager restarted successfully")
+                    except Exception as e:
+                        print(f"[web] [background] Error updating/restarting MultiSymbolManager: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Запускаем в фоновом потоке, чтобы не блокировать Flask
+                import threading
+                update_thread = threading.Thread(
+                    target=update_and_restart,
+                    name="SymbolSettingsUpdateThread",
+                    daemon=True
+                )
+                update_thread.start()
+                print("[web] Settings update thread launched (won't block server)")
+            else:
+                # Изменился только primary_symbol - просто обновляем настройки без перезапуска
+                print(f"[web] Only primary_symbol changed ({old_primary} -> {primary_symbol}), updating settings without restart")
                 try:
-                    print("[web] [background] Updating MultiSymbolManager settings from api_symbols_set_active...")
                     multi_symbol_manager.update_settings(settings)
-                    print("[web] [background] Settings updated successfully")
-                    
-                    # Если менеджер уже запущен, перезапускаем его с новыми настройками
-                    if multi_symbol_manager.running:
-                        print(f"[web] [background] Restarting MultiSymbolManager with new active symbols: {active_symbols}")
-                        multi_symbol_manager.stop()
-                        # Даем время на остановку
-                        import time
-                        time.sleep(2)
-                        multi_symbol_manager.start()
-                        print("[web] [background] MultiSymbolManager restarted successfully")
+                    print("[web] Settings updated without restart (only display symbol changed)")
                 except Exception as e:
-                    print(f"[web] [background] Error updating/restarting MultiSymbolManager: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # Запускаем в фоновом потоке, чтобы не блокировать Flask
-            import threading
-            update_thread = threading.Thread(
-                target=update_and_restart,
-                name="SymbolSettingsUpdateThread",
-                daemon=True
-            )
-            update_thread.start()
-            print("[web] Settings update thread launched (won't block server)")
+                    print(f"[web] Error updating settings: {e}")
+                    # Не критично, продолжаем
         
         # Обновляем shared_settings
         from bot.shared_settings import set_settings
