@@ -1120,13 +1120,15 @@
         window.activeTVIndicatorSeries = []; // Массив для всех доп. серий (индикаторы)
         window.lastChartSymbol = null;
 
-        window.loadChartLW = async function(forceRefresh = false) {
+        window.loadChartLW = async function(forceRefresh = false, explicitSymbol = null) {
             try {
                 const container = document.getElementById('chart-container');
                 if (!container) return;
 
                 const symbolSelect = document.getElementById('primary-symbol-select');
-                const symbol = symbolSelect ? symbolSelect.value : (window.currentSymbol || 'BTCUSDT');
+                // Приоритет: явно переданный символ > currentSymbol > select > BTCUSDT
+                const symbol = explicitSymbol || window.currentSymbol || (symbolSelect ? symbolSelect.value : 'BTCUSDT');
+                console.log(`[Chart] Loading chart for symbol: ${symbol} (explicit: ${explicitSymbol}, currentSymbol: ${window.currentSymbol}, select: ${symbolSelect?.value})`);
                 
                 // Если символ не изменился и график уже есть, просто обновляем данные
                 const isSameSymbol = window.lastChartSymbol === symbol;
@@ -1141,8 +1143,37 @@
                     window.lastChartSymbol = symbol;
                 }
 
-                const response = await fetch(`/api/chart/data?symbol=${encodeURIComponent(symbol)}`);
-                const data = await response.json();
+                let response;
+                try {
+                    response = await fetch(`/api/chart/data?symbol=${encodeURIComponent(symbol)}`);
+                } catch (fetchError) {
+                    console.error(`[Chart] Failed to fetch chart data for ${symbol}:`, fetchError);
+                    const container = document.getElementById('chart-container');
+                    if (container) {
+                        container.innerHTML = `<p style="color: #ff4444; padding: 20px;">Network error: Failed to load chart data for ${symbol}. Please check your connection and try again.</p>`;
+                    }
+                    return;
+                }
+                
+                if (!response.ok) {
+                    const container = document.getElementById('chart-container');
+                    if (container) {
+                        container.innerHTML = `<p style="color: #ff4444; padding: 20px;">Error loading chart: HTTP ${response.status}</p>`;
+                    }
+                    return;
+                }
+                
+                let data;
+                try {
+                    data = await response.json();
+                } catch (jsonError) {
+                    console.error(`[Chart] Failed to parse JSON for ${symbol}:`, jsonError);
+                    const container = document.getElementById('chart-container');
+                    if (container) {
+                        container.innerHTML = `<p style="color: #ff4444; padding: 20px;">Error parsing chart data for ${symbol}</p>`;
+                    }
+                    return;
+                }
                 
                 if (data.error || !data.candles || data.candles.length === 0) {
                     container.innerHTML = `<p style="color: #ff4444; padding: 20px;">${data.error || 'No data available for ' + symbol}</p>`;
@@ -3527,10 +3558,15 @@
                 }
                 if (topSelect) {
                     topSelect.value = symbol;
+                    // Триггерим событие change для обновления других зависимых элементов
+                    topSelect.dispatchEvent(new Event('change', { bubbles: true }));
                 }
                 
-                // Обновляем глобальную переменную
+                // Обновляем глобальную переменную ПЕРЕД вызовом loadChartLW
                 window.currentSymbol = symbol;
+                
+                // Сбрасываем кэш последнего символа, чтобы график пересоздался
+                window.lastChartSymbol = null;
                 
                 // Обновляем статус активных символов
                 const statusSpan = document.getElementById('active-symbols-status');
@@ -3538,32 +3574,58 @@
                     statusSpan.textContent = `Active: ${activeSymbols.join(', ')} | Primary: ${symbol}`;
                 }
                 
-                // Обновляем график
+                // Обновляем график - передаем символ явно
                 if (typeof window.loadChartLW === 'function') {
-                    console.log('[UI] Refreshing chart...');
-                    await window.loadChartLW(true); // forceRefresh = true
+                    console.log(`[UI] Refreshing chart for ${symbol}...`);
+                    try {
+                        // Передаем символ явно, чтобы гарантировать правильное переключение
+                        await window.loadChartLW(true, symbol); // forceRefresh = true, explicitSymbol = symbol
+                    } catch (chartError) {
+                        console.error('[UI] Error refreshing chart:', chartError);
+                        // Не прерываем процесс переключения из-за ошибки графика
+                    }
                 }
                 
                 // Обновляем историю сделок
                 if (typeof loadTrades === 'function') {
                     console.log('[UI] Refreshing trades...');
-                    await loadTrades();
+                    try {
+                        await loadTrades();
+                    } catch (tradesError) {
+                        console.error('[UI] Error refreshing trades:', tradesError);
+                        // Не прерываем процесс переключения из-за ошибки сделок
+                    }
                 }
                 
                 // Обновляем сигналы
                 if (typeof loadSignals === 'function') {
                     console.log('[UI] Refreshing signals...');
-                    await loadSignals();
+                    try {
+                        await loadSignals();
+                    } catch (signalsError) {
+                        console.error('[UI] Error refreshing signals:', signalsError);
+                        // Не прерываем процесс переключения из-за ошибки сигналов
+                    }
                 }
                 
                 // Обновляем статистику стратегий
                 if (typeof loadStrategyStats === 'function') {
                     console.log('[UI] Refreshing strategy stats...');
-                    await loadStrategyStats();
+                    try {
+                        await loadStrategyStats();
+                    } catch (statsError) {
+                        console.error('[UI] Error refreshing strategy stats:', statsError);
+                        // Не прерываем процесс переключения из-за ошибки статистики
+                    }
                 }
                 
                 // Обновляем статус символов (чтобы обновилась таблица с выделением)
-                await loadSymbolsStatus();
+                try {
+                    await loadSymbolsStatus();
+                } catch (statusError) {
+                    console.error('[UI] Error refreshing symbols status:', statusError);
+                    // Не прерываем процесс переключения из-за ошибки статуса
+                }
                 
                 console.log(`[UI] ✅ Successfully switched to ${symbol}`);
                 
