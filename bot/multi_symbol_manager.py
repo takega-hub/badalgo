@@ -363,7 +363,8 @@ class MultiSymbolManager:
                 symbol=symbol,  # Явно передаем symbol для этого воркера
                 stop_event=worker.stop_event  # Передаем событие остановки
             )
-            print(f"[MultiSymbol] 🛑 run_live_from_api returned for {symbol} (should not happen - infinite loop)")
+            # Функция вернулась - это нормально при остановке через stop_event
+            print(f"[MultiSymbol] ✅ Worker loop ended for {symbol} (normal shutdown)")
         except KeyboardInterrupt:
             # Нормальное завершение по Ctrl+C
             print(f"[MultiSymbol] 🛑 Worker for {symbol} interrupted")

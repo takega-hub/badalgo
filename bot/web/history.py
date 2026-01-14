@@ -106,25 +106,70 @@ def check_recent_loss_trade(
 
 
 def _load_history() -> Dict[str, List]:
-    """Загрузить историю из файла."""
-    if not HISTORY_FILE.exists():
-        return {"trades": [], "signals": []}
+    """Загрузить историю из файла.
     
-    try:
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            history = json.load(f)
-            # Автоматически удаляем дубликаты при каждой загрузке для гарантии чистоты данных
-            # Это гарантирует, что дубликаты будут удалены даже если они появились после первой очистки
+    ВАЖНО: Для обратной совместимости поддерживаем старые пути расположения файла истории.
+    Раньше файл мог лежать рядом с модулем (`bot/web/bot_history.json`) или на один уровень выше.
+    Сейчас основным местом считается корень проекта (`<repo_root>/bot_history.json`).
+    
+    Логика:
+    1. Если новый файл существует → используем его.
+    2. Если нового файла нет → ищем legacy-файлы и при наличии мигрируем их в новое место.
+    """
+    legacy_paths = [
+        Path(__file__).parent / "bot_history.json",           # старый путь: bot/web/bot_history.json
+        Path(__file__).parent.parent / "bot_history.json",    # возможный промежуточный путь: bot/bot_history.json
+    ]
+
+    history: Dict[str, List]
+
+    # 1. Новый (текущий) путь
+    if HISTORY_FILE.exists():
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except Exception:
+            return {"trades": [], "signals": []}
+    else:
+        # 2. Пытаемся найти legacy-файлы
+        legacy_file = None
+        for lp in legacy_paths:
+            if lp.exists():
+                legacy_file = lp
+                break
+        
+        if legacy_file is None:
+            # Истории нет ни в одном из мест
+            return {"trades": [], "signals": []}
+        
+        # Загружаем legacy-историю и мигрируем в новый путь
+        try:
+            with open(legacy_file, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+            # Сразу сохраняем в новое место, чтобы дальше всё работало через единый файл
             try:
-                duplicates_removed = remove_duplicate_trades_internal(history)
-                if duplicates_removed > 0:
-                    _save_history(history)
-                    print(f"[history] Auto-removed {duplicates_removed} duplicate trades on load")
+                _save_history(history)
+                print(f"[history] ✅ Migrated legacy history from {legacy_file} to {HISTORY_FILE}")
             except Exception as e:
-                print(f"[history] ⚠️ Error removing duplicates on load: {e}")
-            return history
-    except Exception:
-        return {"trades": [], "signals": []}
+                print(f"[history] ⚠️ Error saving migrated history to new path: {e}")
+        except Exception as e:
+            print(f"[history] ⚠️ Error loading legacy history from {legacy_file}: {e}")
+            return {"trades": [], "signals": []}
+
+    # Автоматически удаляем дубликаты при каждой загрузке для гарантии чистоты данных
+    # Это гарантирует, что дубликаты будут удалены даже если они появились после первой очистки
+    try:
+        duplicates_removed = remove_duplicate_trades_internal(history)
+        if duplicates_removed > 0:
+            _save_history(history)
+            print(f"[history] Auto-removed {duplicates_removed} duplicate trades on load")
+    except Exception as e:
+        print(f"[history] ⚠️ Error removing duplicates on load: {e}")
+
+    # Гарантируем наличие ключей
+    history.setdefault("trades", [])
+    history.setdefault("signals", [])
+    return history
 
 
 def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) -> int:

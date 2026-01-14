@@ -3870,7 +3870,12 @@ def run_live_from_api(
             else:
                 # 1. Сначала определяем свежие сигналы
                 fresh_available = [(name, s) for name, s in available_signals if is_signal_fresh(s, df_ready)]
-                print(f"[live] 🔍 [{symbol}] Fresh signals: {len(fresh_available)}/{len(available_signals)}")
+                if not df_ready.empty:
+                    last_candle_ts = df_ready.index[-1]
+                    last_candle_str = last_candle_ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(last_candle_ts, 'strftime') else str(last_candle_ts)
+                    print(f"[live] 🔍 [{symbol}] Fresh signals: {len(fresh_available)}/{len(available_signals)} (last candle: {last_candle_str})")
+                else:
+                    print(f"[live] 🔍 [{symbol}] Fresh signals: {len(fresh_available)}/{len(available_signals)}")
                 
                 if strategy_priority == "confluence":
                     # Режим Конфлюэнции: Требуется подтверждение минимум от двух стратегий
