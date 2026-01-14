@@ -3434,33 +3434,33 @@
                 if (dashboardStatusList) dashboardStatusList.innerHTML = loadingMsg;
                 
                 // Получаем текущие активные символы
-                const accountResponse = await fetch('/api/account', {
+                const symbolsResponse = await fetch('/api/symbols/active', {
                     credentials: 'same-origin'
                 });
                 
                 // Проверяем Content-Type перед парсингом JSON
-                const accountContentType = accountResponse.headers.get('content-type');
-                if (!accountContentType || !accountContentType.includes('application/json')) {
-                    const text = await accountResponse.text();
-                    console.error('[UI] Account API returned non-JSON response:', text.substring(0, 200));
-                    if (accountResponse.status === 401 || accountResponse.status === 403) {
+                const symbolsContentType = symbolsResponse.headers.get('content-type');
+                if (!symbolsContentType || !symbolsContentType.includes('application/json')) {
+                    const text = await symbolsResponse.text();
+                    console.error('[UI] Symbols API returned non-JSON response:', text.substring(0, 200));
+                    if (symbolsResponse.status === 401 || symbolsResponse.status === 403) {
                         throw new Error('Session expired. Please refresh the page and log in again.');
                     } else {
-                        throw new Error(`Failed to load account data (HTTP ${accountResponse.status})`);
+                        throw new Error(`Failed to load symbols data (HTTP ${symbolsResponse.status})`);
                     }
                 }
                 
-                if (!accountResponse.ok) {
+                if (!symbolsResponse.ok) {
                     try {
-                        const errorData = await accountResponse.json();
-                        throw new Error(errorData.error || `HTTP ${accountResponse.status}`);
+                        const errorData = await symbolsResponse.json();
+                        throw new Error(errorData.error || `HTTP ${symbolsResponse.status}`);
                     } catch (jsonError) {
-                        throw new Error(`HTTP ${accountResponse.status}: ${accountResponse.statusText}`);
+                        throw new Error(`HTTP ${symbolsResponse.status}: ${symbolsResponse.statusText}`);
                     }
                 }
                 
-                const accountData = await accountResponse.json();
-                const activeSymbols = accountData.active_symbols || [];
+                const symbolsData = await symbolsResponse.json();
+                const activeSymbols = symbolsData.active_symbols || [];
                 
                 // Проверяем, что символ в списке активных
                 if (!activeSymbols.includes(symbol)) {
