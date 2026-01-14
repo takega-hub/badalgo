@@ -3434,7 +3434,31 @@
                 if (dashboardStatusList) dashboardStatusList.innerHTML = loadingMsg;
                 
                 // Получаем текущие активные символы
-                const accountResponse = await fetch('/api/account');
+                const accountResponse = await fetch('/api/account', {
+                    credentials: 'same-origin'
+                });
+                
+                // Проверяем Content-Type перед парсингом JSON
+                const accountContentType = accountResponse.headers.get('content-type');
+                if (!accountContentType || !accountContentType.includes('application/json')) {
+                    const text = await accountResponse.text();
+                    console.error('[UI] Account API returned non-JSON response:', text.substring(0, 200));
+                    if (accountResponse.status === 401 || accountResponse.status === 403) {
+                        throw new Error('Session expired. Please refresh the page and log in again.');
+                    } else {
+                        throw new Error(`Failed to load account data (HTTP ${accountResponse.status})`);
+                    }
+                }
+                
+                if (!accountResponse.ok) {
+                    try {
+                        const errorData = await accountResponse.json();
+                        throw new Error(errorData.error || `HTTP ${accountResponse.status}`);
+                    } catch (jsonError) {
+                        throw new Error(`HTTP ${accountResponse.status}: ${accountResponse.statusText}`);
+                    }
+                }
+                
                 const accountData = await accountResponse.json();
                 const activeSymbols = accountData.active_symbols || [];
                 
@@ -3458,9 +3482,27 @@
                     })
                 });
                 
+                // Проверяем Content-Type перед парсингом JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    // Сервер вернул HTML вместо JSON (вероятно, страница логина или ошибка)
+                    const text = await response.text();
+                    console.error('[UI] Server returned non-JSON response:', text.substring(0, 200));
+                    if (response.status === 401 || response.status === 403) {
+                        throw new Error('Session expired. Please refresh the page and log in again.');
+                    } else {
+                        throw new Error(`Server error (HTTP ${response.status}). Please try again.`);
+                    }
+                }
+                
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || `HTTP ${response.status}`);
+                    try {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || `HTTP ${response.status}`);
+                    } catch (jsonError) {
+                        // Если не удалось распарсить JSON, используем статус
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
                 }
                 
                 const data = await response.json();
