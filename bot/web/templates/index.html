@@ -1219,12 +1219,22 @@
                 chart.timeScale().fitContent();
 
                 // Resize handler
-                const handleResize = () => { if (window.activeTVChart) window.activeTVChart.applyOptions({ width: container.clientWidth }); };
+                const handleResize = () => { 
+                    const container = document.getElementById('chart-container');
+                    if (window.activeTVChart && container) {
+                        window.activeTVChart.applyOptions({ width: container.clientWidth });
+                    }
+                };
                 window.addEventListener('resize', handleResize);
 
             } catch (e) {
                 console.error("Chart Error:", e);
-                container.innerHTML = `<div class="card" style="color:#ff4444">Error loading chart: ${e.message}</div>`;
+                const container = document.getElementById('chart-container');
+                if (container) {
+                    container.innerHTML = `<div class="card" style="color:#ff4444">Error loading chart: ${e.message}</div>`;
+                } else {
+                    console.error("Chart container not found, cannot display error");
+                }
             }
         };
 
