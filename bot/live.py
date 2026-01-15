@@ -201,6 +201,92 @@ def _clear_bot_state(symbol: str) -> None:
             print(f"[live] [{symbol}] ⚠️ Error deleting bot state file: {e}")
 
 
+def _close_conflicting_positions_for_primary(
+    client: BybitClient,
+    settings: AppSettings,
+    new_primary_bias: Bias,
+) -> None:
+    """
+    Закрывает противонаправленные позиции по другим парам,
+    когда на PRIMARY_SYMBOL открывается новая позиция.
+
+    Логика:
+    - Если на PRIMARY_SYMBOL открывается LONG, закрываем все SHORT по другим активным символам.
+    - Если на PRIMARY_SYMBOL открывается SHORT, закрываем все LONG по другим активным символам.
+    """
+    try:
+        primary_symbol = getattr(settings, "primary_symbol", None) or getattr(settings, "symbol", None)
+        if not primary_symbol:
+            return
+
+        primary_symbol = primary_symbol.upper()
+
+        # Получаем все открытые позиции по USDT
+        resp = client.get_position_info(settle_coin="USDT")
+        if resp.get("retCode") != 0:
+            print(f"[live] ⚠️ Failed to load positions for PRIMARY_SYMBOL conflict check: {resp.get('retMsg', 'Unknown error')}")
+            return
+
+        positions = resp.get("result", {}).get("list", [])
+        if not positions:
+            return
+
+        active_symbols = set(getattr(settings, "active_symbols", []) or [])
+
+        for pos in positions:
+            try:
+                size = float(pos.get("size", 0))
+            except (TypeError, ValueError):
+                size = 0
+
+            if size <= 0:
+                continue
+
+            symbol = pos.get("symbol", "").upper()
+            if not symbol or symbol == primary_symbol:
+                # Пропускаем сам PRIMARY_SYMBOL
+                continue
+
+            # Ограничиваемся только активными символами, чтобы не трогать лишнее
+            if active_symbols and symbol not in active_symbols:
+                continue
+
+            side_str = pos.get("side", "").upper()
+            if side_str not in ("BUY", "SELL"):
+                continue
+
+            existing_bias = Bias.LONG if side_str == "BUY" else Bias.SHORT
+
+            # Проверяем, является ли позиция противонаправленной по отношению к новой позиции на PRIMARY_SYMBOL
+            if new_primary_bias == Bias.LONG and existing_bias == Bias.SHORT:
+                close_side = "Buy"  # Buy закрывает SHORT
+            elif new_primary_bias == Bias.SHORT and existing_bias == Bias.LONG:
+                close_side = "Sell"  # Sell закрывает LONG
+            else:
+                # Направление не конфликтует - пропускаем
+                continue
+
+            print(f"[live] [{symbol}] ⚠️ Closing opposite position because PRIMARY_SYMBOL ({primary_symbol}) opened {new_primary_bias.value} position")
+            print(f"[live] [{symbol}]   Existing position: side={existing_bias.value}, size={size}")
+
+            try:
+                close_resp = client.place_order(
+                    symbol=symbol,
+                    side=close_side,
+                    qty=size,
+                    reduce_only=True,
+                )
+                if close_resp.get("retCode") == 0:
+                    print(f"[live] [{symbol}] ✅ Opposite position closed successfully due to PRIMARY_SYMBOL {new_primary_bias.value}")
+                else:
+                    print(f"[live] [{symbol}] ⚠️ Failed to close opposite position: {close_resp.get('retMsg', 'Unknown error')} (ErrCode: {close_resp.get('retCode')})")
+            except Exception as e:
+                print(f"[live] [{symbol}] ⚠️ Error closing opposite position due to PRIMARY_SYMBOL {new_primary_bias.value}: {e}")
+
+    except Exception as e:
+        print(f"[live] ⚠️ Error in _close_conflicting_positions_for_primary: {e}")
+
+
 def _check_primary_symbol_position(
     client: BybitClient,
     current_symbol: str,
@@ -4811,6 +4897,32 @@ def run_live_from_api(
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
+
+                        # Если открываем новую позицию по PRIMARY_SYMBOL в SHORT,
+                        # закрываем все противонаправленные (LONG) позиции по другим активным символам
+                        primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
+                        if primary_symbol_for_check and symbol.upper() == str(primary_symbol_for_check).upper():
+                            try:
+                                _close_conflicting_positions_for_primary(
+                                    client=client,
+                                    settings=current_settings,
+                                    new_primary_bias=Bias.SHORT,
+                                )
+                            except Exception as e:
+                                print(f"[live] [{symbol}] ⚠️ Error while closing opposite positions for PRIMARY_SYMBOL SHORT: {e}")
+
+                        # Если открываем новую позицию по PRIMARY_SYMBOL в LONG,
+                        # закрываем все противонаправленные (SHORT) позиции по другим активным символам
+                        primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
+                        if primary_symbol_for_check and symbol.upper() == str(primary_symbol_for_check).upper():
+                            try:
+                                _close_conflicting_positions_for_primary(
+                                    client=client,
+                                    settings=current_settings,
+                                    new_primary_bias=Bias.LONG,
+                                )
+                            except Exception as e:
+                                print(f"[live] [{symbol}] ⚠️ Error while closing opposite positions for PRIMARY_SYMBOL LONG: {e}")
                     elif resp.get("retCode") == 110072:
                         # Ошибка дубликата order_link_id - сигнал уже обработан
                         print(f"[live] [{symbol}] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
