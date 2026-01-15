@@ -529,10 +529,10 @@ def generate_range_signal(row: pd.Series, has_position: Optional[Bias], params: 
         # ОСЛАБЛЯЕМ: используем стандартные пороги (30/70) вместо строгих (27/77)
         # strong_rsi_oversold и strong_rsi_overbought оставляем как опциональные (OR условие)
         
-        # LONG: касание нижней границы BB + RSI перепродан + нормальный объем
-        # ВОЗВРАЩАЕМ ФИЛЬТРЫ КАЧЕСТВА: добавляем обратно проверку volume_ok для лучшего качества
-        # Основные (обязательные): touch_lower + rsi_oversold + volume_ok
-        if touch_lower and rsi_oversold and volume_ok:
+        # LONG: касание нижней границы BB + RSI перепродан + нормальный объем + рынок во флэте
+        # ВОЗВРАЩАЕМ ФИЛЬТРЫ КАЧЕСТВА: добавляем обратно проверку volume_ok и is_flat_market для лучшего качества
+        # Основные (обязательные): touch_lower + rsi_oversold + volume_ok + is_flat_market
+        if touch_lower and rsi_oversold and volume_ok and is_flat_market:
             indicators_info = {
                 "strategy": "FLAT",
                 "entry_type": "mean_reversion",
@@ -551,10 +551,10 @@ def generate_range_signal(row: pd.Series, has_position: Optional[Bias], params: 
                 "indicators": f"RSI={rsi:.2f} (oversold), BB_lower={bb_lower:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([rsi, bb_lower, macd, macd_signal, macd_hist, volume, vol_sma])) and vol_sma > 0 else (f"RSI={rsi:.2f} (oversold), BB_lower={bb_lower:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([rsi, bb_lower, volume, vol_sma])) and vol_sma > 0 else "N/A")
             }
             return Signal(row.name, Action.LONG, "range_bb_lower_rsi_oversold", price, indicators_info=indicators_info)
-        # SHORT: касание верхней границы BB + RSI перекуплен + нормальный объем
-        # ВОЗВРАЩАЕМ ФИЛЬТРЫ КАЧЕСТВА: добавляем обратно проверку volume_ok для лучшего качества
-        # Основные (обязательные): touch_upper + rsi_overbought + volume_ok
-        if touch_upper and rsi_overbought and volume_ok:
+        # SHORT: касание верхней границы BB + RSI перекуплен + нормальный объем + рынок во флэте
+        # ВОЗВРАЩАЕМ ФИЛЬТРЫ КАЧЕСТВА: добавляем обратно проверку volume_ok и is_flat_market для лучшего качества
+        # Основные (обязательные): touch_upper + rsi_overbought + volume_ok + is_flat_market
+        if touch_upper and rsi_overbought and volume_ok and is_flat_market:
             indicators_info = {
                 "strategy": "FLAT",
                 "entry_type": "mean_reversion",
@@ -617,12 +617,12 @@ def generate_momentum_breakout_signal(row: pd.Series, has_position: Optional[Bia
         return Signal(row.name, Action.HOLD, "momentum_no_data", price)
     
     # ADX подтверждение тренда
-    # ВОЗВРАЩАЕМ БОЛЕЕ СТРОГИЕ ФИЛЬТРЫ: но оставляем немного ниже стандартного
-    adx_confirmed = adx > max(params.momentum_adx_threshold * 0.85, 21)  # Минимум 21, но предпочтительно 85% от порога (21 вместо 25)
+    # ОСЛАБЛЯЕМ: снижаем порог для большего количества сигналов
+    adx_confirmed = adx > max(params.momentum_adx_threshold * 0.7, 18)  # Минимум 18 (было 21)
     
-    # Volume Spike: объем должен быть выше минимума (убираем верхний предел для сильных движений)
-    # ВОЗВРАЩАЕМ БОЛЕЕ СТРОГИЕ ФИЛЬТРЫ: но оставляем немного ниже стандартного
-    volume_spike = volume >= vol_sma * max(params.momentum_volume_spike_min * 0.9, 1.35)  # Минимум 1.35x вместо 1.5x
+    # Volume Spike: объем должен быть выше минимума
+    # ОСЛАБЛЯЕМ: снижаем порог для большего количества сигналов
+    volume_spike = volume >= vol_sma * max(params.momentum_volume_spike_min * 0.8, 1.2)  # Минимум 1.2x (было 1.35x)
     
     # Определяем направление тренда по EMA
     ema_bullish = ema_fast > ema_slow  # Быстрая EMA выше медленной = восходящий тренд
@@ -630,8 +630,9 @@ def generate_momentum_breakout_signal(row: pd.Series, has_position: Optional[Bia
     
     # Проверяем, что EMA достаточно разошлись (избегаем ложных сигналов)
     # ВАЖНО: Проверяем деление на ноль и валидность данных
+    # ОСЛАБЛЯЕМ: снижаем минимальный разброс для большего количества сигналов
     ema_spread = abs(ema_fast - ema_slow) / ema_slow if (ema_slow > 0 and np.isfinite(ema_slow)) else 0
-    ema_spread_ok = ema_spread > 0.0008  # Минимальный разброс 0.08% (было 0.1%, было ослаблено до 0.05%)
+    ema_spread_ok = ema_spread > 0.0005  # Минимальный разброс 0.05% (было 0.08%)
     
     # Выход из позиций
     if has_position == Bias.LONG:

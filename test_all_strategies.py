@@ -249,9 +249,9 @@ def test_strategy(
                 np.isfinite([ema_fast, ema_slow, prev_ema_fast, prev_ema_slow]).all()):
                 # Пересечение или разошедшиеся EMA
                 ema_cross_up = prev_ema_fast <= prev_ema_slow and ema_fast > ema_slow
-                ema_already_bullish = ema_fast > ema_slow and (ema_fast - ema_slow) / ema_slow > 0.001
+                ema_already_bullish = ema_fast > ema_slow and (ema_fast - ema_slow) / ema_slow > 0.0005  # Ослаблено: 0.05% вместо 0.1%
                 ema_cross_down = prev_ema_fast >= prev_ema_slow and ema_fast < ema_slow
-                ema_already_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.001
+                ema_already_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.0005  # Ослаблено: 0.05% вместо 0.1%
                 
                 if (ema_cross_up or (ema_already_bullish and position_bias is None)) or \
                    (ema_cross_down or (ema_already_bearish and position_bias is None)):
@@ -280,13 +280,45 @@ def test_strategy(
             prev_ema_slow = ema_slow if np.isfinite(ema_slow) else prev_ema_slow
     elif strategy_name == "ml":
         # Находим модель для символа
-        model_path = settings.ml_model_path
-        if not model_path or not os.path.exists(model_path):
-            # Пытаемся найти модель автоматически
-            model_dir = Path(__file__).parent / "ml_models"
-            model_files = list(model_dir.glob(f"*{symbol}*.pkl"))
-            if model_files:
-                model_path = str(model_files[0])
+        # ВАЖНО: Всегда ищем модель для тестируемого символа, игнорируя settings.ml_model_path
+        model_path = None
+        model_dir = Path(__file__).parent / "ml_models"
+        
+        # Получаем предпочтение типа модели из настроек
+        model_type_preference = getattr(settings, 'ml_model_type_for_all', None)
+        
+        # Сначала пытаемся найти модель для тестируемого символа
+        all_model_files = list(model_dir.glob(f"*{symbol}*.pkl"))
+        
+        if all_model_files:
+            # Если есть предпочтение типа модели, ищем модель этого типа
+            if model_type_preference:
+                preferred_files = [f for f in all_model_files if f.name.startswith(f"{model_type_preference}_")]
+                if preferred_files:
+                    model_path = str(preferred_files[0])
+                    print(f"[OK] Найдена ML модель для {symbol} (тип {model_type_preference}): {model_path}")
+                else:
+                    # Если предпочтительный тип не найден, используем любую найденную модель
+                    model_path = str(all_model_files[0])
+                    print(f"[WARNING] Модель типа {model_type_preference} для {symbol} не найдена, используем: {model_path}")
+            else:
+                # Автоматический выбор: предпочитаем ensemble > rf > xgb
+                for model_type in ["ensemble", "rf", "xgb"]:
+                    preferred_files = [f for f in all_model_files if f.name.startswith(f"{model_type}_")]
+                    if preferred_files:
+                        model_path = str(preferred_files[0])
+                        print(f"[OK] Найдена ML модель для {symbol} (автовыбор {model_type}): {model_path}")
+                        break
+                
+                # Если не нашли предпочтительный тип, используем первую найденную
+                if not model_path:
+                    model_path = str(all_model_files[0])
+                    print(f"[OK] Найдена ML модель для {symbol}: {model_path}")
+        else:
+            # Если не найдена модель для символа, используем модель из настроек как fallback
+            if settings.ml_model_path and os.path.exists(settings.ml_model_path):
+                model_path = settings.ml_model_path
+                print(f"[WARNING] Модель для {symbol} не найдена, используем модель из настроек: {model_path}")
             else:
                 print(f"[ERROR] Не найдена ML модель для {symbol}")
                 return
@@ -335,9 +367,109 @@ def test_strategy(
     
     # Проходим по всем свечам и применяем сигналы
     signal_dict = {s.timestamp: s for s in signals}
+    
+    # Словарь для хранения TP/SL для каждой позиции (из reason сигнала)
+    # Ключ: entry_reason (уникальный идентификатор позиции), значение: {"tp": float, "sl": float}
+    position_tp_sl = {}  # {entry_reason: {"tp": float, "sl": float}}
 
     for idx, (timestamp, row) in enumerate(df.iterrows()):
-        # Проверяем, есть ли сигнал на этой свече
+        # ВАЖНО: Сначала проверяем TP/SL для открытой позиции (до обработки новых сигналов)
+        # Это гарантирует, что мы закроем позицию по SL/TP, даже если есть новый сигнал
+        if simulator.position:
+            current_price = row['close']
+            high = row.get('high', current_price)
+            low = row.get('low', current_price)
+            entry_price = simulator.position.avg_price
+            entry_reason = simulator.position.entry_reason
+            
+            # Определяем TP/SL для текущей позиции
+            tp_price = None
+            sl_price = None
+            
+            # Для ICT и ML стратегий используем TP/SL из reason
+            if (strategy_name == "ict" or strategy_name == "ml") and entry_reason in position_tp_sl:
+                tp_price = position_tp_sl[entry_reason]["tp"]
+                sl_price = position_tp_sl[entry_reason]["sl"]
+            else:
+                # Для других стратегий используем стандартные настройки
+                if strategy_name == "flat":
+                    # FLAT использует range_stop_loss_pct (1.5%)
+                    sl_pct = settings.strategy.range_stop_loss_pct
+                    tp_pct = settings.risk.take_profit_pct
+                else:
+                    # Остальные стратегии используют стандартные настройки
+                    sl_pct = settings.risk.stop_loss_pct
+                    tp_pct = settings.risk.take_profit_pct
+                
+                if simulator.position.side.value == "long":
+                    tp_price = entry_price * (1 + tp_pct)
+                    sl_price = entry_price * (1 - sl_pct)
+                else:  # SHORT
+                    tp_price = entry_price * (1 - tp_pct)
+                    sl_price = entry_price * (1 + sl_pct)
+            
+            # Проверяем TP/SL ПЕРЕД обработкой новых сигналов
+            if simulator.position.side.value == "long":
+                # TP: проверяем high свечи
+                if tp_price and high >= tp_price:
+                    simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
+                    # Позиция закрыта, пропускаем обработку сигналов на этой свече
+                    if timestamp in signal_dict:
+                        continue
+                # SL: проверяем low свечи и current_price (для учета gap)
+                if sl_price:
+                    # Если low достиг SL, закрываем по SL
+                    if low <= sl_price:
+                        simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
+                        # Позиция закрыта, пропускаем обработку сигналов на этой свече
+                        if timestamp in signal_dict:
+                            continue
+                    # Если current_price уже за SL (gap), закрываем немедленно
+                    elif current_price <= sl_price:
+                        simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
+                        if timestamp in signal_dict:
+                            continue
+                # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку (только для не-ICT и не-ML стратегий)
+                if strategy_name not in ("ict", "ml"):
+                    profit_pct = (current_price - entry_price) / entry_price
+                    if profit_pct > 0.005:  # 0.5% прибыли
+                        breakeven_sl = entry_price * 1.001  # SL на 0.1% выше входа
+                        if low <= breakeven_sl:
+                            simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
+                            # Позиция закрыта, пропускаем обработку сигналов на этой свече
+                            if timestamp in signal_dict:
+                                continue
+            else:  # SHORT
+                # TP: проверяем low свечи
+                if tp_price and low <= tp_price:
+                    simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
+                    # Позиция закрыта, пропускаем обработку сигналов на этой свече
+                    if timestamp in signal_dict:
+                        continue
+                # SL: проверяем high свечи и current_price (для учета gap)
+                if sl_price:
+                    # Если high достиг SL, закрываем по SL
+                    if high >= sl_price:
+                        simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
+                        if timestamp in signal_dict:
+                            continue
+                    # Если current_price уже за SL (gap), закрываем немедленно
+                    elif current_price >= sl_price:
+                        simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
+                        if timestamp in signal_dict:
+                            continue
+                # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку (только для не-ICT и не-ML стратегий)
+                if strategy_name not in ("ict", "ml"):
+                    profit_pct = (entry_price - current_price) / entry_price
+                    if profit_pct > 0.005:  # 0.5% прибыли
+                        breakeven_sl = entry_price * 0.999  # SL на 0.1% ниже входа
+                        if high >= breakeven_sl:
+                            simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
+                            # Позиция закрыта, пропускаем обработку сигналов на этой свече
+                            if timestamp in signal_dict:
+                                continue
+        
+        # Теперь обрабатываем сигналы (только если позиция еще открыта)
         if timestamp in signal_dict:
             sig = signal_dict[timestamp]
             # Обрабатываем сигналы закрытия отдельно
@@ -346,52 +478,41 @@ def test_strategy(
                 simulator._close(sig.price, f"{strategy_name}_sl_hit", timestamp)
             elif sig.action != Action.HOLD or sig.reason != "range_sl_fixed":
                 # Обрабатываем только входные сигналы (не HOLD и не range_sl_fixed)
+                was_position_open = simulator.position is not None
                 simulator.on_signal(sig)
-        
-        # Закрываем позицию по TP/SL (если есть)
-        if simulator.position:
-            current_price = row['close']
-            high = row.get('high', current_price)
-            low = row.get('low', current_price)
-            entry_price = simulator.position.avg_price
-            
-            # Улучшенный TP/SL с проверкой high/low свечи
-            if simulator.position.side.value == "long":
-                # TP: проверяем high свечи
-                tp_price = entry_price * (1 + settings.risk.take_profit_pct)
-                if high >= tp_price:
-                    simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                    continue
-                # SL: проверяем low свечи
-                sl_price = entry_price * (1 - settings.risk.stop_loss_pct)
-                if low <= sl_price:
-                    simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                    continue
-                # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку
-                profit_pct = (current_price - entry_price) / entry_price
-                if profit_pct > 0.005:  # 0.5% прибыли
-                    breakeven_sl = entry_price * 1.001  # SL на 0.1% выше входа
-                    if low <= breakeven_sl:
-                        simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
-                        continue
-            else:  # SHORT
-                # TP: проверяем low свечи
-                tp_price = entry_price * (1 - settings.risk.take_profit_pct)
-                if low <= tp_price:
-                    simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                    continue
-                # SL: проверяем high свечи
-                sl_price = entry_price * (1 + settings.risk.stop_loss_pct)
-                if high >= sl_price:
-                    simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                    continue
-                # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку
-                profit_pct = (entry_price - current_price) / entry_price
-                if profit_pct > 0.005:  # 0.5% прибыли
-                    breakeven_sl = entry_price * 0.999  # SL на 0.1% ниже входа
-                    if high >= breakeven_sl:
-                        simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
-                        continue
+                
+                # Парсим TP/SL из reason для ICT и ML сигналов
+                # Сохраняем TP/SL только если позиция была открыта этим сигналом
+                if sig.action in (Action.LONG, Action.SHORT) and sig.reason.startswith("ict_"):
+                    import re
+                    # Формат: ict_silver_bullet_long_fvg_reteest_sl_143.33_tp_147.95
+                    sl_match = re.search(r'sl_([\d.]+)', sig.reason)
+                    tp_match = re.search(r'tp_([\d.]+)', sig.reason)
+                    if sl_match and tp_match and simulator.position:
+                        sl_price = float(sl_match.group(1))
+                        tp_price = float(tp_match.group(1))
+                        # Используем entry_reason как ключ (уникальный для каждой позиции)
+                        position_tp_sl[simulator.position.entry_reason] = {"tp": tp_price, "sl": sl_price}
+                elif sig.action in (Action.LONG, Action.SHORT) and sig.reason.startswith("ml_"):
+                    import re
+                    # Формат: ml_LONG_сила_слабое_59%_TP_2.50%_SL_1.00%
+                    # Парсим проценты TP и SL
+                    tp_match = re.search(r'TP_([\d.]+)%', sig.reason)
+                    sl_match = re.search(r'SL_([\d.]+)%', sig.reason)
+                    if tp_match and sl_match and simulator.position:
+                        tp_pct = float(tp_match.group(1)) / 100.0  # Конвертируем в десятичную дробь
+                        sl_pct = float(sl_match.group(1)) / 100.0
+                        # ВАЖНО: Используем реальную цену входа позиции, а не цену сигнала
+                        entry_price = simulator.position.avg_price
+                        # Вычисляем абсолютные цены TP/SL
+                        if simulator.position.side.value == "long":
+                            tp_price = entry_price * (1 + tp_pct)
+                            sl_price = entry_price * (1 - sl_pct)
+                        else:  # SHORT
+                            tp_price = entry_price * (1 - tp_pct)
+                            sl_price = entry_price * (1 + sl_pct)
+                        # Используем entry_reason как ключ (уникальный для каждой позиции)
+                        position_tp_sl[simulator.position.entry_reason] = {"tp": tp_price, "sl": sl_price}
     
     # Закрываем последнюю позицию, если она открыта
     if simulator.position:

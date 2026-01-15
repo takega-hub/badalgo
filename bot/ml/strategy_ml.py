@@ -436,6 +436,23 @@ class MLStrategy:
             Signal объект
         """
         try:
+            # Определяем символ из model_path для адаптивных фильтров
+            symbol = getattr(self, '_symbol', None)
+            if symbol is None:
+                # Извлекаем символ из пути к модели
+                model_filename = Path(self.model_path).name
+                if "_" in model_filename:
+                    parts = model_filename.split("_")
+                    if len(parts) >= 2:
+                        symbol = parts[1].upper()  # Например, rf_ETHUSDT_15.pkl -> ETHUSDT
+                        self._symbol = symbol
+                    else:
+                        symbol = "UNKNOWN"
+                else:
+                    symbol = "UNKNOWN"
+            
+            # Адаптивные пороги для разных символов
+            is_volatile_symbol = symbol in ("ETHUSDT", "SOLUSDT")
             # Делаем предсказание (пропускаем создание фичей, так как они уже созданы в build_ml_signals)
             prediction, confidence = self.predict(df, skip_feature_creation=True)
             
@@ -461,10 +478,11 @@ class MLStrategy:
             profit_pct = int(target_profit_pct_margin)
             
             # Проверяем минимальную силу сигнала (только для LONG/SHORT, не для HOLD)
-            # Используем строгий порог min_strength_threshold для фильтрации слабых сигналов
-            if prediction != 0 and confidence < self.min_strength_threshold:
+            # Для ETHUSDT и SOLUSDT используем более мягкий порог
+            min_strength = self.min_strength_threshold * 0.7 if is_volatile_symbol else self.min_strength_threshold
+            if prediction != 0 and confidence < min_strength:
                 # Сигнал не проходит минимальный порог силы - возвращаем HOLD
-                return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(self.min_strength_threshold*100)}%", current_price)
+                return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(min_strength*100)}%", current_price)
             
             # === Подготовка данных для дополнительной фильтрации ===
             
@@ -491,9 +509,151 @@ class MLStrategy:
             else:
                 volume_ok = np.isfinite(volume) and volume > vol_sma * 0.5  # Объем должен быть выше 50% от среднего (упрощено)
             
-            # УБРАНО: Проверка силы тренда (ADX) - ML стратегия должна работать на всех стадиях рынка
-            # adx = row.get("adx", np.nan)
-            # adx_strong = np.isfinite(adx) and adx > 25
+            # === НОВЫЕ ФИЛЬТРЫ: Улучшения на основе лучших практик ML-трейдинга ===
+            
+            # 1. Фильтр по тренду (MA): проверяем, что цена находится в правильном направлении относительно важной MA
+            # Пытаемся найти доступную MA (приоритет: SMA50 > EMA50 > SMA20 > EMA20)
+            sma_20 = row.get("sma_20", np.nan)
+            sma_50 = row.get("sma_50", np.nan)
+            sma = row.get("sma", np.nan)  # SMA20 из индикаторов
+            ema_20 = row.get("ema_20", np.nan)
+            ema_50 = row.get("ema_50", np.nan)
+            
+            # Вычисляем SMA50/EMA50 динамически, если не доступны
+            if not np.isfinite(sma_50):
+                try:
+                    if len(df) >= 50:
+                        sma_50 = df["close"].rolling(window=50).mean().iloc[-1]
+                except:
+                    pass
+            
+            if not np.isfinite(ema_50):
+                try:
+                    if len(df) >= 50:
+                        ema_50 = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
+                except:
+                    pass
+            
+            # Выбираем лучшую доступную MA для фильтра тренда
+            trend_ma = None
+            ma_type = None  # Тип MA: "sma50", "ema50", "sma20", "ema20"
+            if np.isfinite(sma_50):
+                trend_ma = sma_50
+                ma_type = "sma50"
+            elif np.isfinite(ema_50):
+                trend_ma = ema_50
+                ma_type = "ema50"
+            elif np.isfinite(sma) or np.isfinite(sma_20):
+                trend_ma = sma if np.isfinite(sma) else sma_20
+                ma_type = "sma20"
+            elif np.isfinite(ema_20):
+                trend_ma = ema_20
+                ma_type = "ema20"
+            
+            trend_filter_ok = True  # По умолчанию пропускаем
+            if prediction != 0 and trend_ma is not None and np.isfinite(trend_ma):
+                price = row.get("close", current_price)
+                # Для LONG: цена должна быть выше MA (или близко к ней, допуск зависит от типа MA)
+                # Для SMA используем более строгий допуск (0.5%), для EMA - более мягкий (0.3%)
+                ma_tolerance = 0.003 if ma_type in ("ema50", "ema20") else 0.005
+                
+                if prediction == 1:  # LONG сигнал
+                    if price < trend_ma * (1 - ma_tolerance):  # Если цена ниже MA более чем на допуск
+                        # Требуем более высокую уверенность для входа против тренда
+                        # Для ETHUSDT и SOLUSDT используем более мягкий порог (они более волатильны)
+                        if is_volatile_symbol:
+                            threshold_multiplier = 1.05 if confidence < 0.5 else 1.08
+                        else:
+                            threshold_multiplier = 1.12 if confidence < 0.5 else 1.15
+                        if confidence < self.confidence_threshold * threshold_multiplier:
+                            trend_filter_ok = False
+                elif prediction == -1:  # SHORT сигнал
+                    if price > trend_ma * (1 + ma_tolerance):  # Если цена выше MA более чем на допуск
+                        if is_volatile_symbol:
+                            threshold_multiplier = 1.05 if confidence < 0.5 else 1.08
+                        else:
+                            threshold_multiplier = 1.12 if confidence < 0.5 else 1.15
+                        if confidence < self.confidence_threshold * threshold_multiplier:
+                            trend_filter_ok = False
+            
+            # 2. Фильтр по волатильности: не входить при слишком низкой волатильности
+            atr = row.get("atr", np.nan)
+            atr_pct = row.get("atr_pct", np.nan)
+            if not np.isfinite(atr_pct):
+                # Вычисляем ATR% из ATR и цены
+                if np.isfinite(atr) and current_price > 0:
+                    atr_pct = (atr / current_price) * 100
+            
+            volatility_ok = True  # По умолчанию пропускаем
+            if np.isfinite(atr_pct):
+                # Адаптивный порог волатильности в зависимости от символа
+                # ETHUSDT и SOLUSDT обычно более волатильны, чем BTCUSDT
+                # Используем более мягкий порог для них
+                if is_volatile_symbol:
+                    volatility_threshold = 0.20  # Еще более мягкий порог для волатильных символов
+                    threshold_multiplier = 1.05  # Очень мягкий порог уверенности
+                else:
+                    volatility_threshold = 0.25  # Минимальная волатильность (0.25% вместо 0.3%)
+                    threshold_multiplier = 1.08  # Более мягкий порог уверенности (+8% вместо +10%)
+                
+                # Если волатильность очень низкая, требуем более высокую уверенность
+                if atr_pct < volatility_threshold and confidence < self.confidence_threshold * threshold_multiplier:
+                    volatility_ok = False
+            
+            # 3. Фильтр по структуре рынка: проверяем Higher Highs / Higher Lows для LONG, Lower Highs / Lower Lows для SHORT
+            structure_ok = True  # По умолчанию пропускаем
+            try:
+                if len(df) >= 20:
+                    # Используем более короткое окно для более быстрой реакции (особенно для ETHUSDT и SOLUSDT)
+                    window_size = 8  # Было 10, теперь 8 для более быстрой реакции
+                    lookback = 4  # Было 5, теперь 4
+                    
+                    recent_highs = df["high"].rolling(window=window_size).max().iloc[-lookback:].values
+                    recent_lows = df["low"].rolling(window=window_size).min().iloc[-lookback:].values
+                    
+                    if prediction == 1:  # LONG
+                        # Проверяем, что последние максимумы растут (Higher Highs)
+                        # Используем более мягкий допуск для ETHUSDT и SOLUSDT
+                        tolerance = 0.0010 if is_volatile_symbol else 0.0015
+                        if len(recent_highs) >= 2:
+                            if recent_highs[-1] < recent_highs[-2] * (1 - tolerance):
+                                # Требуем более высокую уверенность, но более мягкий порог для волатильных символов
+                                if is_volatile_symbol:
+                                    threshold_multiplier = 1.05 if confidence < 0.5 else 1.08
+                                else:
+                                    threshold_multiplier = 1.08 if confidence < 0.5 else 1.1
+                                if confidence < self.confidence_threshold * threshold_multiplier:
+                                    structure_ok = False
+                    elif prediction == -1:  # SHORT
+                        # Проверяем, что последние минимумы падают (Lower Lows)
+                        tolerance = 0.0010 if is_volatile_symbol else 0.0015
+                        if len(recent_lows) >= 2:
+                            if recent_lows[-1] > recent_lows[-2] * (1 + tolerance):
+                                if is_volatile_symbol:
+                                    threshold_multiplier = 1.05 if confidence < 0.5 else 1.08
+                                else:
+                                    threshold_multiplier = 1.08 if confidence < 0.5 else 1.1
+                                if confidence < self.confidence_threshold * threshold_multiplier:
+                                    structure_ok = False
+            except:
+                pass  # Если не удалось проверить структуру, пропускаем фильтр
+            
+            # 4. Фильтр по силе тренда (ADX): для ETHUSDT и SOLUSDT используем более мягкий порог
+            # Это помогает избежать входов в слабые тренды, но не блокирует полностью
+            adx = row.get("adx", np.nan)
+            adx_filter_ok = True  # По умолчанию пропускаем
+            if np.isfinite(adx) and prediction != 0:
+                # Для слабых сигналов (< 0.5 уверенности) требуем минимальный ADX
+                # Для ETHUSDT и SOLUSDT используем более мягкий порог
+                if is_volatile_symbol:
+                    min_adx = 18 if confidence < 0.5 else 15
+                    adx_threshold_multiplier = 1.02
+                else:
+                    min_adx = 20 if confidence < 0.5 else 18
+                    adx_threshold_multiplier = 1.05
+                if adx < min_adx and confidence < self.confidence_threshold * adx_threshold_multiplier:
+                    # Только для очень слабых сигналов блокируем при слабом тренде
+                    adx_filter_ok = False
             
             # Проверяем согласованность индикаторов
             rsi = row.get("rsi", np.nan)
@@ -519,14 +679,25 @@ class MLStrategy:
             volume_confirmation = True
             if np.isfinite(volume) and np.isfinite(vol_sma) and vol_sma > 0:
                 volume_ratio = volume / vol_sma
-                # Только для ОЧЕНЬ сильных сигналов (>85%) проверяем объем (был 80%)
-                if confidence > 0.85 and volume_ratio < 0.7: # Был 0.8
+                # Адаптивный порог объема: для ETHUSDT и SOLUSDT используем более мягкий порог
+                # Только для ОЧЕНЬ сильных сигналов (>85%) проверяем объем
+                if is_volatile_symbol:
+                    min_volume_ratio = 0.5 if confidence < 0.5 else 0.6
+                    volume_check_threshold = 0.90  # Проверяем объем только для очень сильных сигналов
+                else:
+                    min_volume_ratio = 0.6 if confidence < 0.5 else 0.7
+                    volume_check_threshold = 0.85
+                if confidence > volume_check_threshold and volume_ratio < min_volume_ratio:
                     volume_confirmation = False
             
             # === Дополнительная фильтрация на основе контекста рынка ===
             
             # Динамический порог на основе рыночных условий
-            dynamic_threshold = self.confidence_threshold
+            # Для ETHUSDT и SOLUSDT используем более мягкий порог
+            if is_volatile_symbol:
+                dynamic_threshold = self.confidence_threshold * 0.90  # Снижаем порог на 10%
+            else:
+                dynamic_threshold = self.confidence_threshold
             
             # МЯГКИЕ ФИЛЬТРЫ: Применяем ТОЛЬКО для сигналов ниже основного порога
             # Если сигнал выше dynamic_threshold, мы доверяем модели!
@@ -535,6 +706,14 @@ class MLStrategy:
                     return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_{strength}_{confidence_pct}%", current_price)
                 if not volume_confirmation:
                     return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                if not trend_filter_ok:
+                    return Signal(row.name, Action.HOLD, f"ml_тренд_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                if not volatility_ok:
+                    return Signal(row.name, Action.HOLD, f"ml_низкая_волатильность_{strength}_{confidence_pct}%", current_price)
+                if not structure_ok:
+                    return Signal(row.name, Action.HOLD, f"ml_структура_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                if not adx_filter_ok:
+                    return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_ADX_{int(adx)}_{strength}_{confidence_pct}%", current_price)
 
             
             # УБРАНО: Фильтр по силе тренда (ADX) - ML стратегия должна работать на всех стадиях рынка
@@ -555,14 +734,17 @@ class MLStrategy:
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
                 # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
-                effective_threshold = max(dynamic_threshold * 0.85, self.min_strength_threshold)  # Минимум 85% от порога
+                # Для волатильных символов используем еще более мягкий порог
+                threshold_mult = 0.80 if is_volatile_symbol else 0.85
+                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 80-85% от порога
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
                 if self.stability_filter and has_position == Bias.SHORT:
-                    stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
+                    stability_mult = 0.80 if is_volatile_symbol else 0.85
+                    stability_threshold = max(self.confidence_threshold * stability_mult, 0.40 if is_volatile_symbol else 0.45)
                     if confidence < stability_threshold:
                         return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 
@@ -594,14 +776,17 @@ class MLStrategy:
             
             elif prediction == -1:  # SHORT
                 # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
-                effective_threshold = max(dynamic_threshold * 0.85, self.min_strength_threshold)  # Минимум 85% от порога
+                # Для волатильных символов используем еще более мягкий порог
+                threshold_mult = 0.80 if is_volatile_symbol else 0.85
+                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 80-85% от порога
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
                 if self.stability_filter and has_position == Bias.LONG:
-                    stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
+                    stability_mult = 0.80 if is_volatile_symbol else 0.85
+                    stability_threshold = max(self.confidence_threshold * stability_mult, 0.40 if is_volatile_symbol else 0.45)
                     if confidence < stability_threshold:
                         return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 

@@ -2110,6 +2110,8 @@ def get_strategy_type_from_signal(signal_reason: str) -> str:
         return "liquidity"
     elif reason_lower.startswith("smc_"):
         return "smc"
+    elif reason_lower.startswith("ict_"):
+        return "ict"
     else:
         return "unknown"
 
@@ -3197,6 +3199,8 @@ def run_live_from_api(
                     return "liquidity"
                 elif reason_lower.startswith("smc_"):
                     return "smc"
+                elif reason_lower.startswith("ict_"):
+                    return "ict"
                 else:
                     return "unknown"
             

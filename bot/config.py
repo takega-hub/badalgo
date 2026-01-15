@@ -181,11 +181,11 @@ class AppSettings:
     enable_flat_strategy: bool = True   # Флэтовая стратегия (старая)
     enable_ml_strategy: bool = False    # ML стратегия
     enable_momentum_strategy: bool = False  # Стратегия "Импульсный пробой" (новая для тренда)
-    enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности)
+    enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности) - ОТКЛЮЧЕНА: не дает результатов
     enable_smc_strategy: bool = False  # Smart Money Concepts стратегия
     enable_ict_strategy: bool = False  # ICT Silver Bullet стратегия
     # Приоритетная стратегия при конфликте сигналов
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "liquidity", "smc", "ict", "hybrid", "confluence"
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "hybrid", "confluence" (liquidity отключена)
     
     def __post_init__(self):
         """Инициализация после создания dataclass"""
@@ -423,7 +423,7 @@ def load_settings() -> AppSettings:
     if not strategy_priority_raw:
         strategy_priority_raw = cleaned_env_values.get("STRATEGY_PRIORITY", "")
     strategy_priority = strategy_priority_raw.strip().lower() if strategy_priority_raw else ""
-    allowed_priorities = ("trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid", "confluence")
+    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "hybrid", "confluence")  # liquidity убрана - стратегия отключена
     if strategy_priority in allowed_priorities:
         settings.strategy_priority = strategy_priority
         print(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")
