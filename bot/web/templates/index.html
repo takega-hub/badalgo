@@ -2343,6 +2343,13 @@
                         <input type="checkbox" name="ml_stability_filter" ${app.ml_stability_filter ? 'checked' : ''} style="width: 20px; height: 20px;">
                         <small style="color: #aaa; display: block; margin-top: 4px;">Требовать более высокую уверенность для смены направления позиции</small>
                     </div>
+                    <div style="margin-top: 20px; padding: 15px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">
+                        <button type="button" id="test-ml-strategy-btn" onclick="testMLStrategy()" style="padding: 10px 20px; background: #9933ff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin-right: 10px;">🧪 Test ML Strategy</button>
+                        <div id="ml-test-results" style="margin-top: 15px; display: none;">
+                            <h4 style="color: #9933ff; margin-bottom: 10px;">Test Results:</h4>
+                            <div id="ml-test-content" style="color: #e0e0e0; font-size: 0.9em; line-height: 1.6;"></div>
+                        </div>
+                    </div>
                     <button type="submit" class="btn">Save Risk Settings</button>
                 </form>
             `;
@@ -2454,6 +2461,126 @@
             } catch (error) {
                 console.error('Error removing duplicate trades:', error);
                 alert('Error removing duplicate trades. Check console for details.');
+            }
+        }
+        
+        async function testMLStrategy() {
+            try {
+                const btn = document.getElementById('test-ml-strategy-btn');
+                const resultsDiv = document.getElementById('ml-test-results');
+                const contentDiv = document.getElementById('ml-test-content');
+                
+                // Получаем текущие значения из формы
+                const form = document.querySelector('form[onsubmit*="saveSettings"]');
+                if (!form) {
+                    alert('Settings form not found');
+                    return;
+                }
+                
+                const confidenceInput = form.querySelector('[name="ml_confidence_threshold"]');
+                const strengthSelect = form.querySelector('[name="ml_min_signal_strength"]');
+                const stabilityCheckbox = form.querySelector('[name="ml_stability_filter"]');
+                
+                if (!confidenceInput || !strengthSelect || !stabilityCheckbox) {
+                    alert('ML settings inputs not found');
+                    return;
+                }
+                
+                // Получаем текущий символ
+                const symbolSelect = document.getElementById('primary-symbol-select');
+                const symbol = symbolSelect ? symbolSelect.value : 'BTCUSDT';
+                
+                // Показываем индикатор загрузки
+                btn.disabled = true;
+                btn.textContent = '⏳ Testing...';
+                resultsDiv.style.display = 'block';
+                contentDiv.innerHTML = '<div style="color: #aaa;">Loading...</div>';
+                
+                // Подготавливаем данные для запроса
+                const confidenceValue = parseFloat(confidenceInput.value.replace(',', '.')) || 0.4;
+                const strengthValue = strengthSelect.value;
+                const stabilityValue = stabilityCheckbox.checked;
+                
+                const response = await fetch('/api/ml/test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        ml_confidence_threshold: confidenceValue,
+                        ml_min_signal_strength: strengthValue,
+                        ml_stability_filter: stabilityValue,
+                    }),
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Форматируем результаты
+                const stats = data.statistics;
+                const params = data.parameters;
+                const confStats = data.confidence_stats || {};
+                const period = data.data_period || {};
+                
+                let html = `
+                    <div style="margin-bottom: 15px;">
+                        <strong style="color: #9933ff;">Symbol:</strong> ${data.symbol}<br>
+                        <strong style="color: #9933ff;">Parameters:</strong><br>
+                        &nbsp;&nbsp;• Confidence Threshold: ${params.ml_confidence_threshold}<br>
+                        &nbsp;&nbsp;• Min Signal Strength: ${params.ml_min_signal_strength}<br>
+                        &nbsp;&nbsp;• Stability Filter: ${params.ml_stability_filter ? 'Enabled' : 'Disabled'}
+                    </div>
+                    <div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-radius: 5px;">
+                        <strong style="color: #9933ff;">Signal Statistics:</strong><br>
+                        &nbsp;&nbsp;• Total Signals: <span style="color: #e0e0e0;">${stats.total_signals}</span><br>
+                        &nbsp;&nbsp;• LONG Signals: <span style="color: #4caf50;">${stats.long_signals}</span><br>
+                        &nbsp;&nbsp;• SHORT Signals: <span style="color: #f44336;">${stats.short_signals}</span><br>
+                        &nbsp;&nbsp;• HOLD Signals: <span style="color: #aaa;">${stats.hold_signals}</span><br>
+                        <br>
+                        <strong style="color: #9933ff;">Fresh Signals (24h):</strong><br>
+                        &nbsp;&nbsp;• Total: <span style="color: #e0e0e0;">${stats.fresh_signals_24h}</span><br>
+                        &nbsp;&nbsp;• LONG: <span style="color: #4caf50;">${stats.fresh_long_24h}</span><br>
+                        &nbsp;&nbsp;• SHORT: <span style="color: #f44336;">${stats.fresh_short_24h}</span>
+                `;
+                
+                if (Object.keys(confStats).length > 0) {
+                    html += `
+                        <br><br>
+                        <strong style="color: #9933ff;">Confidence Statistics:</strong><br>
+                        &nbsp;&nbsp;• Min: ${(confStats.min * 100).toFixed(1)}%<br>
+                        &nbsp;&nbsp;• Max: ${(confStats.max * 100).toFixed(1)}%<br>
+                        &nbsp;&nbsp;• Mean: ${(confStats.mean * 100).toFixed(1)}%<br>
+                        &nbsp;&nbsp;• Median: ${(confStats.median * 100).toFixed(1)}%
+                    `;
+                }
+                
+                if (period.start_time && period.end_time) {
+                    html += `
+                        <br><br>
+                        <strong style="color: #9933ff;">Data Period:</strong><br>
+                        &nbsp;&nbsp;• Candles: ${period.candles_count}<br>
+                        &nbsp;&nbsp;• From: ${new Date(period.start_time).toLocaleString()}<br>
+                        &nbsp;&nbsp;• To: ${new Date(period.end_time).toLocaleString()}
+                    `;
+                }
+                
+                html += '</div>';
+                
+                contentDiv.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Error testing ML strategy:', error);
+                const contentDiv = document.getElementById('ml-test-content');
+                contentDiv.innerHTML = `<div style="color: #f44336;">Error: ${error.message}</div>`;
+            } finally {
+                const btn = document.getElementById('test-ml-strategy-btn');
+                btn.disabled = false;
+                btn.textContent = '🧪 Test ML Strategy';
             }
         }
         

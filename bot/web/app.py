@@ -1630,6 +1630,160 @@ def api_ml_model_info():
     })
 
 
+@app.route("/api/ml/test", methods=["POST"])
+@login_required
+def api_ml_test():
+    """Тестирование ML стратегии с заданными параметрами."""
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    data = request.json or {}
+    
+    # Получаем параметры из запроса или используем текущие настройки
+    symbol = data.get("symbol", settings.symbol or "BTCUSDT")
+    confidence_threshold = float(data.get("ml_confidence_threshold", settings.ml_confidence_threshold))
+    min_signal_strength = data.get("ml_min_signal_strength", settings.ml_min_signal_strength)
+    stability_filter = data.get("ml_stability_filter", settings.ml_stability_filter)
+    
+    # Валидация параметров
+    if not 0 <= confidence_threshold <= 1:
+        return jsonify({"error": "ml_confidence_threshold must be between 0 and 1"}), 400
+    
+    allowed_strengths = ["слабое", "умеренное", "среднее", "сильное", "очень_сильное"]
+    if min_signal_strength not in allowed_strengths:
+        return jsonify({"error": f"Invalid ml_min_signal_strength. Allowed: {', '.join(allowed_strengths)}"}), 400
+    
+    try:
+        # Находим модель для символа
+        model_path = _find_model_for_symbol(symbol)
+        if not model_path:
+            return jsonify({"error": f"No ML model found for {symbol}"}), 404
+        
+        # Получаем данные для тестирования (последние 1000 свечей)
+        client = BybitClient(settings.api)
+        interval = "15"  # Фиксированный интервал 15 минут
+        df_raw = client.get_kline_df(symbol=symbol, interval=interval, limit=1000)
+        
+        if df_raw.empty:
+            return jsonify({"error": f"No data available for {symbol}"}), 404
+        
+        # Подготавливаем данные с индикаторами
+        from bot.data_preparation import prepare_with_indicators, enrich_for_strategy
+        
+        df_ind = prepare_with_indicators(
+            df_raw,
+            adx_length=settings.strategy.adx_length,
+            di_length=settings.strategy.di_length,
+            sma_length=settings.strategy.sma_length,
+            rsi_length=settings.strategy.rsi_length,
+            breakout_lookback=settings.strategy.breakout_lookback,
+            bb_length=settings.strategy.bb_length,
+            bb_std=settings.strategy.bb_std,
+            atr_length=14,
+            ema_fast_length=settings.strategy.ema_fast_length,
+            ema_slow_length=settings.strategy.ema_slow_length,
+            ema_timeframe=settings.strategy.momentum_ema_timeframe,
+        )
+        df_ready = enrich_for_strategy(df_ind, settings.strategy)
+        
+        # Генерируем ML сигналы с заданными параметрами
+        from bot.ml.strategy_ml import build_ml_signals
+        from bot.types import Action
+        
+        ml_signals = build_ml_signals(
+            df_ready,
+            model_path=model_path,
+            confidence_threshold=confidence_threshold,
+            min_signal_strength=min_signal_strength,
+            stability_filter=stability_filter,
+            leverage=settings.leverage,
+            target_profit_pct_margin=settings.ml_target_profit_pct_margin,
+            max_loss_pct_margin=settings.ml_max_loss_pct_margin,
+        )
+        
+        # Подсчитываем статистику
+        total_signals = len(ml_signals)
+        long_signals = [s for s in ml_signals if s.action == Action.LONG]
+        short_signals = [s for s in ml_signals if s.action == Action.SHORT]
+        hold_signals = [s for s in ml_signals if s.action == Action.HOLD]
+        
+        # Подсчитываем свежие сигналы (за последние 24 часа)
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        day_ago = now - timedelta(hours=24)
+        
+        fresh_long = []
+        fresh_short = []
+        for s in long_signals:
+            if isinstance(s.timestamp, pd.Timestamp):
+                ts = s.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize('UTC')
+                else:
+                    ts = ts.tz_convert('UTC')
+                ts_dt = ts.to_pydatetime()
+                if ts_dt >= day_ago:
+                    fresh_long.append(s)
+        
+        for s in short_signals:
+            if isinstance(s.timestamp, pd.Timestamp):
+                ts = s.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize('UTC')
+                else:
+                    ts = ts.tz_convert('UTC')
+                ts_dt = ts.to_pydatetime()
+                if ts_dt >= day_ago:
+                    fresh_short.append(s)
+        
+        fresh_total = len(fresh_long) + len(fresh_short)
+        
+        # Статистика по уверенности
+        confidences = []
+        for sig in ml_signals:
+            if hasattr(sig, 'confidence') and sig.confidence is not None:
+                confidences.append(sig.confidence)
+        
+        confidence_stats = {}
+        if confidences:
+            import numpy as np
+            confidence_stats = {
+                "min": float(min(confidences)),
+                "max": float(max(confidences)),
+                "mean": float(np.mean(confidences)),
+                "median": float(np.median(confidences)),
+            }
+        
+        return jsonify({
+            "symbol": symbol,
+            "parameters": {
+                "ml_confidence_threshold": confidence_threshold,
+                "ml_min_signal_strength": min_signal_strength,
+                "ml_stability_filter": stability_filter,
+            },
+            "statistics": {
+                "total_signals": total_signals,
+                "long_signals": len(long_signals),
+                "short_signals": len(short_signals),
+                "hold_signals": len(hold_signals),
+                "fresh_signals_24h": fresh_total,
+                "fresh_long_24h": len(fresh_long),
+                "fresh_short_24h": len(fresh_short),
+            },
+            "confidence_stats": confidence_stats,
+            "data_period": {
+                "candles_count": len(df_ready),
+                "start_time": df_ready.index[0].isoformat() if len(df_ready) > 0 else None,
+                "end_time": df_ready.index[-1].isoformat() if len(df_ready) > 0 else None,
+            },
+        })
+    except Exception as e:
+        print(f"[web] Error testing ML strategy: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to test ML strategy: {str(e)}"}), 500
+
+
 @app.route("/api/ml/models/all-pairs")
 @login_required
 def api_ml_models_all_pairs():
