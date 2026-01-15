@@ -182,10 +182,11 @@ class MultiSymbolManager:
         
         try:
             # Создаем новый объект с теми же значениями, но с переопределенным символом
+            # ВАЖНО: primary_symbol НЕ переопределяем - он должен оставаться глобальным PRIMARY_SYMBOL
             symbol_settings = replace(
                 self.settings,
                 symbol=symbol,
-                primary_symbol=symbol
+                # primary_symbol остается из self.settings (глобальный PRIMARY_SYMBOL)
             )
         except Exception as e:
             # Fallback на deepcopy, если replace не работает
@@ -193,7 +194,7 @@ class MultiSymbolManager:
             import copy
             symbol_settings = copy.deepcopy(self.settings)
             symbol_settings.symbol = symbol
-            symbol_settings.primary_symbol = symbol
+            # primary_symbol остается из self.settings (глобальный PRIMARY_SYMBOL)
         
         # Автоматически находим ML модель для символа, если ML стратегия включена
                 # ВАЖНО: Всегда переопределяем ml_model_path для каждого символа, даже если он уже установлен

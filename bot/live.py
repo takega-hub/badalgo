@@ -201,6 +201,91 @@ def _clear_bot_state(symbol: str) -> None:
             print(f"[live] [{symbol}] ⚠️ Error deleting bot state file: {e}")
 
 
+def _check_primary_symbol_position(
+    client: BybitClient,
+    current_symbol: str,
+    settings: AppSettings,
+    target_action: Action,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Проверяет позицию на PRIMARY_SYMBOL и блокирует открытие позиций в противоположном направлении.
+    
+    Логика:
+    - Если на PRIMARY_SYMBOL есть позиция LONG, то для других символов не открывать SHORT
+    - Если на PRIMARY_SYMBOL есть позиция SHORT, то для других символов не открывать LONG
+    - Если текущий символ - это PRIMARY_SYMBOL, то проверку не делаем (можно открывать любые позиции)
+    
+    Args:
+        client: Клиент Bybit для получения позиций
+        current_symbol: Текущий символ, для которого проверяется возможность открытия позиции
+        settings: Настройки приложения (содержат primary_symbol)
+        target_action: Действие, которое планируется выполнить (LONG или SHORT)
+    
+    Returns:
+        Tuple[bool, Optional[str]]: (should_block, reason)
+        - should_block: True если нужно заблокировать открытие позиции
+        - reason: Причина блокировки (если should_block == True)
+    """
+    try:
+        # Получаем PRIMARY_SYMBOL из настроек
+        primary_symbol = getattr(settings, 'primary_symbol', None) or getattr(settings, 'symbol', None)
+        if not primary_symbol:
+            # Если PRIMARY_SYMBOL не задан, проверку не делаем
+            return False, None
+        
+        # Если текущий символ - это PRIMARY_SYMBOL, проверку не делаем
+        if current_symbol.upper() == primary_symbol.upper():
+            return False, None
+        
+        # Получаем позицию на PRIMARY_SYMBOL
+        try:
+            pos_resp = client.get_position_info(symbol=primary_symbol)
+            if pos_resp.get("retCode") != 0:
+                # Ошибка получения позиции - не блокируем
+                return False, None
+            
+            pos_list = pos_resp.get("result", {}).get("list", [])
+            primary_position = None
+            primary_bias = None
+            
+            for pos_item in pos_list:
+                size = float(pos_item.get("size", 0))
+                if size > 0:
+                    primary_position = pos_item
+                    side = pos_item.get("side", "").upper()
+                    primary_bias = Bias.LONG if side == "BUY" else Bias.SHORT
+                    break
+            
+            # Если на PRIMARY_SYMBOL нет позиции - проверку не делаем
+            if not primary_position:
+                return False, None
+            
+            # Проверяем конфликт направлений
+            if primary_bias == Bias.LONG and target_action == Action.SHORT:
+                # На PRIMARY_SYMBOL есть LONG, пытаемся открыть SHORT на другом символе - блокируем
+                print(f"[live] [{current_symbol}] ⛔ CONFLICT: PRIMARY_SYMBOL ({primary_symbol}) has LONG position, blocking SHORT on {current_symbol}")
+                return True, f"PRIMARY_SYMBOL ({primary_symbol}) has LONG position - cannot open SHORT on {current_symbol}"
+            
+            if primary_bias == Bias.SHORT and target_action == Action.LONG:
+                # На PRIMARY_SYMBOL есть SHORT, пытаемся открыть LONG на другом символе - блокируем
+                print(f"[live] [{current_symbol}] ⛔ CONFLICT: PRIMARY_SYMBOL ({primary_symbol}) has SHORT position, blocking LONG on {current_symbol}")
+                return True, f"PRIMARY_SYMBOL ({primary_symbol}) has SHORT position - cannot open LONG on {current_symbol}"
+            
+            # Нет конфликта - можно открывать
+            print(f"[live] [{current_symbol}] ✅ No conflict: PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value}, target is {target_action.value} - OK to open")
+            return False, None
+            
+        except Exception as e:
+            # Ошибка при получении позиции - не блокируем, но логируем
+            print(f"[live] [{current_symbol}] ⚠️ Error checking PRIMARY_SYMBOL position: {e}")
+            return False, None
+            
+    except Exception as e:
+        # Общая ошибка - не блокируем
+        print(f"[live] [{current_symbol}] ⚠️ Error in _check_primary_symbol_position: {e}")
+        return False, None
+
+
 def _calculate_tp_sl_for_signal(
     sig,
     settings: AppSettings,
@@ -1139,6 +1224,9 @@ def _ensure_tp_sl_set(
                 # Для SHORT: trailing stop ниже базового SL (может быть ниже цены входа)
                 is_trailing_stop = target_sl < base_sl
         
+        # Сохраняем is_trailing_stop для использования в валидации ниже
+        final_is_trailing_stop = is_trailing_stop
+        
         if position_bias == Bias.LONG:
             # Для LONG: TP должен быть выше цены входа
             if target_tp <= avg_price:
@@ -1196,9 +1284,15 @@ def _ensure_tp_sl_set(
             if final_sl is not None:
                 if position_bias == Bias.LONG:
                     # Для LONG: SL должен быть СТРОГО ниже цены входа
-                    if final_sl >= avg_price:
+                    # ИСКЛЮЧЕНИЕ: Если это trailing stop, он может быть выше входа (защита прибыли)
+                    # Используем сохраненное значение is_trailing_stop
+                    is_trailing = final_is_trailing_stop if 'final_is_trailing_stop' in locals() else False
+                    if final_sl >= avg_price and not is_trailing:
                         print(f"[live] 🚨 CRITICAL FIX: SL ({final_sl:.2f}) >= entry ({avg_price:.2f}) for LONG, adjusting to {min_sl_pct_from_margin*100:.0f}% from margin")
                         final_sl = avg_price * (1 - min_sl_pct_from_price)
+                    elif final_sl >= avg_price and is_trailing:
+                        # Trailing stop выше входа - это нормально для защиты прибыли
+                        print(f"[live] ✅ Trailing stop SL ({final_sl:.2f}) is above entry ({avg_price:.2f}) - это нормально для trailing stop (защита прибыли)")
                     else:
                         # Проверяем, что SL в диапазоне 7-10% от маржи
                         sl_deviation_pct_from_price = abs(avg_price - final_sl) / avg_price
@@ -2506,10 +2600,11 @@ def run_live_from_api(
     
     # Создаем локальную копию настроек с переопределенным символом
     # Это нужно для сохранения обратной совместимости
+    # ВАЖНО: primary_symbol НЕ переопределяем - он должен оставаться глобальным PRIMARY_SYMBOL
     import copy
     local_settings = copy.deepcopy(initial_settings)
     local_settings.symbol = symbol
-    local_settings.primary_symbol = symbol
+    # primary_symbol остается из initial_settings (глобальный PRIMARY_SYMBOL)
     
     # Инициализируем bot_state, если он None (для multi-symbol режима)
     # Важно: bot_state всегда должен быть словарем, даже если передан None
@@ -4479,6 +4574,25 @@ def run_live_from_api(
                     # Позиции нет → открываем LONG
                     # Если сигналы подтверждают друг друга, это уже учтено в выборе сигнала
                     
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем LONG, если на PRIMARY_SYMBOL есть SHORT позиция
+                    should_block, block_reason = _check_primary_symbol_position(
+                        client=client,
+                        current_symbol=symbol,
+                        settings=current_settings,
+                        target_action=Action.LONG,
+                    )
+                    if should_block:
+                        _log(f"⛔ BLOCKED: {block_reason}", symbol)
+                        _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - waiting for PRIMARY_SYMBOL position to close or reverse", symbol)
+                        if bot_state:
+                            bot_state["current_status"] = "Running"
+                            bot_state["last_action"] = f"Blocked: {block_reason}"
+                            bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                        update_worker_status(symbol, current_status="Running", last_action=f"Blocked: {block_reason}")
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
+                    
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
                     _log(f"📈 Opening NEW LONG position", symbol)
@@ -5069,6 +5183,25 @@ def run_live_from_api(
                 
                 if not position:
                     # Позиции нет → открываем SHORT
+                    
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем SHORT, если на PRIMARY_SYMBOL есть LONG позиция
+                    should_block, block_reason = _check_primary_symbol_position(
+                        client=client,
+                        current_symbol=symbol,
+                        settings=current_settings,
+                        target_action=Action.SHORT,
+                    )
+                    if should_block:
+                        _log(f"⛔ BLOCKED: {block_reason}", symbol)
+                        _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - waiting for PRIMARY_SYMBOL position to close or reverse", symbol)
+                        if bot_state:
+                            bot_state["current_status"] = "Running"
+                            bot_state["last_action"] = f"Blocked: {block_reason}"
+                            bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                        update_worker_status(symbol, current_status="Running", last_action=f"Blocked: {block_reason}")
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
                     
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)

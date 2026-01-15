@@ -752,7 +752,7 @@
                 
                 <div class="form-group" style="margin-bottom: 20px;">
                     <label style="color: #aaa; display: block; margin-bottom: 10px;">
-                        <strong>Symbol for Display (только для просмотра):</strong>
+                        <strong>PRIMARY_SYMBOL (основная пара BTC для приоритета):</strong>
                     </label>
                     <select id="symbols-primary-select" style="padding: 10px 15px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 5px; font-size: 1em; width: 200px;">
                         <option value="BTCUSDT">BTCUSDT</option>
@@ -760,8 +760,11 @@
                         <option value="SOLUSDT">SOLUSDT</option>
                     </select>
                     <p style="color: #666; font-size: 0.9em; margin-top: 5px;">
-                        Эта пара используется только для отображения графика, сигналов и сделок в интерфейсе.<br>
-                        <strong>Не влияет на торговлю</strong> - бот работает со всеми включенными парами.
+                        Эта пара используется как <strong>PRIMARY_SYMBOL</strong>:<br>
+                        - при росте BTC → приоритет LONG сигналов по другим парам;<br>
+                        - при падении BTC → приоритет SHORT сигналов по другим парам;<br>
+                        - если на PRIMARY_SYMBOL есть позиция, бот не открывает противонаправленные позиции на других парах.<br>
+                        График и данные в интерфейсе также по умолчанию показываются по этой паре.
                     </p>
                 </div>
                 
