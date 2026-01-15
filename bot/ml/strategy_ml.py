@@ -478,8 +478,13 @@ class MLStrategy:
             profit_pct = int(target_profit_pct_margin)
             
             # Проверяем минимальную силу сигнала (только для LONG/SHORT, не для HOLD)
-            # Для ETHUSDT и SOLUSDT используем более мягкий порог
-            min_strength = self.min_strength_threshold * 0.7 if is_volatile_symbol else self.min_strength_threshold
+            # Для ETHUSDT и SOLUSDT используем очень мягкий порог (почти отключен)
+            # Для ETHUSDT особенно мягкий порог, так как было только 1 сделка
+            if is_volatile_symbol:
+                # Для волатильных символов снижаем порог до минимума (0.3 от базового)
+                min_strength = self.min_strength_threshold * 0.3
+            else:
+                min_strength = self.min_strength_threshold
             if prediction != 0 and confidence < min_strength:
                 # Сигнал не проходит минимальный порог силы - возвращаем HOLD
                 return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(min_strength*100)}%", current_price)
@@ -693,27 +698,38 @@ class MLStrategy:
             # === Дополнительная фильтрация на основе контекста рынка ===
             
             # Динамический порог на основе рыночных условий
-            # Для ETHUSDT и SOLUSDT используем более мягкий порог
+            # Для ETHUSDT и SOLUSDT используем очень мягкий порог
             if is_volatile_symbol:
-                dynamic_threshold = self.confidence_threshold * 0.90  # Снижаем порог на 10%
+                dynamic_threshold = self.confidence_threshold * 0.75  # Снижаем порог на 25% для волатильных символов
             else:
                 dynamic_threshold = self.confidence_threshold
             
             # МЯГКИЕ ФИЛЬТРЫ: Применяем ТОЛЬКО для сигналов ниже основного порога
             # Если сигнал выше dynamic_threshold, мы доверяем модели!
+            # Для волатильных символов почти полностью отключаем фильтры
             if prediction != 0 and confidence < dynamic_threshold:
-                if not indicators_agree:
-                    return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_{strength}_{confidence_pct}%", current_price)
-                if not volume_confirmation:
-                    return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
-                if not trend_filter_ok:
-                    return Signal(row.name, Action.HOLD, f"ml_тренд_не_подтверждает_{strength}_{confidence_pct}%", current_price)
-                if not volatility_ok:
-                    return Signal(row.name, Action.HOLD, f"ml_низкая_волатильность_{strength}_{confidence_pct}%", current_price)
-                if not structure_ok:
-                    return Signal(row.name, Action.HOLD, f"ml_структура_не_подтверждает_{strength}_{confidence_pct}%", current_price)
-                if not adx_filter_ok:
-                    return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_ADX_{int(adx)}_{strength}_{confidence_pct}%", current_price)
+                if is_volatile_symbol:
+                    # Для волатильных символов применяем ТОЛЬКО экстремальные проверки
+                    # Только если RSI в экстремальной зоне (>90 или <10) и уверенность очень низкая
+                    if np.isfinite(rsi):
+                        extreme_rsi = (prediction == 1 and rsi > 90) or (prediction == -1 and rsi < 10)
+                        if extreme_rsi and confidence < dynamic_threshold * 0.5:
+                            return Signal(row.name, Action.HOLD, f"ml_экстремальный_RSI_{int(rsi)}_{strength}_{confidence_pct}%", current_price)
+                    # Все остальные фильтры отключены для волатильных символов
+                else:
+                    # Для BTCUSDT применяем все фильтры
+                    if not indicators_agree:
+                        return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_{strength}_{confidence_pct}%", current_price)
+                    if not volume_confirmation:
+                        return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                    if not trend_filter_ok:
+                        return Signal(row.name, Action.HOLD, f"ml_тренд_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                    if not volatility_ok:
+                        return Signal(row.name, Action.HOLD, f"ml_низкая_волатильность_{strength}_{confidence_pct}%", current_price)
+                    if not structure_ok:
+                        return Signal(row.name, Action.HOLD, f"ml_структура_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                    if not adx_filter_ok:
+                        return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_ADX_{int(adx)}_{strength}_{confidence_pct}%", current_price)
 
             
             # УБРАНО: Фильтр по силе тренда (ADX) - ML стратегия должна работать на всех стадиях рынка
@@ -721,8 +737,8 @@ class MLStrategy:
             #     return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_{strength}_{confidence_pct}%", current_price)
             
             # Дополнительная проверка: если цена находится в экстремальных зонах (RSI > 85 или < 15),
-            # требуем более высокую уверенность (смягчено с 80/20)
-            if prediction != 0 and np.isfinite(rsi):
+            # требуем более высокую уверенность (только для BTCUSDT)
+            if prediction != 0 and np.isfinite(rsi) and not is_volatile_symbol:
                 if (prediction == 1 and rsi > 85) or (prediction == -1 and rsi < 15):
                     # В экстремальных зонах требуем уверенность на 5% выше (было 10%)
                     extreme_threshold = dynamic_threshold * 1.05
@@ -734,23 +750,29 @@ class MLStrategy:
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
                 # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
-                # Для волатильных символов используем еще более мягкий порог
-                threshold_mult = 0.80 if is_volatile_symbol else 0.85
-                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 80-85% от порога
+                # Для волатильных символов используем очень мягкий порог
+                threshold_mult = 0.70 if is_volatile_symbol else 0.85  # Для волатильных символов снижаем до 70%
+                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 70-85% от порога
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
+                # Для волатильных символов делаем фильтр стабильности очень мягким
                 if self.stability_filter and has_position == Bias.SHORT:
-                    stability_mult = 0.80 if is_volatile_symbol else 0.85
-                    stability_threshold = max(self.confidence_threshold * stability_mult, 0.40 if is_volatile_symbol else 0.45)
+                    if is_volatile_symbol:
+                        stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
+                    else:
+                        stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
                     if confidence < stability_threshold:
                         return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 
                 # Проверяем объем (смягчено: если уверенность высокая, объем менее важен)
-                if not volume_ok and confidence < dynamic_threshold * 1.2:
-                    return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                # Для волатильных символов проверка объема полностью отключена
+                if not is_volatile_symbol:
+                    volume_threshold_mult = 1.2
+                    if not volume_ok and confidence < dynamic_threshold * volume_threshold_mult:
+                        return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                 # Сигнал LONG
                 reason = f"ml_LONG_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%"
                 
@@ -776,23 +798,29 @@ class MLStrategy:
             
             elif prediction == -1:  # SHORT
                 # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
-                # Для волатильных символов используем еще более мягкий порог
-                threshold_mult = 0.80 if is_volatile_symbol else 0.85
-                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 80-85% от порога
+                # Для волатильных символов используем очень мягкий порог
+                threshold_mult = 0.70 if is_volatile_symbol else 0.85  # Для волатильных символов снижаем до 70%
+                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 70-85% от порога
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
+                # Для волатильных символов делаем фильтр стабильности очень мягким
                 if self.stability_filter and has_position == Bias.LONG:
-                    stability_mult = 0.80 if is_volatile_symbol else 0.85
-                    stability_threshold = max(self.confidence_threshold * stability_mult, 0.40 if is_volatile_symbol else 0.45)
+                    if is_volatile_symbol:
+                        stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
+                    else:
+                        stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
                     if confidence < stability_threshold:
                         return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 
                 # Проверяем объем (смягчено: если уверенность высокая, объем менее важен)
-                if not volume_ok and confidence < dynamic_threshold * 1.2:
-                    return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
+                # Для волатильных символов проверка объема полностью отключена
+                if not is_volatile_symbol:
+                    volume_threshold_mult = 1.2
+                    if not volume_ok and confidence < dynamic_threshold * volume_threshold_mult:
+                        return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                 # Сигнал SHORT
                 reason = f"ml_SHORT_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%"
                 

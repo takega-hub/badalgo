@@ -3362,28 +3362,13 @@ def run_live_from_api(
             else:
                 _log(f"⚠️ FLAT strategy is DISABLED for {symbol}", symbol)
             
-            # Liquidity Sweep стратегия (снятие ликвидности)
-            if current_settings.enable_liquidity_sweep_strategy:
-                liquidity_signals = build_signals(df_ready, current_settings.strategy, use_momentum=False, use_liquidity=True)
-                liquidity_generated = [s for s in liquidity_signals if s.reason.startswith("liquidity_") and s.action in (Action.LONG, Action.SHORT)]
-                _log(f"📊 LIQUIDITY strategy: generated {len(liquidity_signals)} total, {len(liquidity_generated)} actionable (LONG/SHORT)", symbol)
-                
-                # Диагностика, если нет сигналов
-                if not liquidity_generated and len(liquidity_signals) == 0:
-                    if not df_ready.empty:
-                        last_row = df_ready.iloc[-1]
-                        donchian_upper = last_row.get('donchian_upper', np.nan)
-                        donchian_lower = last_row.get('donchian_lower', np.nan)
-                        price = last_row['close']
-                        if pd.notna([donchian_upper, donchian_lower]).all():
-                            _log(f"  💡 Donchian Upper: ${donchian_upper:.2f}, Donchian Lower: ${donchian_lower:.2f}, Price: ${price:.2f}", symbol)
-                            _log(f"    - Price > Donchian Upper: {price > donchian_upper} (пробой вверх)", symbol)
-                            _log(f"    - Price < Donchian Lower: {price < donchian_lower} (пробой вниз)", symbol)
-                
-                for sig in liquidity_generated:
-                    all_signals.append(sig)
-            else:
-                _log(f"⚠️ LIQUIDITY strategy is DISABLED for {symbol}", symbol)
+            # Liquidity Sweep стратегия (снятие ликвидности) - ОТКЛЮЧЕНА
+            # Стратегия отключена из-за плохих результатов
+            if False:  # Принудительно отключено
+                # Старый код закомментирован, стратегия больше не используется
+                pass
+            # else:
+            #     _log(f"⚠️ LIQUIDITY strategy is DISABLED for {symbol}", symbol)
             
             # Smart Money Concepts (SMC) стратегия
             if current_settings.enable_smc_strategy:
@@ -4018,6 +4003,7 @@ def run_live_from_api(
             momentum_sig = get_latest_fresh_signal(momentum_signals_only, df_ready)
             liquidity_sig = get_latest_fresh_signal(liquidity_signals_only, df_ready)
             smc_sig_latest = get_latest_fresh_signal(smc_signals_only, df_ready)
+            ict_sig_latest = get_latest_fresh_signal(ict_signals_only, df_ready)
             
             # Создаем словарь всех сигналов для удобства
             strategy_signals = {

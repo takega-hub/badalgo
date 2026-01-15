@@ -3180,38 +3180,39 @@ def api_chart_data():
                 except Exception as e:
                     print(f"[web] Error generating Momentum signals for chart: {e}")
             
-            # Liquidity Sweep стратегия - генерируем текущие сигналы (если стратегия включена)
-            if settings.enable_liquidity_sweep_strategy:
-                try:
-                    liquidity_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=True)
-                    _web_log(f"[web] Strategy processed")
-                    for sig in liquidity_signals:
-                        # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
-                        if sig.reason.startswith("liquidity_") and sig.action in (Action.LONG, Action.SHORT):
-                            signals.append(sig)
-                            # Сохраняем сигнал в историю для синхронизации с графиком
-                            try:
-                                from bot.web.history import add_signal
-                                ts_log = sig.timestamp
-                                if isinstance(ts_log, pd.Timestamp):
-                                    if ts_log.tzinfo is None:
-                                        ts_log = ts_log.tz_localize('UTC')
-                                    else:
-                                        ts_log = ts_log.tz_convert('UTC')
-                                    ts_log = ts_log.to_pydatetime()
-                                add_signal(
-                                    action=sig.action.value,
-                                    reason=sig.reason,
-                                    price=sig.price,
-                                    timestamp=ts_log,
-                                    symbol=symbol,
-                                    strategy_type="liquidity",
-                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
-                                )
-                            except Exception as e:
-                                print(f"[web] ⚠️ Failed to save liquidity signal to history: {e}")
-                except Exception as e:
-                    print(f"[web] Error generating Liquidity signals for chart: {e}")
+            # Liquidity Sweep стратегия - ОТКЛЮЧЕНА (плохие результаты)
+            # Стратегия принудительно отключена в коде
+            # if settings.enable_liquidity_sweep_strategy:
+            #     try:
+            #         liquidity_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=True)
+            #         _web_log(f"[web] Strategy processed")
+            #         for sig in liquidity_signals:
+            #             # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
+            #             if sig.reason.startswith("liquidity_") and sig.action in (Action.LONG, Action.SHORT):
+            #                 signals.append(sig)
+            #                 # Сохраняем сигнал в историю для синхронизации с графиком
+            #                 try:
+            #                     from bot.web.history import add_signal
+            #                     ts_log = sig.timestamp
+            #                     if isinstance(ts_log, pd.Timestamp):
+            #                         if ts_log.tzinfo is None:
+            #                             ts_log = ts_log.tz_localize('UTC')
+            #                         else:
+            #                             ts_log = ts_log.tz_convert('UTC')
+            #                         ts_log = ts_log.to_pydatetime()
+            #                     add_signal(
+            #                         action=sig.action.value,
+            #                         reason=sig.reason,
+            #                         price=sig.price,
+            #                         timestamp=ts_log,
+            #                         symbol=symbol,
+            #                         strategy_type="liquidity",
+            #                         signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+            #                     )
+            #                 except Exception as e:
+            #                     print(f"[web] ⚠️ Failed to save liquidity signal to history: {e}")
+            #     except Exception as e:
+            #         print(f"[web] Error generating Liquidity signals for chart: {e}")
             
             # SMC стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_smc_strategy:
