@@ -526,8 +526,8 @@
         
         <!-- Переключатель символов в верхней части -->
         <div id="symbol-selector" style="margin-bottom: 20px; padding: 15px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">
-            <label style="color: #aaa; margin-right: 10px;">Active Symbol:</label>
-            <select id="primary-symbol-select" style="padding: 8px 15px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 5px; font-size: 1em; cursor: pointer;" onchange="changePrimarySymbol(this.value)">
+            <label style="color: #aaa; margin-right: 10px;">Active Symbol (для просмотра):</label>
+            <select id="primary-symbol-select" style="padding: 8px 15px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 5px; font-size: 1em; cursor: pointer;" onchange="changePrimarySymbol(this.value)" title="Выбор символа для просмотра графика, сигналов и сделок. Не влияет на торговую логику.">
                 <option value="BTCUSDT">BTCUSDT</option>
                 <option value="ETHUSDT">ETHUSDT</option>
                 <option value="SOLUSDT">SOLUSDT</option>
@@ -3210,11 +3210,21 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    // Обновляем переключатель символов в верхней части
+                    // Обновляем PRIMARY_SYMBOL селектор (для торговли)
+                    const primarySelect = document.getElementById('symbols-primary-select');
+                    if (primarySelect) {
+                        primarySelect.value = primarySymbol;
+                    }
+                    
+                    // Обновляем Active Symbol селектор (для просмотра) только если он совпадает с PRIMARY_SYMBOL
                     const topSelect = document.getElementById('primary-symbol-select');
                     if (topSelect) {
-                        topSelect.value = primarySymbol;
-                        currentSymbol = primarySymbol;
+                        // Меняем только если текущий выбор совпадает со старым PRIMARY_SYMBOL
+                        // Или если пользователь не менял его вручную
+                        if (!currentSymbol || currentSymbol === data.primary_symbol || topSelect.value === data.primary_symbol) {
+                            topSelect.value = primarySymbol;
+                            currentSymbol = primarySymbol;
+                        }
                     }
                     
                     // Обновляем сообщение о статусе
@@ -3250,19 +3260,21 @@
         
         async function changePrimarySymbol(symbol) {
             try {
-                console.log(`[UI] Hard switch to symbol: ${symbol}`);
+                console.log(`[UI] Changing Active Symbol (for display only) to: ${symbol}`);
                 window.currentSymbol = symbol;
                 
-                // Фиксируем выбор во всех селекторах
+                // ВАЖНО: Меняем ТОЛЬКО Active Symbol для просмотра (primary-symbol-select)
+                // НЕ меняем PRIMARY_SYMBOL (symbols-primary-select) - это разные параметры!
                 const topSelect = document.getElementById('primary-symbol-select');
                 if (topSelect) topSelect.value = symbol;
                 
-                const symbolsSelect = document.getElementById('symbols-primary-select');
-                if (symbolsSelect) symbolsSelect.value = symbol;
+                // НЕ обновляем symbols-primary-select - это PRIMARY_SYMBOL для торговли!
+                // const symbolsSelect = document.getElementById('symbols-primary-select');
+                // if (symbolsSelect) symbolsSelect.value = symbol; // УДАЛЕНО - не меняем PRIMARY_SYMBOL
                 
                 // Перезагружаем график (forceRefresh = true для чистой смены)
                 if (typeof loadChartLW === 'function') {
-                    loadChartLW(true);
+                    loadChartLW(true, symbol);
                 }
                 
                 // Обновляем статус немедленно
@@ -3283,7 +3295,7 @@
                     }
                 }
             } catch (error) {
-                console.error('Error changing primary symbol:', error);
+                console.error('Error changing active symbol:', error);
             }
         }
         
@@ -3572,17 +3584,24 @@
                 const data = await response.json();
                 console.log('[UI] Primary symbol switched:', data);
                 
-                // Обновляем все select'ы
+                // Обновляем PRIMARY_SYMBOL селектор (для торговли)
                 const primarySelect = document.getElementById('symbols-primary-select');
-                const topSelect = document.getElementById('primary-symbol-select');
-                
                 if (primarySelect) {
                     primarySelect.value = symbol;
                 }
+                
+                // Обновляем Active Symbol селектор (для просмотра) только если пользователь не менял его вручную
+                const topSelect = document.getElementById('primary-symbol-select');
                 if (topSelect) {
-                    topSelect.value = symbol;
-                    // Триггерим событие change для обновления других зависимых элементов
-                    topSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    // Меняем только если текущий выбор совпадает со старым PRIMARY_SYMBOL
+                    // Это позволяет пользователю отдельно выбирать символ для просмотра
+                    const oldPrimarySymbol = topSelect.value;
+                    if (!currentSymbol || currentSymbol === oldPrimarySymbol) {
+                        topSelect.value = symbol;
+                        currentSymbol = symbol;
+                        // Триггерим событие change для обновления графика и других элементов
+                        topSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                 }
                 
                 // Обновляем глобальную переменную ПЕРЕД вызовом loadChartLW
