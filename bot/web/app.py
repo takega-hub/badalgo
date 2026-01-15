@@ -3248,6 +3248,43 @@ def api_chart_data():
                 except Exception as e:
                     print(f"[web] Error generating SMC signals for chart: {e}")
             
+            # ICT Silver Bullet стратегия - генерируем текущие сигналы (если стратегия включена)
+            if settings.enable_ict_strategy:
+                try:
+                    if len(df_ready) >= 200:
+                        from bot.ict_strategy import build_ict_signals
+                        ict_signals = build_ict_signals(df_ready, settings.strategy, symbol=symbol)
+                        _web_log(f"[web] ICT Strategy processed: {len(ict_signals)} signals")
+                        for sig in ict_signals:
+                            # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
+                            if sig.action in (Action.LONG, Action.SHORT):
+                                signals.append(sig)
+                                # Сохраняем ICT сигнал в общую историю для синхронизации с графиком
+                                try:
+                                    from bot.web.history import add_signal
+                                    ts_log = sig.timestamp
+                                    if isinstance(ts_log, pd.Timestamp):
+                                        if ts_log.tzinfo is None:
+                                            ts_log = ts_log.tz_localize('UTC')
+                                        else:
+                                            ts_log = ts_log.tz_convert('UTC')
+                                        ts_log = ts_log.to_pydatetime()
+                                    add_signal(
+                                        action=sig.action.value,
+                                        reason=sig.reason,
+                                        price=sig.price,
+                                        timestamp=ts_log,
+                                        symbol=symbol,
+                                        strategy_type="ict",
+                                        signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                    )
+                                except Exception as e:
+                                    print(f"[web] ⚠️ Failed to save ICT signal to history: {e}")
+                    else:
+                        _web_log(f"[web] ICT strategy requires more history. Current: {len(df_ready)} candles (need >= 200)")
+                except Exception as e:
+                    print(f"[web] Error generating ICT signals for chart: {e}")
+            
             if signals is None:
                 signals = []
         except Exception as e:

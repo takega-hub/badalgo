@@ -1289,6 +1289,7 @@
                     let stratName = '';
                     if (reason.startsWith('ml_')) stratName = 'ML';
                     else if (reason.startsWith('smc_')) stratName = 'SMC';
+                    else if (reason.startsWith('ict_')) stratName = 'ICT';
                     else if (reason.startsWith('trend_')) stratName = 'TREND';
                     else if (reason.startsWith('range_')) stratName = 'FLAT';
                     else if (reason.startsWith('momentum_')) stratName = 'MOM';

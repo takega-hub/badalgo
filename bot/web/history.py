@@ -610,6 +610,26 @@ def get_signals(limit: int = 100, symbol_filter: Optional[str] = None, include_s
             seen.add(key)
             unique_signals.append(sig)
     
+    # Определяем тип стратегии по префиксу reason, если strategy_type не указан или "unknown"
+    for sig in unique_signals:
+        strategy_type = sig.get("strategy_type", "unknown")
+        if strategy_type == "unknown" or not strategy_type:
+            reason = sig.get("reason", "").lower()
+            if reason.startswith("trend_"):
+                sig["strategy_type"] = "trend"
+            elif reason.startswith("range_") or reason.startswith("flat_"):
+                sig["strategy_type"] = "flat"
+            elif reason.startswith("ml_"):
+                sig["strategy_type"] = "ml"
+            elif reason.startswith("momentum_"):
+                sig["strategy_type"] = "momentum"
+            elif reason.startswith("liquidity_"):
+                sig["strategy_type"] = "liquidity"
+            elif reason.startswith("smc_") or reason.startswith("smc "):
+                sig["strategy_type"] = "smc"
+            elif reason.startswith("ict_"):
+                sig["strategy_type"] = "ict"
+    
     # Сортируем по timestamp по убыванию (от новых к старым)
     signals_sorted = sorted(unique_signals, key=get_timestamp, reverse=True)
     

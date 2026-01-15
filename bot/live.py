@@ -3425,6 +3425,26 @@ def run_live_from_api(
                         
                         for sig in ict_generated:
                             all_signals.append(sig)
+                            # Сохраняем ICT сигнал в историю
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="ict",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save ICT signal to history: {e}", symbol)
                     else:
                         _log(f"⚠️ ICT strategy requires more history. Current: {len(df_ready)} candles (need >= 200)", symbol)
                 except Exception as e:
