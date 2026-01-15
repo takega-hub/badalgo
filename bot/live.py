@@ -42,6 +42,7 @@ from bot.strategy import Action, Bias, build_signals, enrich_for_strategy
 from bot.web.history import add_signal, add_trade, check_recent_loss_trade
 from bot.ml.strategy_ml import build_ml_signals
 from bot.smc_strategy import build_smc_signals
+from bot.ict_strategy import build_ict_signals
 
 # Импорт для обработки ошибок Bybit API
 try:
@@ -2763,7 +2764,7 @@ def run_live_from_api(
     
     print(f"[live] [{symbol}] ========================================")
     print(f"[live] [{symbol}] 🚀 Starting live trading bot for {symbol}")
-    print(f"[live] [{symbol}] 📊 Active strategies: Trend={local_settings.enable_trend_strategy}, Flat={local_settings.enable_flat_strategy}, ML={local_settings.enable_ml_strategy}, Momentum={local_settings.enable_momentum_strategy}, Liquidity={local_settings.enable_liquidity_sweep_strategy}, SMC={local_settings.enable_smc_strategy}")
+    print(f"[live] [{symbol}] 📊 Active strategies: Trend={local_settings.enable_trend_strategy}, Flat={local_settings.enable_flat_strategy}, ML={local_settings.enable_ml_strategy}, Momentum={local_settings.enable_momentum_strategy}, Liquidity={local_settings.enable_liquidity_sweep_strategy}, SMC={local_settings.enable_smc_strategy}, ICT={local_settings.enable_ict_strategy}")
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
     print(f"[live] [{symbol}] ========================================")
     
@@ -3419,6 +3420,31 @@ def run_live_from_api(
             else:
                 _log(f"⚠️ SMC strategy is DISABLED for {symbol}", symbol)
             
+            # ICT Silver Bullet стратегия
+            if current_settings.enable_ict_strategy:
+                try:
+                    if len(df_ready) >= 200:
+                        _log(f"🔍 ICT: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        ict_signals = build_ict_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        ict_generated = [s for s in ict_signals if s.action in (Action.LONG, Action.SHORT)]
+                        _log(f"📊 ICT strategy: generated {len(ict_signals)} total, {len(ict_generated)} actionable (LONG/SHORT)", symbol)
+                        
+                        if ict_generated:
+                            for i, sig in enumerate(ict_generated[:3]):
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                        
+                        for sig in ict_generated:
+                            all_signals.append(sig)
+                    else:
+                        _log(f"⚠️ ICT strategy requires more history. Current: {len(df_ready)} candles (need >= 200)", symbol)
+                except Exception as e:
+                    _log(f"❌ Error in ICT strategy: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                _log(f"⚠️ ICT strategy is DISABLED for {symbol}", symbol)
+            
             # ML стратегия
             if current_settings.enable_ml_strategy and current_settings.ml_model_path:
                 try:
@@ -3502,6 +3528,7 @@ def run_live_from_api(
             momentum_signals_only = [s for s in all_signals if s.reason.startswith("momentum_") and s.action in (Action.LONG, Action.SHORT)]
             liquidity_signals_only = [s for s in all_signals if s.reason.startswith("liquidity_") and s.action in (Action.LONG, Action.SHORT)]
             smc_signals_only = [s for s in all_signals if s.reason.lower().startswith("smc_") and s.action in (Action.LONG, Action.SHORT)]
+            ict_signals_only = [s for s in all_signals if s.reason.startswith("ict_") and s.action in (Action.LONG, Action.SHORT)]
             
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only
@@ -3567,6 +3594,7 @@ def run_live_from_api(
             fresh_momentum_signals = [s for s in momentum_signals_only if is_signal_fresh(s, df_ready)]
             fresh_liquidity_signals = [s for s in liquidity_signals_only if is_signal_fresh(s, df_ready)]
             fresh_smc_signals = [s for s in smc_signals_only if is_signal_fresh(s, df_ready)]
+            fresh_ict_signals = [s for s in ict_signals_only if is_signal_fresh(s, df_ready)]
             
             # Убрано verbose сообщение о том, что сигналы не свежие - это нормальное поведение
             
@@ -3618,6 +3646,15 @@ def run_live_from_api(
             elif smc_signals_only:
                 # Если нет свежих SMC сигналов, но есть сигналы вообще - используем последний
                 smc_sig = smc_signals_only[-1]
+            
+            # ICT сигнал
+            ict_sig = None
+            if fresh_ict_signals:
+                # Берем самый последний сигнал (самый свежий по timestamp)
+                ict_sig = fresh_ict_signals[-1]
+            elif ict_signals_only:
+                # Если нет свежих ICT сигналов, но есть сигналы вообще - используем последний
+                ict_sig = ict_signals_only[-1]
             
             if main_sig:
                 ts_str = main_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(main_sig.timestamp, 'strftime') else str(main_sig.timestamp)
@@ -3750,6 +3787,14 @@ def run_live_from_api(
                     smc_sig_save = smc_signals_only[-1] if smc_signals_only else None
                     if smc_sig_save:
                         save_latest_signal_to_history(smc_sig_save, "SMC", "SMC_LATEST")
+                
+                # ICT стратегия
+                ict_sig_save = None
+                if ict_signals_only:
+                    ict_signals_only.sort(key=get_timestamp_for_sort)
+                    ict_sig_save = ict_signals_only[-1] if ict_signals_only else None
+                    if ict_sig_save:
+                        save_latest_signal_to_history(ict_sig_save, "ICT", "ICT_LATEST")
                 
                 # ДОПОЛНИТЕЛЬНО: Сохраняем ВСЕ сигналы от всех стратегий (не только свежие)
                 # Это позволяет видеть все сигналы в истории для анализа
@@ -3978,6 +4023,7 @@ def run_live_from_api(
                 "momentum": momentum_sig,
                 "liquidity": liquidity_sig,
                 "smc": smc_sig_latest,
+                "ict": ict_sig_latest,
             }
             
             # Для обратной совместимости сохраняем main_sig и ml_sig

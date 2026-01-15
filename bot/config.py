@@ -89,6 +89,20 @@ class StrategyParams:
     smc_session_london_end: int = 10
     smc_session_ny_start: int = 12
     smc_session_ny_end: int = 15
+    
+    # ICT Silver Bullet strategy parameters
+    ict_enable_london_session: bool = True  # Торговать в Лондонскую сессию (08:00-16:00 UTC)
+    ict_enable_ny_session: bool = True  # Торговать в Нью-Йоркскую сессию (13:00-21:00 UTC)
+    ict_alligator_jaw_period: int = 13  # Период челюсти Williams Alligator
+    ict_alligator_teeth_period: int = 8  # Период зубов Williams Alligator
+    ict_alligator_lips_period: int = 5  # Период губ Williams Alligator
+    ict_alligator_jaw_shift: int = 8  # Сдвиг челюсти
+    ict_alligator_teeth_shift: int = 5  # Сдвиг зубов
+    ict_alligator_lips_shift: int = 3  # Сдвиг губ
+    ict_fvg_max_age_bars: int = 20  # Максимальный возраст FVG для входа (в свечах)
+    ict_liquidity_lookback_days: int = 1  # Количество дней для поиска ликвидности
+    ict_atr_multiplier_sl: float = 2.0  # Множитель ATR для стоп-лосса
+    ict_rr_ratio: float = 2.0  # Минимальное соотношение Risk/Reward (1:2)
 
 
 @dataclass
@@ -169,8 +183,9 @@ class AppSettings:
     enable_momentum_strategy: bool = False  # Стратегия "Импульсный пробой" (новая для тренда)
     enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности)
     enable_smc_strategy: bool = False  # Smart Money Concepts стратегия
+    enable_ict_strategy: bool = False  # ICT Silver Bullet стратегия
     # Приоритетная стратегия при конфликте сигналов
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid", "confluence"
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "liquidity", "smc", "ict", "hybrid", "confluence"
     
     def __post_init__(self):
         """Инициализация после создания dataclass"""
@@ -274,6 +289,11 @@ def load_settings() -> AppSettings:
     if not enable_smc_raw:
         enable_smc_raw = cleaned_env_values.get("ENABLE_SMC_STRATEGY", "")
     enable_smc = enable_smc_raw.strip().lower() if enable_smc_raw else ""
+    
+    enable_ict_raw = os.getenv("ENABLE_ICT_STRATEGY", "")
+    if not enable_ict_raw:
+        enable_ict_raw = cleaned_env_values.get("ENABLE_ICT_STRATEGY", "")
+    enable_ict = enable_ict_raw.strip().lower() if enable_ict_raw else ""
     
     smc_max_fvg_age_bars = os.getenv("SMC_MAX_FVG_AGE_BARS", "").strip()
     if smc_max_fvg_age_bars:
@@ -384,6 +404,9 @@ def load_settings() -> AppSettings:
     if "ENABLE_SMC_STRATEGY" in cleaned_env_values or enable_smc_raw:
         settings.enable_smc_strategy = enable_smc in ("true", "1", "yes")
     
+    if "ENABLE_ICT_STRATEGY" in cleaned_env_values or enable_ict_raw:
+        settings.enable_ict_strategy = enable_ict in ("true", "1", "yes")
+    
     # Логируем загруженные настройки для отладки
     print(f"[config] Loaded strategy settings from .env:")
     print(f"  TRADING_SYMBOL='{trading_symbol_raw}' -> {settings.symbol}")
@@ -393,6 +416,7 @@ def load_settings() -> AppSettings:
     print(f"  ENABLE_MOMENTUM_STRATEGY='{enable_momentum_raw}' -> {settings.enable_momentum_strategy}")
     print(f"  ENABLE_LIQUIDITY_SWEEP_STRATEGY='{enable_liquidity_raw}' -> {settings.enable_liquidity_sweep_strategy}")
     print(f"  ENABLE_SMC_STRATEGY='{enable_smc_raw}' -> {settings.enable_smc_strategy}")
+    print(f"  ENABLE_ICT_STRATEGY='{enable_ict_raw}' -> {settings.enable_ict_strategy}")
     
     # Загружаем приоритет стратегии
     strategy_priority_raw = os.getenv("STRATEGY_PRIORITY", "")

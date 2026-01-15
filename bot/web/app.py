@@ -246,6 +246,7 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ENABLE_MOMENTUM_STRATEGY'] = str(settings.enable_momentum_strategy).lower()
         env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY'] = str(settings.enable_liquidity_sweep_strategy).lower()
         env_dict['ENABLE_SMC_STRATEGY'] = str(settings.enable_smc_strategy).lower()
+        env_dict['ENABLE_ICT_STRATEGY'] = str(settings.enable_ict_strategy).lower()
         env_dict['STRATEGY_PRIORITY'] = str(settings.strategy_priority).lower()
         env_dict['TRADING_SYMBOL'] = str(settings.symbol)
         
@@ -329,6 +330,7 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ENABLE_MOMENTUM_STRATEGY={env_dict['ENABLE_MOMENTUM_STRATEGY']}\n")
             f.write(f"ENABLE_LIQUIDITY_SWEEP_STRATEGY={env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY']}\n")
             f.write(f"ENABLE_SMC_STRATEGY={env_dict['ENABLE_SMC_STRATEGY']}\n")
+            f.write(f"ENABLE_ICT_STRATEGY={env_dict['ENABLE_ICT_STRATEGY']}\n")
             f.write(f"STRATEGY_PRIORITY={env_dict['STRATEGY_PRIORITY']}\n")
             f.write(f"TRADING_SYMBOL={env_dict['TRADING_SYMBOL']}\n")
             
@@ -1132,6 +1134,7 @@ def api_get_settings():
                 "enable_momentum_strategy": settings.enable_momentum_strategy,
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
+                "enable_ict_strategy": settings.enable_ict_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
                 "ml_model_type_for_all": settings.ml_model_type_for_all or "",
@@ -1215,7 +1218,7 @@ def api_update_settings():
                     # Специальная обработка для boolean значений
                     if key in ("enable_trend_strategy", "enable_flat_strategy", "enable_ml_strategy", 
                                "enable_momentum_strategy", 
-                               "enable_liquidity_sweep_strategy", "enable_smc_strategy", "ml_stability_filter"):
+                               "enable_liquidity_sweep_strategy", "enable_smc_strategy", "enable_ict_strategy", "ml_stability_filter"):
                         setattr(settings, key, bool(value))
                     elif key == "symbol":
                         # Проверяем доступные пары
@@ -1246,7 +1249,7 @@ def api_update_settings():
                             return jsonify({"error": f"Invalid ml_confidence_threshold: {value}. Must be a number between 0 and 1. Error: {e}"}), 400
                     elif key == "strategy_priority":
                         # Проверяем допустимые значения приоритета стратегии
-                        allowed_priorities = ["trend", "flat", "ml", "momentum", "liquidity", "smc", "hybrid", "confluence"]
+                        allowed_priorities = ["trend", "flat", "ml", "momentum", "liquidity", "smc", "ict", "hybrid", "confluence"]
                         if value in allowed_priorities:
                             setattr(settings, key, value)
                             print(f"[web] Strategy priority updated: {value}")
@@ -1350,6 +1353,7 @@ def api_update_settings():
                 "enable_momentum_strategy": settings.enable_momentum_strategy,
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
+                "enable_ict_strategy": settings.enable_ict_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
                 "ml_model_type_for_all": settings.ml_model_type_for_all or "",
@@ -1668,7 +1672,8 @@ def api_ml_test():
             return jsonify({"error": f"No data available for {symbol}"}), 404
         
         # Подготавливаем данные с индикаторами
-        from bot.data_preparation import prepare_with_indicators, enrich_for_strategy
+        from bot.indicators import prepare_with_indicators
+        from bot.strategy import enrich_for_strategy
         
         df_ind = prepare_with_indicators(
             df_raw,
@@ -1688,7 +1693,7 @@ def api_ml_test():
         
         # Генерируем ML сигналы с заданными параметрами
         from bot.ml.strategy_ml import build_ml_signals
-        from bot.types import Action
+        from bot.strategy import Action
         
         ml_signals = build_ml_signals(
             df_ready,

@@ -836,6 +836,14 @@
                     </label>
                 </div>
                 
+                <div class="stat-item" style="margin-bottom: 15px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="enable-ict-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
+                        <span style="font-size: 1.1em; font-weight: bold; color: #ff6b6b;">ICT Silver Bullet</span>
+                        <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Inner Circle Trader - Silver Bullet)</span>
+                    </label>
+                </div>
+                
                 <div class="form-group" style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #444;">
                     <label for="strategy-priority-select" style="display: block; margin-bottom: 10px; color: #aaa; font-weight: bold;">Strategy Priority (при конфликте сигналов):</label>
                     <select id="strategy-priority-select" style="width: 100%; max-width: 400px; padding: 8px; border-radius: 4px; background-color: #333; color: #e0e0e0; border: 1px solid #555; font-size: 1em;">
@@ -845,6 +853,7 @@
                         <option value="momentum">Momentum Breakout Priority</option>
                         <option value="liquidity">Liquidity Sweep Priority</option>
                         <option value="smc">Smart Money Concepts Priority</option>
+                        <option value="ict">ICT Silver Bullet Priority</option>
                         <option value="hybrid">Hybrid (использовать любой самый свежий сигнал)</option>
                         <option value="confluence">Confluence (только если 2+ стратегии подтверждают направление)</option>
                     </select>
@@ -1944,6 +1953,7 @@
                             'momentum': '⚡ Momentum Strategy',
                             'liquidity': '💧 Liquidity Sweep',
                             'smc': '🟣 Smart Money Concepts',
+                            'ict': '🔴 ICT Silver Bullet',
                             'hybrid': '🔄 Hybrid',
                             'unknown': 'Unknown'
                         };
@@ -3019,6 +3029,7 @@
                         'momentum': '<span style="color: #00d4ff;">MOMENTUM</span>',
                         'liquidity': '<span style="color: #ffd93d;">LIQUIDITY</span>',
                         'smc': '<span style="color: #9d4edd;">SMC</span>',
+                        'ict': '<span style="color: #ff6b6b;">ICT</span>',
                         'unknown': '<span style="color: #aaa;">UNKNOWN</span>'
                     };
                     return types[type] || types['unknown'];
@@ -3931,6 +3942,7 @@
                     const momentumCheckbox = document.getElementById('enable-momentum-strategy');
                     const liquidityCheckbox = document.getElementById('enable-liquidity-strategy');
                     const smcCheckbox = document.getElementById('smcCheckbox');
+                    const ictCheckbox = document.getElementById('enable-ict-strategy');
                     
                     // Функция для конвертации значения в boolean
                     const toBool = (val) => {
@@ -3959,6 +3971,9 @@
                     }
                     if (smcCheckbox) {
                         smcCheckbox.checked = toBool(data.app.enable_smc_strategy);
+                    }
+                    if (ictCheckbox) {
+                        ictCheckbox.checked = toBool(data.app.enable_ict_strategy);
                     }
                     
                     // Устанавливаем выбранную пару
@@ -4290,6 +4305,7 @@
                 const momentumCheckbox = document.getElementById('enable-momentum-strategy');
                 const liquidityCheckbox = document.getElementById('enable-liquidity-strategy');
                 const smcCheckbox = document.getElementById('smcCheckbox');
+                const ictCheckbox = document.getElementById('enable-ict-strategy');
                 const symbolSelect = document.getElementById('symbol-select');
                 
                 // Проверяем наличие элементов с более детальным сообщением
@@ -4315,6 +4331,7 @@
                         enable_momentum_strategy: momentumCheckbox ? momentumCheckbox.checked : false,
                         enable_liquidity_sweep_strategy: liquidityCheckbox ? liquidityCheckbox.checked : false,
                         enable_smc_strategy: smcCheckbox ? smcCheckbox.checked : false,
+                        enable_ict_strategy: ictCheckbox ? ictCheckbox.checked : false,
                         strategy_priority: selectedPriority
                     }
                 };
@@ -4339,6 +4356,7 @@
                         'momentum': 'Momentum Breakout Priority',
                         'liquidity': 'Liquidity Sweep Priority',
                         'smc': 'Smart Money Concepts Priority',
+                        'ict': 'ICT Silver Bullet Priority',
                         'hybrid': 'Hybrid (Latest Signal)',
                         'confluence': 'Confluence (Double Confirmation)'
                     };
@@ -4350,6 +4368,8 @@
                     if (liquidityCheckbox && liquidityCheckbox.checked) enabledStrategies.push('Liquidity Sweep');
                     const smcCheckbox = document.getElementById('smcCheckbox');
                     if (smcCheckbox && smcCheckbox.checked) enabledStrategies.push('Smart Money Concepts');
+                    const ictCheckbox = document.getElementById('enable-ict-strategy');
+                    if (ictCheckbox && ictCheckbox.checked) enabledStrategies.push('ICT Silver Bullet');
                     
                     alert('✅ Settings saved successfully!\n\n' +
                           `Enabled Strategies: ${enabledStrategies.length > 0 ? enabledStrategies.join(', ') : 'None'}\n` +
@@ -4377,6 +4397,10 @@
                         const smcCheckbox = document.getElementById('smcCheckbox');
                         if (smcCheckbox && result.settings.enable_smc_strategy !== undefined) {
                             smcCheckbox.checked = result.settings.enable_smc_strategy;
+                        }
+                        const ictCheckbox = document.getElementById('enable-ict-strategy');
+                        if (ictCheckbox && result.settings.enable_ict_strategy !== undefined) {
+                            ictCheckbox.checked = result.settings.enable_ict_strategy;
                         }
                         // Обновляем приоритет стратегии
                         if (strategyPrioritySelect && result.settings.strategy_priority) {
