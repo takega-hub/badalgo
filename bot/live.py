@@ -987,9 +987,10 @@ def _ensure_tp_sl_set(
                 print(f"[live] 🚨 CRITICAL: ML SL percentage ({sl_pct*100:.4f}%) still too large after adjustment, forcing to {max_sl_pct_from_margin*100:.0f}% from margin ({max_sl_pct_from_price*100:.2f}% from price)")
                 sl_pct = max_sl_pct_from_price
             
-            print(f"[live] 📊 ML TP/SL calculation: margin_tp={tp_pct_margin}%, margin_sl={sl_pct_margin}%, leverage={settings.leverage}")
-            print(f"[live]   → price_tp={tp_pct*100:.2f}%, price_sl={sl_pct*100:.2f}%")
-            print(f"[live]   → SL: {sl_pct_margin}% from margin = {sl_pct*100:.2f}% from price")
+            # Убрали детальное логирование TP/SL - слишком много сообщений
+            # print(f"[live] 📊 ML TP/SL calculation: margin_tp={tp_pct_margin}%, margin_sl={sl_pct_margin}%, leverage={settings.leverage}")
+            # print(f"[live]   → price_tp={tp_pct*100:.2f}%, price_sl={sl_pct*100:.2f}%")
+            # print(f"[live]   → SL: {sl_pct_margin}% from margin = {sl_pct*100:.2f}% from price")
             
             if position_bias == Bias.LONG:
                 base_tp = avg_price * (1 + tp_pct)
@@ -998,7 +999,8 @@ def _ensure_tp_sl_set(
                 base_tp = avg_price * (1 - tp_pct)
                 base_sl = avg_price * (1 + sl_pct)
             
-            print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
+            # Убрали детальное логирование TP/SL - слишком много сообщений
+            # print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
             
             strategy_name = "ML"
         else:
@@ -1039,7 +1041,8 @@ def _ensure_tp_sl_set(
                 base_tp = avg_price * (1 - tp_pct_from_price)
                 base_sl = avg_price * (1 + sl_pct_from_price)
             
-            print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
+            # Убрали детальное логирование TP/SL - слишком много сообщений
+            # print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
             
             strategy_name = "TREND/FLAT"
         
@@ -2661,14 +2664,16 @@ def _sync_closed_positions_from_bybit(
                 continue
         
         if synced_trades:
+            # Убрали избыточное логирование синхронизации - слишком много сообщений
             # Подсчитываем сколько позиций с неизвестной стратегией
-            unknown_count = sum(1 for trade in synced_trades if trade.get("strategy_type") == "unknown")
-            if unknown_count > 0 and unknown_count < len(synced_trades):
-                print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit ({unknown_count} with unknown strategy)")
-            elif unknown_count == len(synced_trades) and len(synced_trades) > 0:
-                print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit (all with unknown strategy - no signal history found)")
-            else:
-                print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit")
+            # unknown_count = sum(1 for trade in synced_trades if trade.get("strategy_type") == "unknown")
+            # if unknown_count > 0 and unknown_count < len(synced_trades):
+            #     print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit ({unknown_count} with unknown strategy)")
+            # elif unknown_count == len(synced_trades) and len(synced_trades) > 0:
+            #     print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit (all with unknown strategy - no signal history found)")
+            # else:
+            #     print(f"[live] ✅ Synced {len(synced_trades)} closed positions from Bybit")
+            pass  # Убрали логирование, но оставили структуру
         
         return synced_trades
     
@@ -2790,8 +2795,9 @@ def run_live_from_api(
     try:
         sync_start = datetime.now(timezone.utc) - timedelta(days=7)
         synced = _sync_closed_positions_from_bybit(client, symbol, sync_start)
-        if len(synced) > 0:
-            print(f"[live] [{symbol}] ✅ Synced {len(synced)} closed positions from Bybit on startup (last 7 days)")
+        # Убрали избыточное логирование - слишком много сообщений при старте
+        # if len(synced) > 0:
+        #     print(f"[live] [{symbol}] ✅ Synced {len(synced)} closed positions from Bybit on startup (last 7 days)")
     except Exception as e:
         # Подавляем ошибки о превышении лимита, если они все еще возникают
         if "cannot exceed 7 days" not in str(e):
