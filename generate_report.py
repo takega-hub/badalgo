@@ -191,6 +191,7 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                 prev_ema_slow = ema_slow if ema_slow is not None else prev_ema_slow
         elif strategy_name == "ml":
             # Находим модель для символа
+            print(f"[test_strategy_silent] 🔍 ML: Searching for model for {symbol}...", flush=True)
             model_path = None
             model_dir = Path(__file__).parent / "ml_models"
             model_type_preference = getattr(settings, 'ml_model_type_for_all', None)
@@ -215,6 +216,7 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                 if settings.ml_model_path and Path(settings.ml_model_path).exists():
                     model_path = settings.ml_model_path
                 else:
+                    print(f"[test_strategy_silent] ❌ ML: Model not found for {symbol}", flush=True)
                     return StrategyResult(
                         strategy=strategy_name,
                         symbol=symbol,
@@ -233,16 +235,99 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                         error="ML модель не найдена"
                     )
             
-            signals = build_ml_signals(
-                df,
-                model_path,
-                confidence_threshold=settings.ml_confidence_threshold,
-                min_signal_strength=settings.ml_min_signal_strength,
-                stability_filter=settings.ml_stability_filter,
-                leverage=settings.leverage,
-                target_profit_pct_margin=getattr(settings, 'ml_target_profit_pct_margin', 25.0),
-                max_loss_pct_margin=getattr(settings, 'ml_max_loss_pct_margin', 10.0),
-            )
+            print(f"[test_strategy_silent] 🤖 ML: Loading model from {model_path}...", flush=True)
+            
+            try:
+                import signal
+                import threading
+                
+                # Функция для генерации сигналов с таймаутом
+                signals_result = [None]
+                signals_error = [None]
+                
+                def generate_signals():
+                    try:
+                        signals_result[0] = build_ml_signals(
+                            df,
+                            model_path,
+                            confidence_threshold=settings.ml_confidence_threshold,
+                            min_signal_strength=settings.ml_min_signal_strength,
+                            stability_filter=settings.ml_stability_filter,
+                            leverage=settings.leverage,
+                            target_profit_pct_margin=getattr(settings, 'ml_target_profit_pct_margin', 25.0),
+                            max_loss_pct_margin=getattr(settings, 'ml_max_loss_pct_margin', 10.0),
+                        )
+                    except Exception as e:
+                        signals_error[0] = str(e)
+                
+                # Запускаем в отдельном потоке с таймаутом
+                thread = threading.Thread(target=generate_signals, daemon=True)
+                thread.start()
+                thread.join(timeout=300)  # 5 минут таймаут
+                
+                if thread.is_alive():
+                    print(f"[test_strategy_silent] ⚠️ ML: Timeout (5 min) for {symbol}, returning error", flush=True)
+                    return StrategyResult(
+                        strategy=strategy_name,
+                        symbol=symbol,
+                        total_trades=0,
+                        profitable=0,
+                        losing=0,
+                        win_rate=0.0,
+                        total_pnl=0.0,
+                        avg_pnl=0.0,
+                        avg_win=0.0,
+                        avg_loss=0.0,
+                        max_win=0.0,
+                        max_loss=0.0,
+                        profit_factor=0.0,
+                        signals_count=0,
+                        error="ML стратегия превысила таймаут (5 минут)"
+                    )
+                
+                if signals_error[0]:
+                    print(f"[test_strategy_silent] ❌ ML: Error generating signals: {signals_error[0]}", flush=True)
+                    return StrategyResult(
+                        strategy=strategy_name,
+                        symbol=symbol,
+                        total_trades=0,
+                        profitable=0,
+                        losing=0,
+                        win_rate=0.0,
+                        total_pnl=0.0,
+                        avg_pnl=0.0,
+                        avg_win=0.0,
+                        avg_loss=0.0,
+                        max_win=0.0,
+                        max_loss=0.0,
+                        profit_factor=0.0,
+                        signals_count=0,
+                        error=f"Ошибка ML стратегии: {signals_error[0]}"
+                    )
+                
+                signals = signals_result[0]
+                print(f"[test_strategy_silent] ✅ ML: Generated {len(signals)} signals for {symbol}", flush=True)
+            except Exception as e:
+                print(f"[test_strategy_silent] ❌ ML: Exception: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                return StrategyResult(
+                    strategy=strategy_name,
+                    symbol=symbol,
+                    total_trades=0,
+                    profitable=0,
+                    losing=0,
+                    win_rate=0.0,
+                    total_pnl=0.0,
+                    avg_pnl=0.0,
+                    avg_win=0.0,
+                    avg_loss=0.0,
+                    max_win=0.0,
+                    max_loss=0.0,
+                    profit_factor=0.0,
+                    signals_count=0,
+                    error=f"Исключение при тестировании ML: {str(e)}"
+                )
         elif strategy_name == "liquidity":
             # LIQUIDITY стратегия использует build_signals с use_liquidity=True
             signals = build_signals(df, settings.strategy, use_liquidity=True)
@@ -872,13 +957,22 @@ def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl:
             if progress_callback:
                 progress_callback(current_test, total_tests, f"{strategy.upper()} на {symbol}")
             
+            # Для ML стратегии добавляем дополнительное логирование
+            if strategy == "ml":
+                print(f"\n[optimize] ⏳ ML стратегия может занять больше времени...", flush=True)
+            
             result = test_strategy_silent(strategy, symbol, days)
             results.append(result)
+            
             if result.error:
-                print(f"❌ Ошибка: {result.error}")
+                print(f"❌ Ошибка: {result.error}", flush=True)
             else:
                 status = "✅" if result.total_pnl > min_pnl and result.win_rate >= min_win_rate else "⚠️"
-                print(f"{status} {result.total_trades} сделок, PnL: {result.total_pnl:+.2f} USDT, WR: {result.win_rate:.1f}%")
+                print(f"{status} {result.total_trades} сделок, PnL: {result.total_pnl:+.2f} USDT, WR: {result.win_rate:.1f}%", flush=True)
+            
+            # Для ML стратегии добавляем сообщение о завершении
+            if strategy == "ml":
+                print(f"[optimize] ✅ ML стратегия завершена для {symbol}", flush=True)
     
     print("\n" + "=" * 100)
     print("📊 АНАЛИЗ РЕЗУЛЬТАТОВ")
