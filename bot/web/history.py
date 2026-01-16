@@ -365,6 +365,30 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
         id_string = f"{ts_str_for_id}_{action}_{reason}_{price_normalized:.4f}"
         signal_id = hashlib.md5(id_string.encode()).hexdigest()[:16]
     
+    # Если strategy_type не указан или "unknown", пытаемся определить по префиксу reason
+    if strategy_type == "unknown" or not strategy_type:
+        reason_lower = reason.lower()
+        if reason_lower.startswith("ml_"):
+            strategy_type = "ml"
+        elif reason_lower.startswith("smc_"):
+            strategy_type = "smc"
+        elif reason_lower.startswith("trend_"):
+            strategy_type = "trend"
+        elif reason_lower.startswith("range_"):
+            strategy_type = "flat"
+        elif reason_lower.startswith("momentum_"):
+            strategy_type = "momentum"
+        elif reason_lower.startswith("ict_"):
+            strategy_type = "ict"
+        elif reason_lower.startswith("liquidation_hunter_"):
+            strategy_type = "liquidation_hunter"
+        elif reason_lower.startswith("zscore_"):
+            strategy_type = "zscore"
+        elif reason_lower.startswith("vbo_"):
+            strategy_type = "vbo"
+        else:
+            strategy_type = "unknown"  # Оставляем unknown, если не удалось определить
+    
     signal = {
         "timestamp": ts_str,
         "action": action,
@@ -629,6 +653,12 @@ def get_signals(limit: int = 100, symbol_filter: Optional[str] = None, include_s
                 sig["strategy_type"] = "smc"
             elif reason.startswith("ict_"):
                 sig["strategy_type"] = "ict"
+            elif reason.startswith("liquidation_hunter_"):
+                sig["strategy_type"] = "liquidation_hunter"
+            elif reason.startswith("zscore_"):
+                sig["strategy_type"] = "zscore"
+            elif reason.startswith("vbo_"):
+                sig["strategy_type"] = "vbo"
     
     # Сортируем по timestamp по убыванию (от новых к старым)
     signals_sorted = sorted(unique_signals, key=get_timestamp, reverse=True)

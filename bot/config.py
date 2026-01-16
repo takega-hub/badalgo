@@ -184,8 +184,11 @@ class AppSettings:
     enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности) - ОТКЛЮЧЕНА: не дает результатов
     enable_smc_strategy: bool = False  # Smart Money Concepts стратегия
     enable_ict_strategy: bool = False  # ICT Silver Bullet стратегия
+    enable_liquidation_hunter_strategy: bool = False  # Liquidation Hunter стратегия
+    enable_zscore_strategy: bool = False  # Z-Score стратегия
+    enable_vbo_strategy: bool = False  # VBO (Volatility Breakout) стратегия
     # Приоритетная стратегия при конфликте сигналов
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "hybrid", "confluence" (liquidity отключена)
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence" (liquidity отключена)
     
     def __post_init__(self):
         """Инициализация после создания dataclass"""

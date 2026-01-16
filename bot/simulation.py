@@ -51,16 +51,23 @@ class Simulator:
     def _close(self, price: float, reason: str, ts: pd.Timestamp):
         if not self.position:
             return
+        # Сохраняем данные позиции перед закрытием
+        position_side = self.position.side
+        position_entry_time = self.position.entry_time
+        position_avg_price = self.position.avg_price
+        position_size_usd = self.position.size_usd
+        position_entry_reason = self.position.entry_reason
+        
         pnl = self._pnl(price)
         trade = Trade(
-            entry_time=self.position.entry_time,
+            entry_time=position_entry_time,
             exit_time=ts,
-            side=self.position.side,
-            entry_price=self.position.avg_price,
+            side=position_side,
+            entry_price=position_avg_price,
             exit_price=price,
-            size_usd=self.position.size_usd,
+            size_usd=position_size_usd,
             pnl=pnl,
-            entry_reason=self.position.entry_reason,
+            entry_reason=position_entry_reason,
             exit_reason=reason,
         )
         self.trades.append(trade)
@@ -105,6 +112,9 @@ class Simulator:
         if self.position:
             last_idx = candles.index[-1]
             last_price = candles["close"].iloc[-1]
+            # Убеждаемся, что last_idx - это Timestamp
+            if not isinstance(last_idx, pd.Timestamp):
+                last_idx = pd.Timestamp(last_idx)
             self._close(last_price, "end_of_backtest", last_idx)
 
         total_pnl = sum(t.pnl for t in self.trades)

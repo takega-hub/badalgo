@@ -211,6 +211,10 @@ def _save_settings_to_env(settings: AppSettings):
             'ENABLE_MOMENTUM_STRATEGY', 
             'ENABLE_LIQUIDITY_SWEEP_STRATEGY',
             'ENABLE_SMC_STRATEGY',
+            'ENABLE_ICT_STRATEGY',
+            'ENABLE_LIQUIDATION_HUNTER_STRATEGY',
+            'ENABLE_ZSCORE_STRATEGY',
+            'ENABLE_VBO_STRATEGY',
             'TRADING_SYMBOL', 'STRATEGY_PRIORITY',  # Приоритет стратегии
             'ML_CONFIDENCE_THRESHOLD', 'ML_MIN_SIGNAL_STRENGTH', 'ML_STABILITY_FILTER',
             'ML_MODEL_TYPE_FOR_ALL',  # Тип модели для всех пар
@@ -247,6 +251,9 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY'] = str(settings.enable_liquidity_sweep_strategy).lower()
         env_dict['ENABLE_SMC_STRATEGY'] = str(settings.enable_smc_strategy).lower()
         env_dict['ENABLE_ICT_STRATEGY'] = str(settings.enable_ict_strategy).lower()
+        env_dict['ENABLE_LIQUIDATION_HUNTER_STRATEGY'] = str(settings.enable_liquidation_hunter_strategy).lower()
+        env_dict['ENABLE_ZSCORE_STRATEGY'] = str(settings.enable_zscore_strategy).lower()
+        env_dict['ENABLE_VBO_STRATEGY'] = str(settings.enable_vbo_strategy).lower()
         env_dict['STRATEGY_PRIORITY'] = str(settings.strategy_priority).lower()
         env_dict['TRADING_SYMBOL'] = str(settings.symbol)
         
@@ -331,6 +338,9 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ENABLE_LIQUIDITY_SWEEP_STRATEGY={env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY']}\n")
             f.write(f"ENABLE_SMC_STRATEGY={env_dict['ENABLE_SMC_STRATEGY']}\n")
             f.write(f"ENABLE_ICT_STRATEGY={env_dict['ENABLE_ICT_STRATEGY']}\n")
+            f.write(f"ENABLE_LIQUIDATION_HUNTER_STRATEGY={env_dict['ENABLE_LIQUIDATION_HUNTER_STRATEGY']}\n")
+            f.write(f"ENABLE_ZSCORE_STRATEGY={env_dict['ENABLE_ZSCORE_STRATEGY']}\n")
+            f.write(f"ENABLE_VBO_STRATEGY={env_dict['ENABLE_VBO_STRATEGY']}\n")
             f.write(f"STRATEGY_PRIORITY={env_dict['STRATEGY_PRIORITY']}\n")
             f.write(f"TRADING_SYMBOL={env_dict['TRADING_SYMBOL']}\n")
             
@@ -1135,6 +1145,9 @@ def api_get_settings():
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
                 "enable_ict_strategy": settings.enable_ict_strategy,
+                "enable_liquidation_hunter_strategy": settings.enable_liquidation_hunter_strategy,
+                "enable_zscore_strategy": settings.enable_zscore_strategy,
+                "enable_vbo_strategy": settings.enable_vbo_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
                 "ml_model_type_for_all": settings.ml_model_type_for_all or "",
@@ -1218,7 +1231,9 @@ def api_update_settings():
                     # Специальная обработка для boolean значений
                     if key in ("enable_trend_strategy", "enable_flat_strategy", "enable_ml_strategy", 
                                "enable_momentum_strategy", 
-                               "enable_liquidity_sweep_strategy", "enable_smc_strategy", "enable_ict_strategy", "ml_stability_filter"):
+                               "enable_liquidity_sweep_strategy", "enable_smc_strategy", "enable_ict_strategy",
+                               "enable_liquidation_hunter_strategy", "enable_zscore_strategy", "enable_vbo_strategy",
+                               "ml_stability_filter"):
                         setattr(settings, key, bool(value))
                     elif key == "symbol":
                         # Проверяем доступные пары
@@ -1354,6 +1369,9 @@ def api_update_settings():
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
                 "enable_ict_strategy": settings.enable_ict_strategy,
+                "enable_liquidation_hunter_strategy": settings.enable_liquidation_hunter_strategy,
+                "enable_zscore_strategy": settings.enable_zscore_strategy,
+                "enable_vbo_strategy": settings.enable_vbo_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
                 "ml_model_type_for_all": settings.ml_model_type_for_all or "",

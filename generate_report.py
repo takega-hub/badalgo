@@ -21,6 +21,9 @@ from bot.strategy import enrich_for_strategy, generate_trend_signal, generate_ra
 from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
 from bot.ml.strategy_ml import build_ml_signals
+from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
+from bot.zscore_strategy import build_zscore_signals
+from bot.vbo_strategy import build_vbo_signals
 from bot.simulation import Simulator
 
 
@@ -243,6 +246,12 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
         elif strategy_name == "liquidity":
             # LIQUIDITY стратегия использует build_signals с use_liquidity=True
             signals = build_signals(df, settings.strategy, use_liquidity=True)
+        elif strategy_name == "liquidation_hunter":
+            signals = build_liquidation_hunter_signals(df, settings.strategy, symbol=symbol)
+        elif strategy_name == "zscore":
+            signals = build_zscore_signals(df, settings.strategy, symbol=symbol)
+        elif strategy_name == "vbo":
+            signals = build_vbo_signals(df, settings.strategy, symbol=symbol)
         else:
             return StrategyResult(
                 strategy=strategy_name,
@@ -295,6 +304,8 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
             low = row.get('low', current_price)
             
             if simulator.position:
+                # Сохраняем данные позиции перед проверками (на случай закрытия)
+                position_side = simulator.position.side
                 entry_price = simulator.position.avg_price
                 entry_reason = simulator.position.entry_reason
                 
@@ -312,18 +323,31 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                         sl_pct = settings.risk.stop_loss_pct
                         tp_pct = settings.risk.take_profit_pct
                     
-                    if simulator.position.side.value == "long":
+                    if position_side.value == "long":
                         tp_price = entry_price * (1 + tp_pct)
                         sl_price = entry_price * (1 - sl_pct)
                     else:
                         tp_price = entry_price * (1 - tp_pct)
                         sl_price = entry_price * (1 + sl_pct)
                 
-                if simulator.position.side.value == "long":
+                # Проверяем, что позиция все еще открыта после расчетов
+                if not simulator.position:
+                    if timestamp in signal_dict:
+                        sig = signal_dict[timestamp]
+                        simulator.on_signal(sig)
+                    continue
+                
+                if position_side.value == "long":
                     # TP: проверяем high свечи
                     if tp_price and high >= tp_price:
                         simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
                         if timestamp in signal_dict:
+                            continue
+                        # Позиция закрыта, проверяем наличие перед продолжением
+                        if not simulator.position:
+                            if timestamp in signal_dict:
+                                sig = signal_dict[timestamp]
+                                simulator.on_signal(sig)
                             continue
                     # SL: проверяем low свечи и current_price (для учета gap)
                     if sl_price:
@@ -332,14 +356,24 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                             simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
                             if timestamp in signal_dict:
                                 continue
+                            if not simulator.position:
+                                if timestamp in signal_dict:
+                                    sig = signal_dict[timestamp]
+                                    simulator.on_signal(sig)
+                                continue
                         # Если current_price уже за SL (gap), закрываем немедленно
                         elif current_price <= sl_price:
                             simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
                             if timestamp in signal_dict:
                                 continue
+                            if not simulator.position:
+                                if timestamp in signal_dict:
+                                    sig = signal_dict[timestamp]
+                                    simulator.on_signal(sig)
+                                continue
                     # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку (только для не-ICT и не-ML стратегий)
                     # Momentum использует свой trailing stop на основе EMA50, поэтому пропускаем стандартный trailing stop
-                    if strategy_name not in ("ict", "ml", "momentum"):
+                    if strategy_name not in ("ict", "ml", "momentum") and simulator.position:
                         profit_pct = (current_price - entry_price) / entry_price
                         if profit_pct > 0.005:
                             breakeven_sl = entry_price * 1.001
@@ -347,11 +381,21 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                                 simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
                                 if timestamp in signal_dict:
                                     continue
+                                if not simulator.position:
+                                    if timestamp in signal_dict:
+                                        sig = signal_dict[timestamp]
+                                        simulator.on_signal(sig)
+                                    continue
                 else:  # SHORT
                     # TP: проверяем low свечи
                     if tp_price and low <= tp_price:
                         simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
                         if timestamp in signal_dict:
+                            continue
+                        if not simulator.position:
+                            if timestamp in signal_dict:
+                                sig = signal_dict[timestamp]
+                                simulator.on_signal(sig)
                             continue
                     # SL: проверяем high свечи и current_price (для учета gap)
                     if sl_price:
@@ -360,30 +404,36 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                             simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
                             if timestamp in signal_dict:
                                 continue
+                            if not simulator.position:
+                                if timestamp in signal_dict:
+                                    sig = signal_dict[timestamp]
+                                    simulator.on_signal(sig)
+                                continue
                         # Если current_price уже за SL (gap), закрываем немедленно
                         elif current_price >= sl_price:
                             simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
                             if timestamp in signal_dict:
                                 continue
+                            if not simulator.position:
+                                if timestamp in signal_dict:
+                                    sig = signal_dict[timestamp]
+                                    simulator.on_signal(sig)
+                                continue
                     # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку (только для не-ICT и не-ML стратегий)
                     # Momentum использует свой trailing stop на основе EMA50, поэтому пропускаем стандартный trailing stop
-                    if strategy_name not in ("ict", "ml", "momentum"):
-                        if simulator.position.side.value == "long":
-                            profit_pct = (current_price - entry_price) / entry_price
-                            if profit_pct > 0.005:
-                                breakeven_sl = entry_price * 1.001
-                                if low <= breakeven_sl:
-                                    simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
+                    if strategy_name not in ("ict", "ml", "momentum") and simulator.position:
+                        profit_pct = (entry_price - current_price) / entry_price
+                        if profit_pct > 0.005:
+                            breakeven_sl = entry_price * 0.999
+                            if high >= breakeven_sl:
+                                simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
+                                if timestamp in signal_dict:
+                                    continue
+                                if not simulator.position:
                                     if timestamp in signal_dict:
-                                        continue
-                        else:  # SHORT
-                            profit_pct = (entry_price - current_price) / entry_price
-                            if profit_pct > 0.005:
-                                breakeven_sl = entry_price * 0.999
-                                if high >= breakeven_sl:
-                                    simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
-                                    if timestamp in signal_dict:
-                                        continue
+                                        sig = signal_dict[timestamp]
+                                        simulator.on_signal(sig)
+                                    continue
             
             if timestamp in signal_dict:
                 sig = signal_dict[timestamp]
@@ -423,18 +473,25 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                             tp_pct = float(tp_match.group(1)) / 100.0
                             sl_pct = float(sl_match.group(1)) / 100.0
                             # ВАЖНО: Используем реальную цену входа позиции, а не цену сигнала
+                            # Сохраняем данные позиции перед использованием
+                            if not simulator.position:
+                                continue
                             entry_price = simulator.position.avg_price
+                            position_side_ml = simulator.position.side
+                            entry_reason_ml = simulator.position.entry_reason
                             # Вычисляем абсолютные цены TP/SL
-                            if simulator.position.side.value == "long":
+                            if position_side_ml.value == "long":
                                 tp_price = entry_price * (1 + tp_pct)
                                 sl_price = entry_price * (1 - sl_pct)
                             else:  # SHORT
                                 tp_price = entry_price * (1 - tp_pct)
                                 sl_price = entry_price * (1 + sl_pct)
-                            position_tp_sl[simulator.position.entry_reason] = {"tp": tp_price, "sl": sl_price}
+                            position_tp_sl[entry_reason_ml] = {"tp": tp_price, "sl": sl_price}
                     
                     # ВАЖНО: Если позиция была только что открыта на этой свече, проверяем SL сразу
                     if not was_position_open and simulator.position:
+                        # Сохраняем данные позиции перед использованием
+                        position_side_new = simulator.position.side
                         entry_price = simulator.position.avg_price
                         entry_reason = simulator.position.entry_reason
                         
@@ -452,6 +509,10 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                             except:
                                 pass  # Если не удалось найти индекс, пропускаем проверку
                         
+                        # Проверяем, что позиция все еще открыта
+                        if not simulator.position:
+                            continue
+                        
                         # Определяем TP/SL для новой позиции
                         tp_price = None
                         sl_price = None
@@ -467,7 +528,7 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                                 sl_pct = settings.risk.stop_loss_pct
                                 tp_pct = settings.risk.take_profit_pct
                             
-                            if simulator.position.side.value == "long":
+                            if position_side_new.value == "long":
                                 tp_price = entry_price * (1 + tp_pct)
                                 sl_price = entry_price * (1 - sl_pct)
                             else:
@@ -475,36 +536,47 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                                 sl_price = entry_price * (1 + sl_pct)
                         
                         # Проверяем SL/TP сразу на этой свече
-                        if simulator.position.side.value == "long":
+                        # Проверяем, что позиция все еще открыта
+                        if not simulator.position:
+                            continue
+                        if position_side_new.value == "long":
                             # Если цена входа уже за SL, закрываем сразу
                             if sl_price and entry_price <= sl_price:
                                 simulator._close(entry_price, f"{strategy_name}_sl_hit_on_entry", timestamp)
-                                continue
+                                if not simulator.position:
+                                    continue
                             if tp_price and high >= tp_price:
                                 simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                                continue
+                                if not simulator.position:
+                                    continue
                             if sl_price:
                                 if low <= sl_price:
                                     simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                                    continue
+                                    if not simulator.position:
+                                        continue
                                 elif current_price <= sl_price:
                                     simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
-                                    continue
+                                    if not simulator.position:
+                                        continue
                         else:  # SHORT
                             # Если цена входа уже за SL, закрываем сразу
                             if sl_price and entry_price >= sl_price:
                                 simulator._close(entry_price, f"{strategy_name}_sl_hit_on_entry", timestamp)
-                                continue
+                                if not simulator.position:
+                                    continue
                             if tp_price and low <= tp_price:
                                 simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                                continue
+                                if not simulator.position:
+                                    continue
                             if sl_price:
                                 if high >= sl_price:
                                     simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                                    continue
+                                    if not simulator.position:
+                                        continue
                                 elif current_price >= sl_price:
                                     simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
-                                    continue
+                                    if not simulator.position:
+                                        continue
         
         # Закрываем последнюю позицию, если она открыта
         if simulator.position:
@@ -513,6 +585,8 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
             last_high = last_row.get('high', last_price)
             last_low = last_row.get('low', last_price)
             last_timestamp = df.index[-1]
+            # Сохраняем данные позиции перед использованием
+            position_side_end = simulator.position.side
             entry_price = simulator.position.avg_price
             entry_reason = simulator.position.entry_reason
             
@@ -531,7 +605,7 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                     sl_pct = settings.risk.stop_loss_pct
                     tp_pct = settings.risk.take_profit_pct
                 
-                if simulator.position.side.value == "long":
+                if position_side_end.value == "long":
                     tp_price = entry_price * (1 + tp_pct)
                     sl_price = entry_price * (1 - sl_pct)
                 else:
@@ -539,7 +613,8 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                     sl_price = entry_price * (1 + sl_pct)
             
             # Проверяем TP/SL перед закрытием по end_of_data
-            if simulator.position.side.value == "long":
+            # Используем сохраненный position_side_end
+            if position_side_end.value == "long":
                 if tp_price and last_high >= tp_price:
                     simulator._close(tp_price, f"{strategy_name}_tp_hit", last_timestamp)
                 elif sl_price and last_low <= sl_price:
@@ -757,7 +832,7 @@ def generate_report(strategies: List[str], symbols: List[str], days: int = 30, o
 def main():
     parser = argparse.ArgumentParser(description="Генерация сводного отчета по всем стратегиям")
     parser.add_argument("--strategies", type=str, nargs="+", 
-                       default=["trend", "flat", "momentum", "smc", "ict", "ml"],  # liquidity отключена - не дает результатов
+                       default=["trend", "flat", "momentum", "smc", "ict", "ml", "liquidation_hunter", "zscore", "vbo"],  # liquidity отключена - не дает результатов
                        help="Список стратегий для тестирования")
     parser.add_argument("--symbols", type=str, nargs="+",
                        default=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
