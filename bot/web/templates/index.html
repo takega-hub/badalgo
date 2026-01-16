@@ -2091,6 +2091,15 @@
                             formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|liquidation_hunter_|zscore_|vbo_)/, '');
                             // Заменяем подчеркивания на пробелы
                             formattedReason = formattedReason.replace(/_/g, ' ');
+                            // Улучшаем читаемость специфичных паттернов
+                            formattedReason = formattedReason.replace(/spike (\d+\.\d+)x/g, 'Spike $1x');
+                            formattedReason = formattedReason.replace(/long|short/gi, function(match) {
+                                return match.charAt(0).toUpperCase() + match.slice(1);
+                            });
+                            formattedReason = formattedReason.replace(/fvg|reteest|sl|tp/gi, function(match) {
+                                const map = { 'fvg': 'FVG', 'reteest': 'Retest', 'sl': 'SL', 'tp': 'TP' };
+                                return map[match.toLowerCase()] || match;
+                            });
                             // Делаем первую букву заглавной
                             formattedReason = formattedReason.charAt(0).toUpperCase() + formattedReason.slice(1);
                             
