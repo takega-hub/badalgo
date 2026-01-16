@@ -2773,10 +2773,12 @@ def run_live_from_api(
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
     print(f"[live] [{symbol}] ========================================")
     
-    # Синхронизируем закрытые позиции при старте
-    last_sync_time = datetime.now(timezone.utc) - timedelta(hours=24)
+    # Синхронизируем закрытые позиции при старте (за последние 30 дней для полной истории)
+    last_sync_time = datetime.now(timezone.utc) - timedelta(days=30)
     try:
-        _sync_closed_positions_from_bybit(client, symbol, last_sync_time)
+        synced_count = len(_sync_closed_positions_from_bybit(client, symbol, last_sync_time))
+        if synced_count > 0:
+            print(f"[live] [{symbol}] ✅ Synced {synced_count} closed positions from Bybit on startup")
     except Exception as e:
         print(f"[live] [{symbol}] ⚠️ Error syncing closed positions on startup: {e}")
     

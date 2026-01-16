@@ -1312,18 +1312,19 @@
                     const reason = (sig.reason || '').toLowerCase();
                     const price = sig.price ? parseFloat(sig.price).toFixed(2) : '';
                     
-                    // Краткое название стратегии
+                    // Краткое название стратегии (проверяем reason в нижнем регистре)
                     let stratName = '';
-                    if (reason.startsWith('ml_')) stratName = 'ML';
-                    else if (reason.startsWith('smc_')) stratName = 'SMC';
-                    else if (reason.startsWith('ict_')) stratName = 'ICT';
-                    else if (reason.startsWith('trend_')) stratName = 'TREND';
-                    else if (reason.startsWith('range_')) stratName = 'FLAT';
-                    else if (reason.startsWith('momentum_')) stratName = 'MOM';
-                    else if (reason.startsWith('liquidity_')) stratName = 'LIQ';
-                    else if (reason.startsWith('liquidation_hunter_')) stratName = 'LIQ-H';
-                    else if (reason.startsWith('zscore_')) stratName = 'Z-SCORE';
-                    else if (reason.startsWith('vbo_')) stratName = 'VBO';
+                    const reasonLower = reason.toLowerCase();
+                    if (reasonLower.startsWith('ml_')) stratName = 'ML';
+                    else if (reasonLower.startsWith('smc_')) stratName = 'SMC';
+                    else if (reasonLower.startsWith('ict_')) stratName = 'ICT';
+                    else if (reasonLower.startsWith('trend_')) stratName = 'TREND';
+                    else if (reasonLower.startsWith('range_') || reasonLower.startsWith('flat_')) stratName = 'FLAT';
+                    else if (reasonLower.startsWith('momentum_')) stratName = 'MOM';
+                    else if (reasonLower.startsWith('liquidity_')) stratName = 'LIQ';
+                    else if (reasonLower.startsWith('liquidation_hunter_')) stratName = 'LIQ-H';
+                    else if (reasonLower.startsWith('zscore_')) stratName = 'Z-SCORE';
+                    else if (reasonLower.startsWith('vbo_')) stratName = 'VBO';
                     else stratName = 'SIG';
                     
                     // Формат: "ML LONG $95000"
@@ -1978,6 +1979,9 @@
                             'momentum': '⚡ Momentum Strategy',
                             'smc': '🟣 Smart Money Concepts',
                             'ict': '🔴 ICT Silver Bullet',
+                            'liquidation_hunter': '🟠 Liquidation Hunter',
+                            'zscore': '🟢 Z-Score',
+                            'vbo': '🟣 VBO (Volatility Breakout)',
                             'hybrid': '🔄 Hybrid',
                             'unknown': 'Unknown'
                         };
@@ -2788,6 +2792,15 @@
                     } else if (strategyType === 'ict') {
                         strategyDisplay = 'ICT';
                         strategyColor = '#ff6b6b';
+                    } else if (strategyType === 'liquidation_hunter') {
+                        strategyDisplay = 'LIQUIDATION HUNTER';
+                        strategyColor = '#ff9500';
+                    } else if (strategyType === 'zscore') {
+                        strategyDisplay = 'Z-SCORE';
+                        strategyColor = '#00ffaa';
+                    } else if (strategyType === 'vbo') {
+                        strategyDisplay = 'VBO';
+                        strategyColor = '#ff00ff';
                     } else if (strategyType === 'hybrid') {
                         strategyDisplay = 'HYBRID';
                         strategyColor = '#00d4ff';
@@ -3053,6 +3066,9 @@
                         'momentum': '<span style="color: #00d4ff;">MOMENTUM</span>',
                         'smc': '<span style="color: #9d4edd;">SMC</span>',
                         'ict': '<span style="color: #ff6b6b;">ICT</span>',
+                        'liquidation_hunter': '<span style="color: #ff9500;">LIQUIDATION HUNTER</span>',
+                        'zscore': '<span style="color: #00ffaa;">Z-SCORE</span>',
+                        'vbo': '<span style="color: #ff00ff;">VBO</span>',
                         'unknown': '<span style="color: #aaa;">UNKNOWN</span>'
                     };
                     return types[type] || types['unknown'];
@@ -3073,10 +3089,24 @@
                 let html = '<div class="table-wrapper"><table><thead><tr><th>Time (MSK)</th><th>Pair</th><th>Strategy</th><th>Action</th><th>Reason</th><th>Price</th></tr></thead><tbody>';
                 sortedSignals.forEach(signal => {
                     const mskTime = convertToMSK(signal.timestamp);
+                    // Определяем стратегию по reason, если strategy_type не указан или "unknown"
+                    let strategyType = signal.strategy_type || 'unknown';
+                    if (strategyType === 'unknown' || !strategyType) {
+                        const reason = (signal.reason || '').toLowerCase();
+                        if (reason.startsWith('ml_')) strategyType = 'ml';
+                        else if (reason.startsWith('smc_')) strategyType = 'smc';
+                        else if (reason.startsWith('trend_')) strategyType = 'trend';
+                        else if (reason.startsWith('range_') || reason.startsWith('flat_')) strategyType = 'flat';
+                        else if (reason.startsWith('momentum_')) strategyType = 'momentum';
+                        else if (reason.startsWith('ict_')) strategyType = 'ict';
+                        else if (reason.startsWith('liquidation_hunter_')) strategyType = 'liquidation_hunter';
+                        else if (reason.startsWith('zscore_')) strategyType = 'zscore';
+                        else if (reason.startsWith('vbo_')) strategyType = 'vbo';
+                    }
                     html += `<tr>
                         <td>${mskTime}</td>
                         <td>${signal.symbol || '-'}</td>
-                        <td>${formatStrategyType(signal.strategy_type || 'unknown')}</td>
+                        <td>${formatStrategyType(strategyType)}</td>
                         <td>${formatAction(signal.action)}</td>
                         <td>${signal.reason}</td>
                         <td>$${signal.price?.toFixed(2) || '-'}</td>
@@ -4250,6 +4280,166 @@
                         <div class="stat-item">
                             <span class="stat-label">Avg Loss:</span>
                             <span class="stat-value" style="color: #ff4444">${formatNumber(smcStats.avg_loss || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Статистика для ICT стратегии
+                const ictStats = data.ict || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(255, 107, 107, 0.1) 0%, rgba(255, 107, 107, 0.05) 100%); border: 1px solid rgba(255, 107, 107, 0.3);">
+                        <h3 style="color: #ff6b6b; margin-bottom: 15px;">🔴 ICT Silver Bullet</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${ictStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(ictStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(ictStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Winning Trades:</span>
+                            <span class="stat-value" style="color: #00ff88">${ictStats.winning_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Losing Trades:</span>
+                            <span class="stat-value" style="color: #ff4444">${ictStats.losing_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(ictStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(ictStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(ictStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Win:</span>
+                            <span class="stat-value" style="color: #00ff88">${formatNumber(ictStats.avg_win || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Loss:</span>
+                            <span class="stat-value" style="color: #ff4444">${formatNumber(ictStats.avg_loss || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Статистика для Liquidation Hunter стратегии
+                const liqHunterStats = data.liquidation_hunter || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(255, 149, 0, 0.1) 0%, rgba(255, 149, 0, 0.05) 100%); border: 1px solid rgba(255, 149, 0, 0.3);">
+                        <h3 style="color: #ff9500; margin-bottom: 15px;">🟠 Liquidation Hunter</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${liqHunterStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(liqHunterStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(liqHunterStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Winning Trades:</span>
+                            <span class="stat-value" style="color: #00ff88">${liqHunterStats.winning_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Losing Trades:</span>
+                            <span class="stat-value" style="color: #ff4444">${liqHunterStats.losing_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(liqHunterStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(liqHunterStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(liqHunterStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Win:</span>
+                            <span class="stat-value" style="color: #00ff88">${formatNumber(liqHunterStats.avg_win || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Loss:</span>
+                            <span class="stat-value" style="color: #ff4444">${formatNumber(liqHunterStats.avg_loss || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Статистика для Z-Score стратегии
+                const zscoreStats = data.zscore || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(0, 255, 170, 0.1) 0%, rgba(0, 255, 170, 0.05) 100%); border: 1px solid rgba(0, 255, 170, 0.3);">
+                        <h3 style="color: #00ffaa; margin-bottom: 15px;">🟢 Z-Score</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${zscoreStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(zscoreStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(zscoreStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Winning Trades:</span>
+                            <span class="stat-value" style="color: #00ff88">${zscoreStats.winning_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Losing Trades:</span>
+                            <span class="stat-value" style="color: #ff4444">${zscoreStats.losing_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(zscoreStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(zscoreStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(zscoreStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Win:</span>
+                            <span class="stat-value" style="color: #00ff88">${formatNumber(zscoreStats.avg_win || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Loss:</span>
+                            <span class="stat-value" style="color: #ff4444">${formatNumber(zscoreStats.avg_loss || 0)} USDT</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Статистика для VBO стратегии
+                const vboStats = data.vbo || {};
+                html += `
+                    <div class="card" style="background: linear-gradient(135deg, rgba(255, 0, 255, 0.1) 0%, rgba(255, 0, 255, 0.05) 100%); border: 1px solid rgba(255, 0, 255, 0.3);">
+                        <h3 style="color: #ff00ff; margin-bottom: 15px;">🟣 VBO (Volatility Breakout)</h3>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Trades:</span>
+                            <span class="stat-value">${vboStats.total_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Win Rate:</span>
+                            <span class="stat-value" style="color: ${(vboStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(vboStats.win_rate || 0)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Winning Trades:</span>
+                            <span class="stat-value" style="color: #00ff88">${vboStats.winning_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Losing Trades:</span>
+                            <span class="stat-value" style="color: #ff4444">${vboStats.losing_trades || 0}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total PnL:</span>
+                            <span class="stat-value" style="color: ${(vboStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(vboStats.total_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg PnL:</span>
+                            <span class="stat-value">${formatNumber(vboStats.avg_pnl || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Win:</span>
+                            <span class="stat-value" style="color: #00ff88">${formatNumber(vboStats.avg_win || 0)} USDT</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg Loss:</span>
+                            <span class="stat-value" style="color: #ff4444">${formatNumber(vboStats.avg_loss || 0)} USDT</span>
                         </div>
                     </div>
                 `;

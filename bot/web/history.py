@@ -128,7 +128,12 @@ def _load_history() -> Dict[str, List]:
         try:
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 history = json.load(f)
-        except Exception:
+            trades_count = len(history.get("trades", []))
+            signals_count = len(history.get("signals", []))
+            if trades_count > 0 or signals_count > 0:
+                print(f"[history] ✅ Loaded history from {HISTORY_FILE}: {trades_count} trades, {signals_count} signals")
+        except Exception as e:
+            print(f"[history] ⚠️ Error loading history from {HISTORY_FILE}: {e}")
             return {"trades": [], "signals": []}
     else:
         # 2. Пытаемся найти legacy-файлы
@@ -491,7 +496,9 @@ def add_trade(
     if len(history["trades"]) > MAX_TRADES:
         history["trades"] = history["trades"][-MAX_TRADES:]
     
+    # Сохраняем историю в файл
     _save_history(history)
+    print(f"[history] ✅ Saved trade to history: {symbol} {side} @ {entry_price_normalized:.2f} -> {exit_price_normalized:.2f} (PnL: {pnl_normalized:.2f} USDT, Strategy: {strategy_type})")
 
 
 def get_trades(limit: int = 50, strategy_filter: Optional[str] = None, symbol_filter: Optional[str] = None) -> List[Dict[str, Any]]:

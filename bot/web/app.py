@@ -1482,6 +1482,10 @@ def api_all_strategy_stats():
         "momentum": get_strategy_stats(strategy_type="momentum"),
         "liquidity": get_strategy_stats(strategy_type="liquidity"),
         "smc": get_strategy_stats(strategy_type="smc"),
+        "ict": get_strategy_stats(strategy_type="ict"),
+        "liquidation_hunter": get_strategy_stats(strategy_type="liquidation_hunter"),
+        "zscore": get_strategy_stats(strategy_type="zscore"),
+        "vbo": get_strategy_stats(strategy_type="vbo"),
         "all": get_strategy_stats(strategy_type=None),
     }
     return jsonify(all_stats)
