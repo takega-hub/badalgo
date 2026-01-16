@@ -43,6 +43,9 @@ from bot.web.history import add_signal, add_trade, check_recent_loss_trade
 from bot.ml.strategy_ml import build_ml_signals
 from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
+from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
+from bot.zscore_strategy import build_zscore_signals
+from bot.vbo_strategy import build_vbo_signals
 
 # Импорт для обработки ошибок Bybit API
 try:
@@ -2766,7 +2769,7 @@ def run_live_from_api(
     
     print(f"[live] [{symbol}] ========================================")
     print(f"[live] [{symbol}] 🚀 Starting live trading bot for {symbol}")
-    print(f"[live] [{symbol}] 📊 Active strategies: Trend={local_settings.enable_trend_strategy}, Flat={local_settings.enable_flat_strategy}, ML={local_settings.enable_ml_strategy}, Momentum={local_settings.enable_momentum_strategy}, Liquidity={local_settings.enable_liquidity_sweep_strategy}, SMC={local_settings.enable_smc_strategy}, ICT={local_settings.enable_ict_strategy}")
+    print(f"[live] [{symbol}] 📊 Active strategies: Trend={local_settings.enable_trend_strategy}, Flat={local_settings.enable_flat_strategy}, ML={local_settings.enable_ml_strategy}, Momentum={local_settings.enable_momentum_strategy}, Liquidity={local_settings.enable_liquidity_sweep_strategy}, SMC={local_settings.enable_smc_strategy}, ICT={local_settings.enable_ict_strategy}, LiquidationHunter={local_settings.enable_liquidation_hunter_strategy}, ZScore={local_settings.enable_zscore_strategy}, VBO={local_settings.enable_vbo_strategy}")
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
     print(f"[live] [{symbol}] ========================================")
     
@@ -3454,6 +3457,141 @@ def run_live_from_api(
             else:
                 _log(f"⚠️ ICT strategy is DISABLED for {symbol}", symbol)
             
+            # Liquidation Hunter стратегия
+            if current_settings.enable_liquidation_hunter_strategy:
+                try:
+                    if len(df_ready) >= 200:
+                        _log(f"🔍 Liquidation Hunter: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        liquidation_hunter_signals = build_liquidation_hunter_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        liquidation_hunter_generated = [s for s in liquidation_hunter_signals if s.action in (Action.LONG, Action.SHORT)]
+                        _log(f"📊 LIQUIDATION_HUNTER strategy: generated {len(liquidation_hunter_signals)} total, {len(liquidation_hunter_generated)} actionable (LONG/SHORT)", symbol)
+                        
+                        if liquidation_hunter_generated:
+                            for i, sig in enumerate(liquidation_hunter_generated[:3]):
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                        
+                        for sig in liquidation_hunter_generated:
+                            all_signals.append(sig)
+                            # Сохраняем сигнал в историю
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="liquidation_hunter",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save Liquidation Hunter signal to history: {e}", symbol)
+                    else:
+                        _log(f"⚠️ Liquidation Hunter strategy requires more history. Current: {len(df_ready)} candles (need >= 200)", symbol)
+                except Exception as e:
+                    _log(f"❌ Error in Liquidation Hunter strategy: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                _log(f"⚠️ Liquidation Hunter strategy is DISABLED for {symbol}", symbol)
+            
+            # Z-Score стратегия
+            if current_settings.enable_zscore_strategy:
+                try:
+                    if len(df_ready) >= 20:
+                        _log(f"🔍 Z-Score: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        zscore_generated = [s for s in zscore_signals if s.action in (Action.LONG, Action.SHORT)]
+                        _log(f"📊 ZSCORE strategy: generated {len(zscore_signals)} total, {len(zscore_generated)} actionable (LONG/SHORT)", symbol)
+                        
+                        if zscore_generated:
+                            for i, sig in enumerate(zscore_generated[:3]):
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                        
+                        for sig in zscore_generated:
+                            all_signals.append(sig)
+                            # Сохраняем сигнал в историю
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="zscore",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save Z-Score signal to history: {e}", symbol)
+                    else:
+                        _log(f"⚠️ Z-Score strategy requires more history. Current: {len(df_ready)} candles (need >= 20)", symbol)
+                except Exception as e:
+                    _log(f"❌ Error in Z-Score strategy: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                _log(f"⚠️ Z-Score strategy is DISABLED for {symbol}", symbol)
+            
+            # VBO (Volatility Breakout) стратегия
+            if current_settings.enable_vbo_strategy:
+                try:
+                    if len(df_ready) >= 50:
+                        _log(f"🔍 VBO: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        vbo_signals = build_vbo_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        vbo_generated = [s for s in vbo_signals if s.action in (Action.LONG, Action.SHORT)]
+                        _log(f"📊 VBO strategy: generated {len(vbo_signals)} total, {len(vbo_generated)} actionable (LONG/SHORT)", symbol)
+                        
+                        if vbo_generated:
+                            for i, sig in enumerate(vbo_generated[:3]):
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                        
+                        for sig in vbo_generated:
+                            all_signals.append(sig)
+                            # Сохраняем сигнал в историю
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="vbo",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save VBO signal to history: {e}", symbol)
+                    else:
+                        _log(f"⚠️ VBO strategy requires more history. Current: {len(df_ready)} candles (need >= 50)", symbol)
+                except Exception as e:
+                    _log(f"❌ Error in VBO strategy: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                _log(f"⚠️ VBO strategy is DISABLED for {symbol}", symbol)
+            
             # ML стратегия
             if current_settings.enable_ml_strategy and current_settings.ml_model_path:
                 try:
@@ -3538,6 +3676,9 @@ def run_live_from_api(
             liquidity_signals_only = [s for s in all_signals if s.reason.startswith("liquidity_") and s.action in (Action.LONG, Action.SHORT)]
             smc_signals_only = [s for s in all_signals if s.reason.lower().startswith("smc_") and s.action in (Action.LONG, Action.SHORT)]
             ict_signals_only = [s for s in all_signals if s.reason.startswith("ict_") and s.action in (Action.LONG, Action.SHORT)]
+            liquidation_hunter_signals_only = [s for s in all_signals if s.reason.startswith("liquidation_hunter_") and s.action in (Action.LONG, Action.SHORT)]
+            zscore_signals_only = [s for s in all_signals if s.reason.startswith("zscore_") and s.action in (Action.LONG, Action.SHORT)]
+            vbo_signals_only = [s for s in all_signals if s.reason.startswith("vbo_") and s.action in (Action.LONG, Action.SHORT)]
             
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only
@@ -4024,6 +4165,9 @@ def run_live_from_api(
             liquidity_sig = get_latest_fresh_signal(liquidity_signals_only, df_ready)
             smc_sig_latest = get_latest_fresh_signal(smc_signals_only, df_ready)
             ict_sig_latest = get_latest_fresh_signal(ict_signals_only, df_ready)
+            liquidation_hunter_sig_latest = get_latest_fresh_signal(liquidation_hunter_signals_only, df_ready)
+            zscore_sig_latest = get_latest_fresh_signal(zscore_signals_only, df_ready)
+            vbo_sig_latest = get_latest_fresh_signal(vbo_signals_only, df_ready)
             
             # Создаем словарь всех сигналов для удобства
             strategy_signals = {
@@ -4034,6 +4178,9 @@ def run_live_from_api(
                 "liquidity": liquidity_sig,
                 "smc": smc_sig_latest,
                 "ict": ict_sig_latest,
+                "liquidation_hunter": liquidation_hunter_sig_latest,
+                "zscore": zscore_sig_latest,
+                "vbo": vbo_sig_latest,
             }
             
             # Для обратной совместимости сохраняем main_sig и ml_sig

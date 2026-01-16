@@ -345,7 +345,7 @@ class MultiSymbolManager:
         try:
             print(f"[MultiSymbol] 🚀 Starting worker for {symbol}")
             print(f"[MultiSymbol]   Settings: symbol={settings.symbol}, active_symbols={settings.active_symbols if hasattr(settings, 'active_symbols') else 'N/A'}")
-            print(f"[MultiSymbol]   Strategies: Trend={settings.enable_trend_strategy}, Flat={settings.enable_flat_strategy}, ML={settings.enable_ml_strategy}, Momentum={settings.enable_momentum_strategy}, Liquidity={settings.enable_liquidity_sweep_strategy}")
+            print(f"[MultiSymbol]   Strategies: Trend={settings.enable_trend_strategy}, Flat={settings.enable_flat_strategy}, ML={settings.enable_ml_strategy}, Momentum={settings.enable_momentum_strategy}, Liquidity={settings.enable_liquidity_sweep_strategy}, SMC={settings.enable_smc_strategy}, ICT={settings.enable_ict_strategy}, LiquidationHunter={settings.enable_liquidation_hunter_strategy}, ZScore={settings.enable_zscore_strategy}, VBO={settings.enable_vbo_strategy}")
             
             worker.running = True
             worker.last_update = time.time()
