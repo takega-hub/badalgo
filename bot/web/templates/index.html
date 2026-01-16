@@ -652,6 +652,10 @@
                         <span class="stat-label">Entry Signal:</span>
                         <span class="stat-value" id="position-entry-signal" style="font-size: 0.9em; word-break: break-word;">-</span>
                     </div>
+                    <div class="stat-item" id="position-trade-id-container" style="display: none;">
+                        <span class="stat-label">Trade ID:</span>
+                        <span class="stat-value" id="position-trade-id" style="font-size: 0.85em; color: #888; font-family: monospace;">-</span>
+                    </div>
                     <div class="stat-item" id="position-close-button-container" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #333;">
                         <button class="btn danger" id="close-position-btn" onclick="closePosition()" style="width: 100%;">
                             🔒 Close Position
@@ -1941,7 +1945,10 @@
                             unrealised_pnl: symbolStatus.position.unrealised_pnl || 0,
                             take_profit: symbolStatus.position.take_profit || symbolStatus.position.takeProfit || '',
                             stop_loss: symbolStatus.position.stop_loss || symbolStatus.position.stopLoss || '',
-                            leverage: symbolStatus.position.leverage || account.leverage || 1
+                            leverage: symbolStatus.position.leverage || account.leverage || 1,
+                            entry_reason: symbolStatus.position.entry_reason || '',
+                            strategy_type: symbolStatus.position.strategy_type || '',
+                            trade_id: symbolStatus.position.trade_id || ''
                         };
                     }
                 }
@@ -2029,6 +2036,7 @@
                     // Отображаем информацию о стратегии и сигнале открытия
                     const entryReason = positionData.entry_reason || (data.position?.entry_reason) || '';
                     const strategyType = positionData.strategy_type || (data.position?.strategy_type) || '';
+                    const tradeId = positionData.trade_id || (data.position?.trade_id) || '';
                     
                     // Форматируем название стратегии
                     let strategyDisplay = 'Unknown';
@@ -2068,7 +2076,7 @@
                             // Форматируем reason для лучшей читаемости
                             let formattedReason = entryReason;
                             // Убираем префиксы стратегий для краткости
-                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_)/, '');
+                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|liquidation_hunter_|zscore_|vbo_)/, '');
                             // Заменяем подчеркивания на пробелы
                             formattedReason = formattedReason.replace(/_/g, ' ');
                             // Делаем первую букву заглавной
@@ -2082,6 +2090,19 @@
                         }
                     }
                     
+                    // Отображаем ID сделки
+                    const positionTradeIdEl = document.getElementById('position-trade-id');
+                    const positionTradeIdContainer = document.getElementById('position-trade-id-container');
+                    if (positionTradeIdEl && positionTradeIdContainer) {
+                        if (tradeId) {
+                            positionTradeIdEl.textContent = tradeId;
+                            positionTradeIdEl.style.color = '#888';
+                            positionTradeIdContainer.style.display = 'flex';
+                        } else {
+                            positionTradeIdContainer.style.display = 'none';
+                        }
+                    }
+                    
                     // Показываем кнопку закрытия позиции
                     const closeButtonContainer = document.getElementById('position-close-button-container');
                     if (closeButtonContainer) {
@@ -2089,7 +2110,7 @@
                     }
                 } else {
                     // Нет позиции - очищаем все элементы
-                    const positionElements = ['position-side', 'position-size', 'position-entry', 'position-current-price', 'position-pnl', 'position-pnl-pct', 'position-tp', 'position-sl', 'position-strategy', 'position-entry-signal'];
+                    const positionElements = ['position-side', 'position-size', 'position-entry', 'position-current-price', 'position-pnl', 'position-pnl-pct', 'position-tp', 'position-sl', 'position-strategy', 'position-entry-signal', 'position-trade-id'];
                     positionElements.forEach(id => {
                         const el = document.getElementById(id);
                         if (el) {

@@ -115,6 +115,7 @@ def _format_position_with_validation(position: dict, symbol: str, default_levera
             "leverage": position.get('leverage', default_leverage),
             "entry_reason": None,
             "strategy_type": None,
+            "trade_id": None,
         }
     except Exception as e:
         print(f"[web] Error formatting position: {e}")
@@ -129,6 +130,7 @@ def _format_position_with_validation(position: dict, symbol: str, default_levera
             "leverage": position.get('leverage', default_leverage),
             "entry_reason": None,
             "strategy_type": None,
+            "trade_id": None,
         }
 
 from bot.live import _get_balance, _get_position, _get_open_orders, _timeframe_to_bybit_interval, run_live_from_api
@@ -899,10 +901,12 @@ def api_status():
                                         
                                         entry_reason = last_open_trade.get("entry_reason", "")
                                         strategy_type = last_open_trade.get("strategy_type", "unknown")
+                                        trade_id = last_open_trade.get("order_id") or last_open_trade.get("order_link_id") or last_open_trade.get("id", "")
                                         
                                         if symbols_status[symbol].get("position"):
                                             symbols_status[symbol]["position"]["entry_reason"] = entry_reason
                                             symbols_status[symbol]["position"]["strategy_type"] = strategy_type
+                                            symbols_status[symbol]["position"]["trade_id"] = trade_id
                             except Exception as e:
                                 print(f"[web] Error getting entry signal info for {symbol}: {e}")
                     except Exception as e:
@@ -1066,10 +1070,12 @@ def api_status():
                         
                         entry_reason = last_open_trade.get("entry_reason", "")
                         strategy_type = last_open_trade.get("strategy_type", "unknown")
+                        trade_id = last_open_trade.get("order_id") or last_open_trade.get("order_link_id") or last_open_trade.get("id", "")
                         
                         if response_data.get("position"):
                             response_data["position"]["entry_reason"] = entry_reason
                             response_data["position"]["strategy_type"] = strategy_type
+                            response_data["position"]["trade_id"] = trade_id
             except Exception as e:
                 print(f"[web] Error getting entry signal info for {primary_symbol}: {e}")
         
