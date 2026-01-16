@@ -3,6 +3,7 @@
 """
 import json
 import os
+import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -11,6 +12,9 @@ from typing import List, Dict, Any, Optional
 HISTORY_FILE = Path(__file__).parent.parent.parent / "bot_history.json"
 MAX_TRADES = 1000
 MAX_SIGNALS = 5000
+
+# Блокировка для синхронизации доступа к файлу истории
+_history_lock = threading.Lock()
 
 
 def check_recent_loss_trade(
@@ -121,57 +125,66 @@ def _load_history() -> Dict[str, List]:
         Path(__file__).parent.parent / "bot_history.json",    # возможный промежуточный путь: bot/bot_history.json
     ]
 
-    history: Dict[str, List]
+    history: Dict[str, List] = None
+    legacy_file = None
 
     # 1. Новый (текущий) путь
-    if HISTORY_FILE.exists():
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-            # Логируем только при первой загрузке или при ошибках (убрали частые логи)
-        except json.JSONDecodeError as e:
-            # Ошибка парсинга JSON - возможно файл поврежден, пробуем восстановить
-            print(f"[history] ⚠️ JSON decode error in {HISTORY_FILE}: {e}")
-            # Пытаемся создать резервную копию и начать с пустой истории
+    with _history_lock:
+        if HISTORY_FILE.exists():
             try:
-                backup_file = HISTORY_FILE.with_suffix('.json.bak')
-                if HISTORY_FILE.exists():
-                    import shutil
-                    shutil.copy2(HISTORY_FILE, backup_file)
-                    print(f"[history] Created backup: {backup_file}")
-            except Exception:
-                pass
-            return {"trades": [], "signals": []}
-        except Exception as e:
-            # Другие ошибки (IOError и т.д.) - логируем только серьезные
-            if "Expecting value" not in str(e) and "Extra data" not in str(e):
-                print(f"[history] ⚠️ Error loading history from {HISTORY_FILE}: {e}")
-            return {"trades": [], "signals": []}
-    else:
-        # 2. Пытаемся найти legacy-файлы
-        legacy_file = None
-        for lp in legacy_paths:
-            if lp.exists():
-                legacy_file = lp
-                break
-        
-        if legacy_file is None:
-            # Истории нет ни в одном из мест
-            return {"trades": [], "signals": []}
-        
-        # Загружаем legacy-историю и мигрируем в новый путь
-        try:
-            with open(legacy_file, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-            # Сразу сохраняем в новое место, чтобы дальше всё работало через единый файл
-            try:
-                _save_history(history)
-                print(f"[history] ✅ Migrated legacy history from {legacy_file} to {HISTORY_FILE}")
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                # Логируем только при первой загрузке или при ошибках (убрали частые логи)
+            except json.JSONDecodeError as e:
+                # Ошибка парсинга JSON - возможно файл поврежден, пробуем восстановить
+                print(f"[history] ⚠️ JSON decode error in {HISTORY_FILE}: {e}")
+                # Пытаемся создать резервную копию и начать с пустой истории
+                try:
+                    backup_file = HISTORY_FILE.with_suffix('.json.bak')
+                    if HISTORY_FILE.exists():
+                        import shutil
+                        shutil.copy2(HISTORY_FILE, backup_file)
+                        print(f"[history] Created backup: {backup_file}")
+                    # Удаляем поврежденный файл и создаем новый
+                    HISTORY_FILE.unlink()
+                except Exception:
+                    pass
+                return {"trades": [], "signals": []}
             except Exception as e:
-                print(f"[history] ⚠️ Error saving migrated history to new path: {e}")
+                # Другие ошибки (IOError и т.д.) - логируем только серьезные
+                if "Expecting value" not in str(e) and "Extra data" not in str(e):
+                    print(f"[history] ⚠️ Error loading history from {HISTORY_FILE}: {e}")
+                return {"trades": [], "signals": []}
+        else:
+            # 2. Пытаемся найти legacy-файлы
+            for lp in legacy_paths:
+                if lp.exists():
+                    legacy_file = lp
+                    break
+            
+            if legacy_file is None:
+                # Истории нет ни в одном из мест
+                return {"trades": [], "signals": []}
+            
+            # Загружаем legacy-историю и мигрируем в новый путь
+            try:
+                with open(legacy_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+            except Exception as e:
+                print(f"[history] ⚠️ Error loading legacy history from {legacy_file}: {e}")
+                return {"trades": [], "signals": []}
+    
+    # Сохраняем мигрированную историю вне блока блокировки (чтобы избежать deadlock)
+    if legacy_file and history is not None:
+        try:
+            _save_history(history)
+            print(f"[history] ✅ Migrated legacy history from {legacy_file} to {HISTORY_FILE}")
         except Exception as e:
-            print(f"[history] ⚠️ Error loading legacy history from {legacy_file}: {e}")
-            return {"trades": [], "signals": []}
+            print(f"[history] ⚠️ Error saving migrated history to new path: {e}")
+
+    # Проверяем, что history была загружена
+    if history is None:
+        return {"trades": [], "signals": []}
 
     # Автоматически удаляем дубликаты при каждой загрузке для гарантии чистоты данных
     # Это гарантирует, что дубликаты будут удалены даже если они появились после первой очистки
@@ -289,27 +302,28 @@ def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) 
 
 
 def _save_history(history: Dict[str, List]):
-    """Сохранить историю в файл (атомарная запись через временный файл)."""
-    try:
-        # Убеждаемся, что директория существует
-        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Атомарная запись через временный файл для предотвращения повреждения при конкурентной записи
-        temp_file = HISTORY_FILE.with_suffix('.json.tmp')
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-        # Атомарно заменяем основной файл
-        import shutil
-        shutil.move(str(temp_file), str(HISTORY_FILE))
-    except Exception as e:
-        print(f"[history] ⚠️ Error saving history: {e}")
-        # Пытаемся удалить временный файл если он остался
+    """Сохранить историю в файл (атомарная запись через временный файл с блокировкой)."""
+    with _history_lock:
         try:
+            # Убеждаемся, что директория существует
+            HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Атомарная запись через временный файл для предотвращения повреждения при конкурентной записи
             temp_file = HISTORY_FILE.with_suffix('.json.tmp')
-            if temp_file.exists():
-                temp_file.unlink()
-        except Exception:
-            pass
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+            # Атомарно заменяем основной файл
+            import shutil
+            shutil.move(str(temp_file), str(HISTORY_FILE))
+        except Exception as e:
+            print(f"[history] ⚠️ Error saving history: {e}")
+            # Пытаемся удалить временный файл если он остался
+            try:
+                temp_file = HISTORY_FILE.with_suffix('.json.tmp')
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception:
+                pass
 
 
 def add_signal(action: str, reason: str, price: float, timestamp: Any = None, symbol: str = "", strategy_type: str = "unknown", signal_id: Optional[str] = None):
