@@ -2123,6 +2123,12 @@ def get_strategy_type_from_signal(signal_reason: str) -> str:
         return "smc"
     elif reason_lower.startswith("ict_"):
         return "ict"
+    elif reason_lower.startswith("liquidation_hunter_"):
+        return "liquidation_hunter"
+    elif reason_lower.startswith("zscore_"):
+        return "zscore"
+    elif reason_lower.startswith("vbo_"):
+        return "vbo"
     else:
         return "unknown"
 
@@ -3418,11 +3424,12 @@ def run_live_from_api(
                                 hold_count = len([s for s in smc_signals if s.action == Action.HOLD])
                                 _log(f"  💡 SMC: Generated {len(smc_signals)} signals, but all are HOLD (no actionable signals). Hold count: {hold_count}", symbol)
                         
-                        # Логируем детали сгенерированных сигналов
-                        if smc_generated:
-                            for sig in smc_generated:
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                _log(f"  ✅ SMC signal: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                        # Убрали детальное логирование каждого сигнала - слишком много сообщений
+                        # Логируем только общее количество
+                        # if smc_generated:
+                        #     for sig in smc_generated:
+                        #         ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                        #         _log(f"  ✅ SMC signal: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
                         for sig in smc_generated:
                             all_signals.append(sig)
@@ -3969,6 +3976,30 @@ def run_live_from_api(
                     if ict_sig_save:
                         save_latest_signal_to_history(ict_sig_save, "ICT", "ICT_LATEST")
                 
+                # Liquidation Hunter стратегия
+                liquidation_hunter_sig_save = None
+                if liquidation_hunter_signals_only:
+                    liquidation_hunter_signals_only.sort(key=get_timestamp_for_sort)
+                    liquidation_hunter_sig_save = liquidation_hunter_signals_only[-1] if liquidation_hunter_signals_only else None
+                    if liquidation_hunter_sig_save:
+                        save_latest_signal_to_history(liquidation_hunter_sig_save, "LIQUIDATION_HUNTER", "LIQUIDATION_HUNTER_LATEST")
+                
+                # Z-Score стратегия
+                zscore_sig_save = None
+                if zscore_signals_only:
+                    zscore_signals_only.sort(key=get_timestamp_for_sort)
+                    zscore_sig_save = zscore_signals_only[-1] if zscore_signals_only else None
+                    if zscore_sig_save:
+                        save_latest_signal_to_history(zscore_sig_save, "ZSCORE", "ZSCORE_LATEST")
+                
+                # VBO стратегия
+                vbo_sig_save = None
+                if vbo_signals_only:
+                    vbo_signals_only.sort(key=get_timestamp_for_sort)
+                    vbo_sig_save = vbo_signals_only[-1] if vbo_signals_only else None
+                    if vbo_sig_save:
+                        save_latest_signal_to_history(vbo_sig_save, "VBO", "VBO_LATEST")
+                
                 # ДОПОЛНИТЕЛЬНО: Сохраняем ВСЕ сигналы от всех стратегий (не только свежие)
                 # Это позволяет видеть все сигналы в истории для анализа
                 additional_saved = 0
@@ -4160,6 +4191,126 @@ def run_live_from_api(
                         except Exception as e:
                             _log(f"⚠️ Failed to save additional LIQUIDITY signal to history: {e}", symbol)
                 
+                # Сохраняем все сигналы от Liquidation Hunter стратегии
+                for sig in liquidation_hunter_signals_only:
+                    if sig.action in (Action.LONG, Action.SHORT):
+                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
+                        if sig == liquidation_hunter_sig_save and liquidation_hunter_sig_save:
+                            continue
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            additional_saved += 1
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional LIQUIDATION_HUNTER signal to history: {e}", symbol)
+                
+                # Сохраняем все сигналы от Z-Score стратегии
+                for sig in zscore_signals_only:
+                    if sig.action in (Action.LONG, Action.SHORT):
+                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
+                        if sig == zscore_sig_save and zscore_sig_save:
+                            continue
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            additional_saved += 1
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional ZSCORE signal to history: {e}", symbol)
+                
+                # Сохраняем все сигналы от VBO стратегии
+                for sig in vbo_signals_only:
+                    if sig.action in (Action.LONG, Action.SHORT):
+                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
+                        if sig == vbo_sig_save and vbo_sig_save:
+                            continue
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            additional_saved += 1
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional VBO signal to history: {e}", symbol)
+                
+                # Сохраняем все сигналы от ICT стратегии
+                for sig in ict_signals_only:
+                    if sig.action in (Action.LONG, Action.SHORT):
+                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
+                        if sig == ict_sig_save and ict_sig_save:
+                            continue
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig_signal_id,
+                            )
+                            additional_saved += 1
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional ICT signal to history: {e}", symbol)
+                
                 if additional_saved > 0:
                     _log(f"💾 Saved {additional_saved} additional signals to history", symbol)
             except Exception as e:
@@ -4348,12 +4499,49 @@ def run_live_from_api(
                     # Гибридный режим: Выбираем самый свежий из всех доступных (предпочитая свежие)
                     print(f"[live] 🔍 Hybrid mode: {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                     if fresh_available:
+                        # Если есть свежие сигналы - выбираем самый свежий по timestamp
                         fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                        sig = fresh_available[-1][1]
-                        strategy_name = fresh_available[-1][0]
+                        sig_fresh = fresh_available[-1][1]
+                        strategy_name_fresh = fresh_available[-1][0]
+                        ts_fresh = get_timestamp_for_sort(sig_fresh)
+                        
+                        # Также проверяем, нет ли среди не свежих сигналов более свежего по timestamp
+                        # Это важно для новых стратегий (ICT, Liquidation Hunter, Z-Score, VBO),
+                        # которые могут иметь timestamp от прошлых свечей, но быть актуальными
+                        not_fresh_available = [(name, s) for name, s in available_signals if not is_signal_fresh(s, df_ready)]
+                        if not_fresh_available:
+                            not_fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                            sig_not_fresh = not_fresh_available[-1][1]
+                            strategy_name_not_fresh = not_fresh_available[-1][0]
+                            ts_not_fresh = get_timestamp_for_sort(sig_not_fresh)
+                            
+                            # Если не свежий сигнал более свежий по timestamp, используем его
+                            if ts_not_fresh > ts_fresh:
+                                sig = sig_not_fresh
+                                strategy_name = strategy_name_not_fresh
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                print(f"[live] ✅ Hybrid FRESH (newer timestamp): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                            else:
+                                sig = sig_fresh
+                                strategy_name = strategy_name_fresh
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                        else:
+                            sig = sig_fresh
+                            strategy_name = strategy_name_fresh
+                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                            print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                    elif available_signals:
+                        # Если нет свежих сигналов, но есть доступные - выбираем самый свежий по timestamp
+                        available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                        sig = available_signals[-1][1]
+                        strategy_name = available_signals[-1][0]
                         ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                        print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
+                        # Если нет свежих сигналов - выбираем самый свежий по timestamp из всех доступных
+                        # Это позволяет выбирать сигналы от новых стратегий (ICT, Liquidation Hunter, Z-Score, VBO),
+                        # которые могут иметь timestamp от прошлых свечей, но быть актуальными
                         available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                         sig = available_signals[-1][1]
                         strategy_name = available_signals[-1][0]
@@ -4405,7 +4593,13 @@ def run_live_from_api(
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
             strategy_name_for_log = get_strategy_type_from_signal(sig.reason).upper()
+            strategy_type = get_strategy_type_from_signal(sig.reason)
             print(f"[live] 🔍 Freshness check for {strategy_name_for_log} signal: is_fresh={is_fresh_check}, timestamp={ts}")
+            
+            # Для новых стратегий (ICT, Liquidation Hunter, Z-Score, VBO) используем более мягкий критерий свежести
+            # Они могут иметь timestamp от прошлых свечей, но быть актуальными
+            is_new_strategy = strategy_type in ["ict", "liquidation_hunter", "zscore", "vbo"]
+            max_age_minutes = 60 if is_new_strategy else 15  # Для новых стратегий - 60 минут, для остальных - 15 минут
             
             # Проверяем, является ли это сигналом из будущего или совсем старым
             if not is_fresh_check:
@@ -4413,6 +4607,7 @@ def run_live_from_api(
                 strategy_name = get_strategy_type_from_signal(sig.reason).upper()
                 
                 # Вычисляем, насколько старый сигнал для информативности
+                should_filter = False
                 try:
                     if isinstance(ts, pd.Timestamp) and not df_ready.empty:
                         signal_ts = ts
@@ -4431,25 +4626,36 @@ def run_live_from_api(
                             
                             age_minutes = abs((signal_ts - last_ts_utc).total_seconds()) / 60
                             age_hours = age_minutes / 60
-                            if age_hours >= 1:
-                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_hours:.1f} hours), waiting for fresh signal")
+                            
+                            # Фильтруем только если сигнал старше максимального возраста
+                            if age_minutes > max_age_minutes:
+                                should_filter = True
+                                if age_hours >= 1:
+                                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_hours:.1f} hours, max: {max_age_minutes} min), waiting for fresh signal")
+                                else:
+                                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_minutes:.1f} minutes, max: {max_age_minutes} min), waiting for fresh signal")
                             else:
-                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_minutes:.1f} minutes), waiting for fresh signal")
+                                # Сигнал не слишком старый, разрешаем обработку
+                                print(f"[live] ✅ {strategy_name} signal age check passed: {age_minutes:.1f} minutes (max: {max_age_minutes} min) - proceeding")
                         else:
+                            should_filter = True
                             print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
                     else:
+                        should_filter = True
                         print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
                 except Exception as e:
+                    should_filter = True
                     print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
                 
-                if bot_state:
-                    bot_state["current_status"] = "Running"
-                    bot_state["last_action"] = "Waiting for fresh signal..."
-                    bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal...")
-                if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
-                    break
-                continue
+                if should_filter:
+                    if bot_state:
+                        bot_state["current_status"] = "Running"
+                        bot_state["last_action"] = "Waiting for fresh signal..."
+                        bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                    update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal...")
+                    if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                        break
+                    continue
             
             # Конвертируем timestamp сигнала в UTC для использования ниже
             signal_time_utc = None

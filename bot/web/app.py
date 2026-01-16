@@ -2898,7 +2898,8 @@ def api_chart_data():
                 ema_slow_length=settings.strategy.ema_slow_length,
                 ema_timeframe=settings.strategy.momentum_ema_timeframe,
             )
-            print(f"[web] After prepare_with_indicators: {len(df_ind)} candles")
+            # Убрали избыточное логирование - слишком много сообщений
+            # print(f"[web] After prepare_with_indicators: {len(df_ind)} candles")
         except Exception as e:
             print(f"[web] Error in prepare_with_indicators: {e}")
             import traceback
@@ -2922,7 +2923,8 @@ def api_chart_data():
                 print(f"[web] Error adding minimal indicators: {e}")
         
         df_ready = enrich_for_strategy(df_ind, settings.strategy)
-        print(f"[web] After enrich_for_strategy: {len(df_ready)} candles")
+        # Убрали избыточное логирование - слишком много сообщений
+        # print(f"[web] After enrich_for_strategy: {len(df_ready)} candles")
         
         if df_ready.empty:
             # Если после enrich_for_strategy DataFrame пуст, используем df_ind
@@ -3419,7 +3421,8 @@ def api_chart_data():
         
         # Сигналы (точки входа) - конвертируем время в Unix timestamp (миллисекунды) для графика
         entry_signals = []
-        print(f"[web] Processing signals for chart: total={len(signals) if signals else 0}")
+        # Убрали избыточное логирование - слишком много сообщений
+        # print(f"[web] Processing signals for chart: total={len(signals) if signals else 0}")
         if signals and isinstance(signals, list) and len(signals) > 0:
             for sig in signals:
                 try:
@@ -3466,13 +3469,14 @@ def api_chart_data():
                     print(f"[web] Error processing signal: {e}")
                     continue
             
-            if entry_signals:
-                print(f"[web] ✅ Chart signals: {len(entry_signals)} (LONG: {sum(1 for s in entry_signals if s['action']=='long')}, SHORT: {sum(1 for s in entry_signals if s['action']=='short')})")
-                # Показываем первые 3 сигнала для отладки
-                for i, sig in enumerate(entry_signals[:3]):
-                    print(f"[web]   Signal {i+1}: {sig['action'].upper()} @ ${sig['price']:.2f}, time_ms={sig['time']}, reason={sig['reason'][:30]}")
-            else:
-                print(f"[web] ⚠️ No valid entry signals for chart (from {len(signals) if signals else 0} total signals)")
+            # Убрали избыточное логирование - слишком много сообщений
+            # if entry_signals:
+            #     print(f"[web] ✅ Chart signals: {len(entry_signals)} (LONG: {sum(1 for s in entry_signals if s['action']=='long')}, SHORT: {sum(1 for s in entry_signals if s['action']=='short')})")
+            #     # Показываем первые 3 сигнала для отладки
+            #     for i, sig in enumerate(entry_signals[:3]):
+            #         print(f"[web]   Signal {i+1}: {sig['action'].upper()} @ ${sig['price']:.2f}, time_ms={sig['time']}, reason={sig['reason'][:30]}")
+            # else:
+            #     print(f"[web] ⚠️ No valid entry signals for chart (from {len(signals) if signals else 0} total signals)")
         
         # Текущая фаза рынка (последний бар)
         current_phase = indicators["market_phase"][-1] if indicators["market_phase"] and len(indicators["market_phase"]) > 0 else "unknown"

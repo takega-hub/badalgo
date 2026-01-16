@@ -113,8 +113,8 @@ class SMCStrategy:
             signal = self._check_entry(zone, last_row, close_price)
             if signal:
                 signals.append(signal)
-                # Логируем сигнал в CSV для последующего анализа
-                self._log_signal_to_csv(signal, symbol)
+                # Убрали логирование в CSV - слишком много сообщений
+                # self._log_signal_to_csv(signal, symbol)
 
         return signals
 
@@ -345,7 +345,8 @@ class SMCStrategy:
                 if not file_exists:
                     writer.writeheader()
                 writer.writerow(row)
-            print(f"📝 SMC signal logged to {file_path.name}: {signal.action.value} {symbol} @ ${signal.price:.2f}")
+            # Убрали избыточное логирование - слишком много сообщений
+            # print(f"📝 SMC signal logged to {file_path.name}: {signal.action.value} {symbol} @ ${signal.price:.2f}")
         except Exception as e:
             print(f"❌ Error logging SMC signal: {e}")
 
