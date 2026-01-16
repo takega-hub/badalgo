@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 import os
+import json
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -151,6 +153,55 @@ class RiskParams:
 
 
 @dataclass
+class SymbolStrategySettings:
+    """Настройки стратегий для конкретной торговой пары"""
+    enable_trend_strategy: bool = True
+    enable_flat_strategy: bool = True
+    enable_ml_strategy: bool = False
+    enable_momentum_strategy: bool = False
+    enable_liquidity_sweep_strategy: bool = False
+    enable_smc_strategy: bool = False
+    enable_ict_strategy: bool = False
+    enable_liquidation_hunter_strategy: bool = False
+    enable_zscore_strategy: bool = False
+    enable_vbo_strategy: bool = False
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence"
+    
+    def to_dict(self) -> Dict:
+        """Преобразует настройки в словарь"""
+        return {
+            "enable_trend_strategy": self.enable_trend_strategy,
+            "enable_flat_strategy": self.enable_flat_strategy,
+            "enable_ml_strategy": self.enable_ml_strategy,
+            "enable_momentum_strategy": self.enable_momentum_strategy,
+            "enable_liquidity_sweep_strategy": self.enable_liquidity_sweep_strategy,
+            "enable_smc_strategy": self.enable_smc_strategy,
+            "enable_ict_strategy": self.enable_ict_strategy,
+            "enable_liquidation_hunter_strategy": self.enable_liquidation_hunter_strategy,
+            "enable_zscore_strategy": self.enable_zscore_strategy,
+            "enable_vbo_strategy": self.enable_vbo_strategy,
+            "strategy_priority": self.strategy_priority,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'SymbolStrategySettings':
+        """Создает настройки из словаря"""
+        return cls(
+            enable_trend_strategy=data.get("enable_trend_strategy", True),
+            enable_flat_strategy=data.get("enable_flat_strategy", True),
+            enable_ml_strategy=data.get("enable_ml_strategy", False),
+            enable_momentum_strategy=data.get("enable_momentum_strategy", False),
+            enable_liquidity_sweep_strategy=data.get("enable_liquidity_sweep_strategy", False),
+            enable_smc_strategy=data.get("enable_smc_strategy", False),
+            enable_ict_strategy=data.get("enable_ict_strategy", False),
+            enable_liquidation_hunter_strategy=data.get("enable_liquidation_hunter_strategy", False),
+            enable_zscore_strategy=data.get("enable_zscore_strategy", False),
+            enable_vbo_strategy=data.get("enable_vbo_strategy", False),
+            strategy_priority=data.get("strategy_priority", "trend"),
+        )
+
+
+@dataclass
 class AppSettings:
     # Многопарная торговля
     symbols: List[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])  # Все доступные пары
@@ -187,8 +238,35 @@ class AppSettings:
     enable_liquidation_hunter_strategy: bool = False  # Liquidation Hunter стратегия
     enable_zscore_strategy: bool = False  # Z-Score стратегия
     enable_vbo_strategy: bool = False  # VBO (Volatility Breakout) стратегия
-    # Приоритетная стратегия при конфликте сигналов
+    # Приоритетная стратегия при конфликте сигналов (глобальная, используется если нет настроек для конкретной пары)
     strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence" (liquidity отключена)
+    # Настройки стратегий для каждой пары отдельно
+    symbol_strategy_settings: Dict[str, SymbolStrategySettings] = field(default_factory=dict)  # {"BTCUSDT": SymbolStrategySettings(...), ...}
+    
+    def get_strategy_settings_for_symbol(self, symbol: str) -> SymbolStrategySettings:
+        """Получает настройки стратегий для конкретной пары, или возвращает глобальные настройки"""
+        symbol = symbol.upper()
+        if symbol in self.symbol_strategy_settings:
+            return self.symbol_strategy_settings[symbol]
+        # Возвращаем настройки на основе глобальных флагов (для обратной совместимости)
+        return SymbolStrategySettings(
+            enable_trend_strategy=self.enable_trend_strategy,
+            enable_flat_strategy=self.enable_flat_strategy,
+            enable_ml_strategy=self.enable_ml_strategy,
+            enable_momentum_strategy=self.enable_momentum_strategy,
+            enable_liquidity_sweep_strategy=self.enable_liquidity_sweep_strategy,
+            enable_smc_strategy=self.enable_smc_strategy,
+            enable_ict_strategy=self.enable_ict_strategy,
+            enable_liquidation_hunter_strategy=self.enable_liquidation_hunter_strategy,
+            enable_zscore_strategy=self.enable_zscore_strategy,
+            enable_vbo_strategy=self.enable_vbo_strategy,
+            strategy_priority=self.strategy_priority,
+        )
+    
+    def set_strategy_settings_for_symbol(self, symbol: str, settings: SymbolStrategySettings) -> None:
+        """Устанавливает настройки стратегий для конкретной пары"""
+        symbol = symbol.upper()
+        self.symbol_strategy_settings[symbol] = settings
     
     def __post_init__(self):
         """Инициализация после создания dataclass"""
@@ -899,5 +977,50 @@ def load_settings() -> AppSettings:
         except ValueError:
             pass
     
+    # Загружаем настройки стратегий по парам из JSON файла (если есть)
+    _load_symbol_strategy_settings(settings)
+    
     return settings
+
+
+def _get_strategy_settings_file() -> Path:
+    """Возвращает путь к файлу с настройками стратегий по парам"""
+    config_dir = Path(__file__).parent.parent
+    return config_dir / "symbol_strategy_settings.json"
+
+
+def _load_symbol_strategy_settings(settings: AppSettings) -> None:
+    """Загружает настройки стратегий для каждой пары из JSON файла"""
+    settings_file = _get_strategy_settings_file()
+    if not settings_file.exists():
+        return
+    
+    try:
+        with open(settings_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        for symbol, symbol_data in data.items():
+            symbol = symbol.upper()
+            if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                symbol_settings = SymbolStrategySettings.from_dict(symbol_data)
+                settings.symbol_strategy_settings[symbol] = symbol_settings
+                print(f"[config] Loaded strategy settings for {symbol}")
+    except Exception as e:
+        print(f"[config] ⚠️ Error loading symbol strategy settings: {e}")
+
+
+def save_symbol_strategy_settings(settings: AppSettings) -> None:
+    """Сохраняет настройки стратегий для каждой пары в JSON файл"""
+    settings_file = _get_strategy_settings_file()
+    try:
+        data = {}
+        for symbol, symbol_settings in settings.symbol_strategy_settings.items():
+            data[symbol] = symbol_settings.to_dict()
+        
+        with open(settings_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        print(f"[config] Saved strategy settings for {len(data)} symbol(s)")
+    except Exception as e:
+        print(f"[config] ⚠️ Error saving symbol strategy settings: {e}")
 

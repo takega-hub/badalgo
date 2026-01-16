@@ -787,8 +787,23 @@
         <!-- Strategies Selection Tab -->
         <div id="strategies" class="tab-content">
             <div class="card" style="grid-column: 1 / -1;">
-                <h2>Strategy Selection</h2>
-                <p style="color: #aaa; margin-bottom: 20px;">Выберите активные стратегии. Можно включить несколько одновременно.</p>
+                <h2>Strategy Selection (Per Symbol)</h2>
+                <p style="color: #aaa; margin-bottom: 20px;">Выберите активные стратегии для каждой торговой пары отдельно. Можно включить несколько одновременно.</p>
+                
+                <!-- Выбор пары для настройки -->
+                <div class="form-group" style="margin-bottom: 25px; padding: 15px; background: #1a2a2a; border: 1px solid #00d4ff; border-radius: 8px;">
+                    <label for="strategy-symbol-select" style="display: block; margin-bottom: 10px; color: #00d4ff; font-weight: bold; font-size: 1.1em;">Выберите торговую пару для настройки:</label>
+                    <select id="strategy-symbol-select" style="width: 100%; max-width: 400px; padding: 10px; border-radius: 4px; background-color: #333; color: #e0e0e0; border: 2px solid #00d4ff; font-size: 1.1em; font-weight: bold;" onchange="loadStrategySettingsForSymbol()">
+                        <option value="BTCUSDT">BTCUSDT</option>
+                        <option value="ETHUSDT">ETHUSDT</option>
+                        <option value="SOLUSDT">SOLUSDT</option>
+                    </select>
+                    <p style="color: #888; font-size: 0.85em; margin-top: 8px; margin-bottom: 0;">
+                        Настройки стратегий сохраняются отдельно для каждой пары. Выберите пару выше, чтобы настроить её стратегии.
+                    </p>
+                </div>
+                
+                <div id="strategy-settings-container">
                 
                 <div class="stat-item" style="margin-bottom: 15px;">
                     <label style="display: flex; align-items: center; cursor: pointer;">
@@ -883,8 +898,11 @@
                     </p>
                 </div>
                 
+                </div>
+                
                 <div style="margin-top: 20px;">
-                    <button class="btn success" onclick="saveStrategySelection()">Save Strategy Selection</button>
+                    <button class="btn success" onclick="saveStrategySelection()">💾 Save Strategy Selection for Selected Symbol</button>
+                    <button class="btn" onclick="copyStrategySettingsToAllSymbols()" style="margin-left: 10px; background: #555; color: #fff;">📋 Copy to All Symbols</button>
                 </div>
             </div>
             
@@ -1693,6 +1711,16 @@
                 loadSettings();
             } else if (tabName === 'strategies') {
                 loadStrategySelection();
+                // Загружаем настройки для выбранной пары
+                const strategySymbolSelect = document.getElementById('strategy-symbol-select');
+                if (strategySymbolSelect) {
+                    // Устанавливаем значение по умолчанию из primary_symbol
+                    const symbolSelect = document.getElementById('symbol-select');
+                    if (symbolSelect && symbolSelect.value) {
+                        strategySymbolSelect.value = symbolSelect.value;
+                    }
+                    loadStrategySettingsForSymbol();
+                }
                 loadStrategyStats();
                 loadMLModelInfo();
                 if (typeof loadAllPairsModelsInfo !== 'undefined') {
@@ -3981,7 +4009,73 @@
             }
         }
         
-        // Strategy Selection Functions
+        // Strategy Selection Functions (Per Symbol)
+        async function loadStrategySettingsForSymbol() {
+            const symbolSelect = document.getElementById('strategy-symbol-select');
+            if (!symbolSelect) return;
+            
+            const symbol = symbolSelect.value;
+            try {
+                const response = await fetch(`/api/settings/symbol/${symbol}`);
+                const data = await response.json();
+                
+                if (data.success && data.settings) {
+                    const settings = data.settings;
+                    
+                    // Обновляем чекбоксы
+                    const trendCheckbox = document.getElementById('enable-trend-strategy');
+                    const flatCheckbox = document.getElementById('enable-flat-strategy');
+                    const mlCheckbox = document.getElementById('enable-ml-strategy');
+                    const momentumCheckbox = document.getElementById('enable-momentum-strategy');
+                    const smcCheckbox = document.getElementById('smcCheckbox');
+                    const ictCheckbox = document.getElementById('enable-ict-strategy');
+                    const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
+                    const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
+                    const vboCheckbox = document.getElementById('enable-vbo-strategy');
+                    const strategyPrioritySelect = document.getElementById('strategy-priority-select');
+                    
+                    if (trendCheckbox) trendCheckbox.checked = settings.enable_trend_strategy || false;
+                    if (flatCheckbox) flatCheckbox.checked = settings.enable_flat_strategy || false;
+                    if (mlCheckbox) mlCheckbox.checked = settings.enable_ml_strategy || false;
+                    if (momentumCheckbox) momentumCheckbox.checked = settings.enable_momentum_strategy || false;
+                    if (smcCheckbox) smcCheckbox.checked = settings.enable_smc_strategy || false;
+                    if (ictCheckbox) ictCheckbox.checked = settings.enable_ict_strategy || false;
+                    if (liquidationHunterCheckbox) liquidationHunterCheckbox.checked = settings.enable_liquidation_hunter_strategy || false;
+                    if (zscoreCheckbox) zscoreCheckbox.checked = settings.enable_zscore_strategy || false;
+                    if (vboCheckbox) vboCheckbox.checked = settings.enable_vbo_strategy || false;
+                    if (strategyPrioritySelect) strategyPrioritySelect.value = settings.strategy_priority || 'trend';
+                }
+            } catch (error) {
+                console.error('Error loading strategy settings for symbol:', error);
+            }
+        }
+        
+        async function copyStrategySettingsToAllSymbols() {
+            const symbolSelect = document.getElementById('strategy-symbol-select');
+            if (!symbolSelect) return;
+            
+            const currentSymbol = symbolSelect.value;
+            if (!confirm(`Скопировать настройки стратегий для ${currentSymbol} на все остальные пары (BTCUSDT, ETHUSDT, SOLUSDT)?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/settings/symbol/${currentSymbol}/copy-to-all`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Настройки стратегий для ${currentSymbol} успешно скопированы на все пары!`);
+                } else {
+                    alert(`❌ Ошибка: ${result.error || 'Неизвестная ошибка'}`);
+                }
+            } catch (error) {
+                console.error('Error copying strategy settings:', error);
+                alert(`❌ Ошибка при копировании настроек: ${error.message}`);
+            }
+        }
+        
         async function loadStrategySelection() {
             try {
                 const response = await fetch('/api/settings');
@@ -4055,10 +4149,21 @@
                         mlSymbolSelect.value = data.app.symbol;
                     }
                     
-                    // Устанавливаем приоритет стратегии
+                    // Устанавливаем приоритет стратегии (глобальный, используется если нет настроек для пары)
                     const strategyPrioritySelect = document.getElementById('strategy-priority-select');
                     if (strategyPrioritySelect && data.app.strategy_priority) {
                         strategyPrioritySelect.value = data.app.strategy_priority;
+                    }
+                    
+                    // Загружаем настройки для выбранной пары
+                    const strategySymbolSelect = document.getElementById('strategy-symbol-select');
+                    if (strategySymbolSelect) {
+                        // Устанавливаем значение по умолчанию из primary_symbol или symbol
+                        const defaultSymbol = data.app.primary_symbol || data.app.symbol || 'BTCUSDT';
+                        if (Array.from(strategySymbolSelect.options).some(opt => opt.value === defaultSymbol)) {
+                            strategySymbolSelect.value = defaultSymbol;
+                        }
+                        loadStrategySettingsForSymbol();
                     }
                     
                     // Устанавливаем тип модели для всех пар
@@ -4496,6 +4601,14 @@
         
         async function saveStrategySelection() {
             try {
+                const symbolSelect = document.getElementById('strategy-symbol-select');
+                if (!symbolSelect) {
+                    alert('❌ Ошибка: не найден выбор пары для настройки');
+                    return;
+                }
+                
+                const selectedSymbol = symbolSelect.value;
+                
                 const trendCheckbox = document.getElementById('enable-trend-strategy');
                 const flatCheckbox = document.getElementById('enable-flat-strategy');
                 const mlCheckbox = document.getElementById('enable-ml-strategy');
@@ -4505,9 +4618,8 @@
                 const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
                 const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                 const vboCheckbox = document.getElementById('enable-vbo-strategy');
-                const symbolSelect = document.getElementById('symbol-select');
                 
-                // Проверяем наличие элементов с более детальным сообщением
+                // Проверяем наличие элементов
                 const missingElements = [];
                 if (!trendCheckbox) missingElements.push('enable-trend-strategy');
                 if (!flatCheckbox) missingElements.push('enable-flat-strategy');
@@ -4523,23 +4635,20 @@
                 const selectedPriority = strategyPrioritySelect ? strategyPrioritySelect.value : 'trend';
                 
                 const data = {
-                    app: {
-                        enable_trend_strategy: trendCheckbox.checked,
-                        enable_flat_strategy: flatCheckbox.checked,
-                        enable_ml_strategy: mlCheckbox.checked,
-                        enable_momentum_strategy: momentumCheckbox ? momentumCheckbox.checked : false,
-                        enable_liquidity_sweep_strategy: false,  // Стратегия отключена
-                        enable_smc_strategy: smcCheckbox ? smcCheckbox.checked : false,
-                        enable_ict_strategy: ictCheckbox ? ictCheckbox.checked : false,
-                        enable_liquidation_hunter_strategy: liquidationHunterCheckbox ? liquidationHunterCheckbox.checked : false,
-                        enable_zscore_strategy: zscoreCheckbox ? zscoreCheckbox.checked : false,
-                        enable_vbo_strategy: vboCheckbox ? vboCheckbox.checked : false,
-                        strategy_priority: selectedPriority
-                    }
+                    enable_trend_strategy: trendCheckbox.checked,
+                    enable_flat_strategy: flatCheckbox.checked,
+                    enable_ml_strategy: mlCheckbox.checked,
+                    enable_momentum_strategy: momentumCheckbox ? momentumCheckbox.checked : false,
+                    enable_liquidity_sweep_strategy: false,  // Стратегия отключена
+                    enable_smc_strategy: smcCheckbox ? smcCheckbox.checked : false,
+                    enable_ict_strategy: ictCheckbox ? ictCheckbox.checked : false,
+                    enable_liquidation_hunter_strategy: liquidationHunterCheckbox ? liquidationHunterCheckbox.checked : false,
+                    enable_zscore_strategy: zscoreCheckbox ? zscoreCheckbox.checked : false,
+                    enable_vbo_strategy: vboCheckbox ? vboCheckbox.checked : false,
+                    strategy_priority: selectedPriority
                 };
                 
-                
-                const response = await fetch('/api/settings', {
+                const response = await fetch(`/api/settings/symbol/${selectedSymbol}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -4569,18 +4678,16 @@
                     if (flatCheckbox.checked) enabledStrategies.push('Flat');
                     if (mlCheckbox.checked) enabledStrategies.push('ML');
                     if (momentumCheckbox && momentumCheckbox.checked) enabledStrategies.push('Momentum');
-                    const smcCheckbox = document.getElementById('smcCheckbox');
                     if (smcCheckbox && smcCheckbox.checked) enabledStrategies.push('Smart Money Concepts');
-                    const ictCheckbox = document.getElementById('enable-ict-strategy');
                     if (ictCheckbox && ictCheckbox.checked) enabledStrategies.push('ICT Silver Bullet');
                     if (liquidationHunterCheckbox && liquidationHunterCheckbox.checked) enabledStrategies.push('Liquidation Hunter');
                     if (zscoreCheckbox && zscoreCheckbox.checked) enabledStrategies.push('Z-Score');
                     if (vboCheckbox && vboCheckbox.checked) enabledStrategies.push('VBO');
                     
-                    alert('✅ Settings saved successfully!\n\n' +
-                          `Enabled Strategies: ${enabledStrategies.length > 0 ? enabledStrategies.join(', ') : 'None'}\n` +
-                          `Strategy Priority: ${priorityText[selectedPriority] || selectedPriority}\n\n` +
-                          'Note: Settings apply to ALL active trading pairs. If the bot is running, it will use the new settings on the next cycle.');
+                    alert(`✅ Настройки стратегий для ${selectedSymbol} успешно сохранены!\n\n` +
+                          `Включенные стратегии: ${enabledStrategies.length > 0 ? enabledStrategies.join(', ') : 'Нет'}\n` +
+                          `Приоритет стратегии: ${priorityText[selectedPriority] || selectedPriority}\n\n` +
+                          'Настройки применяются только для выбранной пары. Если бот запущен, новые настройки будут использованы в следующем цикле.');
                     
                     // Сначала обновляем чекбоксы из ответа сервера (если есть)
                     if (result.settings) {
@@ -4623,11 +4730,10 @@
                         }
                     }
                     
-                    // Перезагружаем настройки чтобы убедиться, что значение обновилось
-                    // Используем более длинную задержку чтобы сервер успел перезагрузить настройки
+                    // Перезагружаем настройки для выбранной пары
                     setTimeout(() => {
-                        loadStrategySelection();
-                    }, 1500);
+                        loadStrategySettingsForSymbol();
+                    }, 500);
                     
                     // Обновляем график если он открыт
                     if (typeof loadChart !== 'undefined') {
@@ -5588,6 +5694,16 @@
             
             if (typeof loadStrategySelection !== 'undefined') {
                 loadStrategySelection();
+                // Загружаем настройки для выбранной пары
+                const strategySymbolSelect = document.getElementById('strategy-symbol-select');
+                if (strategySymbolSelect) {
+                    // Устанавливаем значение по умолчанию из primary_symbol
+                    const symbolSelect = document.getElementById('symbol-select');
+                    if (symbolSelect && symbolSelect.value) {
+                        strategySymbolSelect.value = symbolSelect.value;
+                    }
+                    loadStrategySettingsForSymbol();
+                }
             }
             if (typeof loadMLModelsList !== 'undefined') {
                 loadMLModelsList();

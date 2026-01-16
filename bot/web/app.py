@@ -26,7 +26,7 @@ import pandas as pd
 # Matplotlib and Seaborn imports (удалены, не используются в продакшене)
 MATPLOTLIB_AVAILABLE = False
 
-from bot.config import load_settings, AppSettings, StrategyParams, RiskParams
+from bot.config import load_settings, AppSettings, StrategyParams, RiskParams, SymbolStrategySettings, save_symbol_strategy_settings
 from bot.exchange.bybit_client import BybitClient
 
 # Конфигурация логирования
@@ -1379,6 +1379,108 @@ def api_update_settings():
         }
         return jsonify(response_data)
     except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/settings/symbol/<symbol>")
+@login_required
+def api_get_symbol_strategy_settings(symbol: str):
+    """Получить настройки стратегий для конкретной пары."""
+    symbol = symbol.upper()
+    if symbol not in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+        return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
+    
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
+    
+    return jsonify({
+        "success": True,
+        "symbol": symbol,
+        "settings": symbol_settings.to_dict()
+    })
+
+@app.route("/api/settings/symbol/<symbol>", methods=["POST"])
+@login_required
+def api_update_symbol_strategy_settings(symbol: str):
+    """Обновить настройки стратегий для конкретной пары."""
+    symbol = symbol.upper()
+    if symbol not in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+        return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
+    
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        # Создаем настройки из данных
+        symbol_settings = SymbolStrategySettings.from_dict(data)
+        
+        # Сохраняем настройки для пары
+        settings.set_strategy_settings_for_symbol(symbol, symbol_settings)
+        
+        # Сохраняем в JSON файл
+        save_symbol_strategy_settings(settings)
+        
+        # Обновляем настройки в shared_settings для работающего бота
+        from bot.shared_settings import set_settings
+        set_settings(settings)
+        
+        print(f"[web] Strategy settings updated for {symbol}: {symbol_settings.to_dict()}")
+        
+        return jsonify({
+            "success": True,
+            "symbol": symbol,
+            "message": f"Strategy settings updated for {symbol}",
+            "settings": symbol_settings.to_dict()
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/settings/symbol/<symbol>/copy-to-all", methods=["POST"])
+@login_required
+def api_copy_symbol_strategy_settings_to_all(symbol: str):
+    """Скопировать настройки стратегий для конкретной пары на все остальные пары."""
+    symbol = symbol.upper()
+    if symbol not in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+        return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
+    
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        # Получаем настройки для исходной пары
+        source_settings = settings.get_strategy_settings_for_symbol(symbol)
+        
+        # Копируем на все пары
+        all_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        for target_symbol in all_symbols:
+            if target_symbol != symbol:
+                settings.set_strategy_settings_for_symbol(target_symbol, source_settings)
+        
+        # Сохраняем в JSON файл
+        save_symbol_strategy_settings(settings)
+        
+        # Обновляем настройки в shared_settings для работающего бота
+        from bot.shared_settings import set_settings
+        set_settings(settings)
+        
+        print(f"[web] Strategy settings for {symbol} copied to all symbols")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Strategy settings for {symbol} copied to all symbols",
+            "source_symbol": symbol,
+            "target_symbols": [s for s in all_symbols if s != symbol]
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 400
 
 @app.route("/api/trades")

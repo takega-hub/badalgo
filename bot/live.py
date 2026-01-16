@@ -2792,7 +2792,9 @@ def run_live_from_api(
     
     print(f"[live] [{symbol}] ========================================")
     print(f"[live] [{symbol}] 🚀 Starting live trading bot for {symbol}")
-    print(f"[live] [{symbol}] 📊 Active strategies: Trend={local_settings.enable_trend_strategy}, Flat={local_settings.enable_flat_strategy}, ML={local_settings.enable_ml_strategy}, Momentum={local_settings.enable_momentum_strategy}, Liquidity={local_settings.enable_liquidity_sweep_strategy}, SMC={local_settings.enable_smc_strategy}, ICT={local_settings.enable_ict_strategy}, LiquidationHunter={local_settings.enable_liquidation_hunter_strategy}, ZScore={local_settings.enable_zscore_strategy}, VBO={local_settings.enable_vbo_strategy}")
+    # Получаем настройки стратегий для текущей пары
+    symbol_strategy_settings = local_settings.get_strategy_settings_for_symbol(symbol)
+    print(f"[live] [{symbol}] 📊 Active strategies: Trend={symbol_strategy_settings.enable_trend_strategy}, Flat={symbol_strategy_settings.enable_flat_strategy}, ML={symbol_strategy_settings.enable_ml_strategy}, Momentum={symbol_strategy_settings.enable_momentum_strategy}, Liquidity={symbol_strategy_settings.enable_liquidity_sweep_strategy}, SMC={symbol_strategy_settings.enable_smc_strategy}, ICT={symbol_strategy_settings.enable_ict_strategy}, LiquidationHunter={symbol_strategy_settings.enable_liquidation_hunter_strategy}, ZScore={symbol_strategy_settings.enable_zscore_strategy}, VBO={symbol_strategy_settings.enable_vbo_strategy}")
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
     print(f"[live] [{symbol}] ========================================")
     
@@ -3243,9 +3245,12 @@ def run_live_from_api(
             ml_actionable = []
             ml_filtered = []
             
+            # Получаем настройки стратегий для текущей пары
+            symbol_strategy_settings = current_settings.get_strategy_settings_for_symbol(symbol)
+            
             # Trend стратегия (старая или новая Momentum)
-            if current_settings.enable_trend_strategy or current_settings.enable_momentum_strategy:
-                use_momentum = current_settings.enable_momentum_strategy
+            if symbol_strategy_settings.enable_trend_strategy or symbol_strategy_settings.enable_momentum_strategy:
+                use_momentum = symbol_strategy_settings.enable_momentum_strategy
                 strategy_name = "MOMENTUM" if use_momentum else "TREND"
                 trend_signals = build_signals(df_ready, current_settings.strategy, use_momentum=use_momentum, use_liquidity=False)
                 # Фильтруем сигналы по префиксу reason
@@ -3310,7 +3315,7 @@ def run_live_from_api(
                 _log(f"⚠️ TREND strategy is DISABLED for {symbol}", symbol)
             
             # Flat стратегия
-            if current_settings.enable_flat_strategy:
+            if symbol_strategy_settings.enable_flat_strategy:
                 flat_signals = build_signals(df_ready, current_settings.strategy, use_momentum=False, use_liquidity=False)
                 flat_generated = [s for s in flat_signals if s.reason.startswith("range_") and s.action in (Action.LONG, Action.SHORT)]
                 strategy_name = "FLAT"
@@ -3403,7 +3408,7 @@ def run_live_from_api(
             #     _log(f"⚠️ LIQUIDITY strategy is DISABLED for {symbol}", symbol)
             
             # Smart Money Concepts (SMC) стратегия
-            if current_settings.enable_smc_strategy:
+            if symbol_strategy_settings.enable_smc_strategy:
                 try:
                     # SMC требует много истории (минимум 1000 свечей для надежности)
                     if len(df_ready) >= 200:
@@ -3443,7 +3448,7 @@ def run_live_from_api(
                 _log(f"⚠️ SMC strategy is DISABLED for {symbol}", symbol)
             
             # ICT Silver Bullet стратегия
-            if current_settings.enable_ict_strategy:
+            if symbol_strategy_settings.enable_ict_strategy:
                 try:
                     if len(df_ready) >= 200:
                         _log(f"🔍 ICT: Building signals with {len(df_ready)} candles for {symbol}", symbol)
@@ -3488,7 +3493,7 @@ def run_live_from_api(
                 _log(f"⚠️ ICT strategy is DISABLED for {symbol}", symbol)
             
             # Liquidation Hunter стратегия
-            if current_settings.enable_liquidation_hunter_strategy:
+            if symbol_strategy_settings.enable_liquidation_hunter_strategy:
                 try:
                     if len(df_ready) >= 200:
                         _log(f"🔍 Liquidation Hunter: Building signals with {len(df_ready)} candles for {symbol}", symbol)
@@ -3533,7 +3538,7 @@ def run_live_from_api(
                 _log(f"⚠️ Liquidation Hunter strategy is DISABLED for {symbol}", symbol)
             
             # Z-Score стратегия
-            if current_settings.enable_zscore_strategy:
+            if symbol_strategy_settings.enable_zscore_strategy:
                 try:
                     if len(df_ready) >= 20:
                         _log(f"🔍 Z-Score: Building signals with {len(df_ready)} candles for {symbol}", symbol)
@@ -3578,7 +3583,7 @@ def run_live_from_api(
                 _log(f"⚠️ Z-Score strategy is DISABLED for {symbol}", symbol)
             
             # VBO (Volatility Breakout) стратегия
-            if current_settings.enable_vbo_strategy:
+            if symbol_strategy_settings.enable_vbo_strategy:
                 try:
                     if len(df_ready) >= 50:
                         _log(f"🔍 VBO: Building signals with {len(df_ready)} candles for {symbol}", symbol)
@@ -3623,7 +3628,7 @@ def run_live_from_api(
                 _log(f"⚠️ VBO strategy is DISABLED for {symbol}", symbol)
             
             # ML стратегия
-            if current_settings.enable_ml_strategy and current_settings.ml_model_path:
+            if symbol_strategy_settings.enable_ml_strategy and current_settings.ml_model_path:
                 try:
                     # Логируем, какая модель используется для этого символа
                     _log(f"🤖 Using ML model: {current_settings.ml_model_path}", symbol)
@@ -4373,8 +4378,8 @@ def run_live_from_api(
             sig = None
             should_add_to_position = False  # Флаг для добавления к позиции при подтверждении
             
-            # Получаем приоритет стратегии
-            strategy_priority = current_settings.strategy_priority
+            # Получаем приоритет стратегии для текущей пары
+            strategy_priority = symbol_strategy_settings.strategy_priority
             
             # Проверяем тренд BTC для фильтрации сигналов других пар
             btc_trend = None  # "bullish", "bearish", или None (если BTC не в активных парах или это сам BTC)
