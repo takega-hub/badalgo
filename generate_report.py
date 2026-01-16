@@ -829,7 +829,7 @@ def generate_report(strategies: List[str], symbols: List[str], days: int = 30, o
     print("=" * 100)
 
 
-def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl: float = 0.0, min_win_rate: float = 0.0) -> Dict:
+def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl: float = 0.0, min_win_rate: float = 0.0, progress_callback=None) -> Dict:
     """
     Автоматически оптимизирует стратегии: тестирует все стратегии для всех символов,
     определяет лучшие (прибыльные) стратегии и возвращает рекомендации по настройкам.
@@ -867,6 +867,11 @@ def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl:
         for symbol in symbols:
             current_test += 1
             print(f"[{current_test}/{total_tests}] Тестирование {strategy.upper()} на {symbol}...", end=" ", flush=True)
+            
+            # Обновляем прогресс через callback, если он предоставлен
+            if progress_callback:
+                progress_callback(current_test, total_tests, f"{strategy.upper()} на {symbol}")
+            
             result = test_strategy_silent(strategy, symbol, days)
             results.append(result)
             if result.error:
@@ -960,6 +965,21 @@ def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl:
     print("\n" + "=" * 100)
     print("✅ ОПТИМИЗАЦИЯ ЗАВЕРШЕНА")
     print("=" * 100)
+    
+    # Сводка по всем символам
+    total_profitable = sum(len(rec.get("profitable_strategies", [])) for rec in recommendations.values())
+    print(f"\n📊 ИТОГОВАЯ СВОДКА:")
+    print(f"  Всего символов проанализировано: {len(recommendations)}")
+    print(f"  Всего прибыльных стратегий найдено: {total_profitable}")
+    for symbol, rec in recommendations.items():
+        profitable = rec.get("profitable_strategies", [])
+        if profitable:
+            best = profitable[0]
+            print(f"  {symbol}: {len(profitable)} стратегий, лучшая - {best['strategy'].upper()} (PnL: {best['pnl']:+.2f} USDT, WR: {best['win_rate']:.1f}%)")
+        else:
+            print(f"  {symbol}: ⚠️ Нет прибыльных стратегий")
+    
+    print("\n" + "=" * 100)
     
     return {
         "recommendations": recommendations,

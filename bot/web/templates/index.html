@@ -4109,59 +4109,62 @@
             }
         }
         
-        async function optimizeStrategies() {
-            const btn = document.getElementById('optimize-btn');
-            const statusDiv = document.getElementById('optimize-status');
-            const resultsDiv = document.getElementById('optimize-results');
-            
-            if (!btn || !statusDiv) return;
-            
-            // Получаем параметры
-            const days = parseInt(document.getElementById('optimize-days')?.value || '30');
-            const minPnl = parseFloat(document.getElementById('optimize-min-pnl')?.value || '0.0');
-            const minWinRate = parseFloat(document.getElementById('optimize-min-win-rate')?.value || '0.0');
-            
-            if (!confirm(`Запустить оптимизацию стратегий?\n\nПериод: ${days} дней\nМинимальный PnL: ${minPnl} USDT\nМинимальный Win Rate: ${minWinRate}%\n\nЭто может занять несколько минут...`)) {
-                return;
-            }
-            
-            // Блокируем кнопку и показываем статус
-            btn.disabled = true;
-            btn.textContent = '⏳ Оптимизация в процессе...';
-            statusDiv.innerHTML = '<span style="color: #00d4ff;">🔄 Запуск оптимизации стратегий... Это может занять несколько минут.</span>';
-            resultsDiv.style.display = 'none';
-            resultsDiv.innerHTML = '';
-            
+        let optimizationPollInterval = null;
+        
+        async function checkOptimizationStatus() {
             try {
-                const response = await fetch('/api/strategy/optimize', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        days: days,
-                        min_pnl: minPnl,
-                        min_win_rate: minWinRate,
-                        auto_apply: true
-                    })
-                });
+                const response = await fetch('/api/strategy/optimize/status');
+                const status = await response.json();
                 
-                const result = await response.json();
+                const btn = document.getElementById('optimize-btn');
+                const statusDiv = document.getElementById('optimize-status');
+                const resultsDiv = document.getElementById('optimize-results');
                 
-                if (response.ok && result.success) {
+                if (!statusDiv) return;
+                
+                // Обновляем прогресс
+                if (status.running) {
+                    const progress = status.total > 0 ? Math.round((status.progress / status.total) * 100) : 0;
+                    statusDiv.innerHTML = `
+                        <div style="margin-bottom: 10px;">
+                            <span style="color: #00d4ff;">🔄 ${status.current_test || 'Оптимизация в процессе...'}</span>
+                        </div>
+                        <div style="width: 100%; background: #2a2a2a; border-radius: 4px; overflow: hidden; height: 20px;">
+                            <div style="width: ${progress}%; background: linear-gradient(90deg, #00d4ff 0%, #0099cc 100%); height: 100%; transition: width 0.3s ease; display: flex; align-items: center; justify-content: center; color: #000; font-size: 0.8em; font-weight: bold;">
+                                ${progress}%
+                            </div>
+                        </div>
+                        <div style="margin-top: 5px; color: #888; font-size: 0.9em;">
+                            Прогресс: ${status.progress} / ${status.total}
+                        </div>
+                    `;
+                } else if (status.error) {
+                    // Ошибка
+                    statusDiv.innerHTML = `<span style="color: #ff4444;">❌ Ошибка: ${status.error}</span>`;
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '🚀 Запустить оптимизацию стратегий';
+                    }
+                    if (optimizationPollInterval) {
+                        clearInterval(optimizationPollInterval);
+                        optimizationPollInterval = null;
+                    }
+                    alert(`❌ Ошибка оптимизации: ${status.error}`);
+                } else if (status.result) {
+                    // Завершено успешно
                     statusDiv.innerHTML = '<span style="color: #00ff88;">✅ Оптимизация завершена успешно!</span>';
                     
                     // Показываем результаты
                     let resultsHtml = '<div style="margin-top: 20px; padding: 15px; background: #1a2a2a; border-radius: 8px;">';
                     resultsHtml += '<h4 style="color: #00d4ff; margin-top: 0;">📊 Результаты оптимизации:</h4>';
                     
-                    const recommendations = result.optimization_result?.recommendations || {};
-                    const appliedSettings = result.applied_settings || {};
+                    const optimizationResult = status.result.optimization_result || {};
+                    const recommendations = optimizationResult.recommendations || {};
+                    const appliedSettings = status.result.applied_settings || {};
                     
                     for (const [symbol, rec] of Object.entries(recommendations)) {
                         const profitable = rec.profitable_strategies || [];
                         const settings = rec.settings || {};
-                        const applied = appliedSettings[symbol] || {};
                         
                         resultsHtml += `<div style="margin-bottom: 20px; padding: 15px; background: #2a2a2a; border-radius: 6px; border-left: 4px solid #00d4ff;">`;
                         resultsHtml += `<h5 style="color: #00d4ff; margin-top: 0;">${symbol}</h5>`;
@@ -4201,18 +4204,99 @@
                         }
                     }, 1000);
                     
-                    alert(`✅ Оптимизация завершена!\n\nНастройки автоматически применены для всех торговых пар.\n\n${result.message || ''}`);
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '🚀 Запустить оптимизацию стратегий';
+                    }
+                    
+                    if (optimizationPollInterval) {
+                        clearInterval(optimizationPollInterval);
+                        optimizationPollInterval = null;
+                    }
+                    
+                    alert(`✅ Оптимизация завершена!\n\nНастройки автоматически применены для всех торговых пар.\n\n${status.result.message || ''}`);
+                }
+            } catch (error) {
+                console.error('Error checking optimization status:', error);
+            }
+        }
+        
+        async function optimizeStrategies() {
+            const btn = document.getElementById('optimize-btn');
+            const statusDiv = document.getElementById('optimize-status');
+            const resultsDiv = document.getElementById('optimize-results');
+            
+            if (!btn || !statusDiv) return;
+            
+            // Получаем параметры
+            const days = parseInt(document.getElementById('optimize-days')?.value || '30');
+            const minPnl = parseFloat(document.getElementById('optimize-min-pnl')?.value || '0.0');
+            const minWinRate = parseFloat(document.getElementById('optimize-min-win-rate')?.value || '0.0');
+            
+            if (!confirm(`Запустить оптимизацию стратегий?\n\nПериод: ${days} дней\nМинимальный PnL: ${minPnl} USDT\nМинимальный Win Rate: ${minWinRate}%\n\nЭто может занять несколько минут...`)) {
+                return;
+            }
+            
+            // Останавливаем предыдущий polling, если он был
+            if (optimizationPollInterval) {
+                clearInterval(optimizationPollInterval);
+                optimizationPollInterval = null;
+            }
+            
+            // Блокируем кнопку и показываем статус
+            btn.disabled = true;
+            btn.textContent = '⏳ Оптимизация в процессе...';
+            statusDiv.innerHTML = '<span style="color: #00d4ff;">🔄 Запуск оптимизации стратегий... Это может занять несколько минут.</span>';
+            resultsDiv.style.display = 'none';
+            resultsDiv.innerHTML = '';
+            
+            try {
+                console.log('[optimizeStrategies] Sending request to /api/strategy/optimize');
+                const requestData = {
+                    days: days,
+                    min_pnl: minPnl,
+                    min_win_rate: minWinRate,
+                    auto_apply: true
+                };
+                console.log('[optimizeStrategies] Request data:', requestData);
+                
+                const response = await fetch('/api/strategy/optimize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestData)
+                });
+                
+                console.log('[optimizeStrategies] Response status:', response.status);
+                console.log('[optimizeStrategies] Response ok:', response.ok);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('[optimizeStrategies] Error response:', errorText);
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                
+                const result = await response.json();
+                console.log('[optimizeStrategies] Response data:', result);
+                
+                if (result.success) {
+                    // Начинаем polling статуса каждые 2 секунды
+                    checkOptimizationStatus(); // Первая проверка сразу
+                    optimizationPollInterval = setInterval(checkOptimizationStatus, 2000);
                 } else {
                     statusDiv.innerHTML = `<span style="color: #ff4444;">❌ Ошибка: ${result.error || 'Неизвестная ошибка'}</span>`;
+                    btn.disabled = false;
+                    btn.textContent = '🚀 Запустить оптимизацию стратегий';
                     alert(`❌ Ошибка оптимизации: ${result.error || 'Неизвестная ошибка'}`);
                 }
             } catch (error) {
-                console.error('Error optimizing strategies:', error);
+                console.error('[optimizeStrategies] Error:', error);
+                console.error('[optimizeStrategies] Error stack:', error.stack);
                 statusDiv.innerHTML = `<span style="color: #ff4444;">❌ Ошибка: ${error.message}</span>`;
-                alert(`❌ Ошибка при оптимизации: ${error.message}`);
-            } finally {
                 btn.disabled = false;
                 btn.textContent = '🚀 Запустить оптимизацию стратегий';
+                alert(`❌ Ошибка при оптимизации: ${error.message}\n\nПроверьте консоль браузера (F12) для подробностей.`);
             }
         }
         window.optimizeStrategies = optimizeStrategies; // Make global

@@ -19,7 +19,8 @@ import pytz
 
 # Добавляем путь к корню проекта для импорта generate_report
 project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
@@ -32,11 +33,44 @@ import pandas as pd
 MATPLOTLIB_AVAILABLE = False
 
 from bot.config import load_settings, AppSettings, StrategyParams, RiskParams, SymbolStrategySettings, save_symbol_strategy_settings
-from generate_report import optimize_strategies_auto
+
+# Импортируем optimize_strategies_auto с обработкой ошибок
+try:
+    # Пробуем импортировать из корня проекта
+    import importlib.util
+    generate_report_path = project_root / "generate_report.py"
+    if generate_report_path.exists():
+        spec = importlib.util.spec_from_file_location("generate_report", generate_report_path)
+        generate_report_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generate_report_module)
+        optimize_strategies_auto = generate_report_module.optimize_strategies_auto
+        print(f"[web] ✅ Successfully imported optimize_strategies_auto from {generate_report_path}")
+    else:
+        # Fallback на обычный импорт
+        from generate_report import optimize_strategies_auto
+        print(f"[web] ✅ Successfully imported optimize_strategies_auto (fallback)")
+except Exception as e:
+    print(f"[web] ⚠️ Error importing optimize_strategies_auto: {e}")
+    import traceback
+    traceback.print_exc()
+    # Создаем заглушку для избежания ошибок
+    def optimize_strategies_auto(*args, **kwargs):
+        raise ImportError(f"optimize_strategies_auto not available: {e}")
 from bot.exchange.bybit_client import BybitClient
 
 # Конфигурация логирования
 WEB_VERBOSE_LOGGING = os.getenv("WEB_VERBOSE_LOGGING", "false").lower() == "true"
+
+# Глобальное хранилище для статуса оптимизации
+optimization_status = {
+    "running": False,
+    "progress": 0,
+    "total": 0,
+    "current_test": "",
+    "result": None,
+    "error": None
+}
+optimization_lock = threading.Lock()
 
 def _web_log(message: str, always_show: bool = False):
     """Логирование веб-интерфейса с фильтром."""
@@ -1580,38 +1614,46 @@ def api_strategy_stats():
     return jsonify(stats)
 
 
-@app.route("/api/strategy/optimize", methods=["POST"])
-@login_required
-def api_optimize_strategies():
-    """Запустить автоматическую оптимизацию стратегий и применить лучшие настройки."""
-    global settings
-    
-    if not settings:
-        return jsonify({"error": "Settings not loaded"}), 500
+def _run_optimization_async(symbols, days, min_pnl, min_win_rate, auto_apply):
+    """Запускает оптимизацию в фоновом потоке"""
+    global optimization_status, settings
+    from generate_report import test_strategy_silent
     
     try:
-        data = request.get_json() or {}
-        days = data.get("days", 30)
-        min_pnl = data.get("min_pnl", 0.0)
-        min_win_rate = data.get("min_win_rate", 0.0)
-        auto_apply = data.get("auto_apply", True)  # Автоматически применять настройки
+        all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "liquidation_hunter", "zscore", "vbo"]
+        total_tests = len(all_strategies) * len(symbols)
         
-        # Получаем список символов для оптимизации
-        symbols = data.get("symbols", None)
-        if not symbols:
-            symbols = settings.active_symbols if settings.active_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        with optimization_lock:
+            optimization_status["running"] = True
+            optimization_status["progress"] = 0
+            optimization_status["total"] = total_tests
+            optimization_status["current_test"] = "Инициализация..."
+            optimization_status["result"] = None
+            optimization_status["error"] = None
         
-        print(f"[web] 🚀 Starting strategy optimization for {symbols}, days={days}, min_pnl={min_pnl}, min_win_rate={min_win_rate}")
+        # Callback для обновления прогресса
+        def update_progress(current, total, test_name):
+            with optimization_lock:
+                optimization_status["progress"] = current
+                optimization_status["current_test"] = test_name
         
-        # Запускаем оптимизацию
+        # Запускаем оптимизацию с callback для прогресса
         optimization_result = optimize_strategies_auto(
             symbols=symbols,
             days=days,
             min_pnl=min_pnl,
-            min_win_rate=min_win_rate
+            min_win_rate=min_win_rate,
+            progress_callback=update_progress
         )
         
+        # Обновляем прогресс до 100%
+        with optimization_lock:
+            optimization_status["progress"] = optimization_status["total"]
+            optimization_status["current_test"] = "Анализ результатов..."
+        
+        print(f"[web] 📊 Optimization analysis complete. Processing recommendations...")
         recommendations = optimization_result.get("recommendations", {})
+        print(f"[web] 📋 Found recommendations for {len(recommendations)} symbol(s)")
         
         # Применяем настройки, если auto_apply=True
         applied_settings = {}
@@ -1628,23 +1670,118 @@ def api_optimize_strategies():
             
             # Сохраняем в JSON файл
             save_symbol_strategy_settings(settings)
+            print(f"[web] 💾 Saved optimized settings to symbol_strategy_settings.json")
             
             # Обновляем настройки в shared_settings для работающего бота
             from bot.shared_settings import set_settings
             set_settings(settings)
+            print(f"[web] 🔄 Updated shared_settings for running bot")
             
-            print(f"[web] ✅ Applied optimized settings for {len(applied_settings)} symbol(s)")
+            print(f"[web] ✅ Applied optimized settings for {len(applied_settings)} symbol(s):")
+            for symbol, symbol_settings_dict in applied_settings.items():
+                enabled_strategies = [k.replace('enable_', '').replace('_strategy', '') for k, v in symbol_settings_dict.items() if k.startswith('enable_') and v and k != 'enable_liquidity_sweep_strategy']
+                priority = symbol_settings_dict.get('strategy_priority', 'hybrid')
+                print(f"[web]   - {symbol}: {', '.join(enabled_strategies)} (priority: {priority})")
         
-        return jsonify({
-            "success": True,
-            "optimization_result": optimization_result,
-            "applied_settings": applied_settings if auto_apply else {},
-            "message": f"Optimization completed. {'Settings applied automatically.' if auto_apply else 'Review recommendations before applying.'}"
-        })
+        with optimization_lock:
+            optimization_status["running"] = False
+            optimization_status["current_test"] = "Завершено"
+            optimization_status["result"] = {
+                "optimization_result": optimization_result,
+                "applied_settings": applied_settings if auto_apply else {},
+                "message": f"Optimization completed. {'Settings applied automatically.' if auto_apply else 'Review recommendations before applying.'}"
+            }
+        
+        print(f"[web] 🎉 Optimization completed successfully!")
+        print(f"[web] 📊 Results: {len(recommendations)} symbols analyzed")
+        print(f"[web] 💾 Settings applied: {len(applied_settings) if auto_apply else 0} symbols")
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        with optimization_lock:
+            optimization_status["running"] = False
+            optimization_status["error"] = str(e)
+            optimization_status["current_test"] = "Ошибка"
+
+@app.route("/api/strategy/optimize", methods=["POST"])
+@login_required
+def api_optimize_strategies():
+    """Запустить автоматическую оптимизацию стратегий в фоновом режиме."""
+    global settings, optimization_status
+    
+    print(f"[web] 📥 Received optimization request")
+    
+    if not settings:
+        print(f"[web] ❌ Settings not loaded")
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    # Проверяем, не запущена ли уже оптимизация
+    with optimization_lock:
+        if optimization_status["running"]:
+            print(f"[web] ⚠️ Optimization already running")
+            return jsonify({"error": "Optimization is already running"}), 400
+    
+    try:
+        data = request.get_json() or {}
+        print(f"[web] 📊 Request data: {data}")
+        
+        days = data.get("days", 30)
+        min_pnl = data.get("min_pnl", 0.0)
+        min_win_rate = data.get("min_win_rate", 0.0)
+        auto_apply = data.get("auto_apply", True)
+        
+        # Получаем список символов для оптимизации
+        symbols = data.get("symbols", None)
+        if not symbols:
+            symbols = settings.active_symbols if settings.active_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        
+        print(f"[web] 🚀 Starting strategy optimization in background for {symbols}, days={days}, min_pnl={min_pnl}, min_win_rate={min_win_rate}")
+        
+        # Проверяем, что функция доступна
+        if not callable(optimize_strategies_auto):
+            error_msg = "optimize_strategies_auto function is not available"
+            print(f"[web] ❌ {error_msg}")
+            return jsonify({"error": error_msg}), 500
+        
+        # Запускаем оптимизацию в фоновом потоке
+        thread = threading.Thread(
+            target=_run_optimization_async,
+            args=(symbols, days, min_pnl, min_win_rate, auto_apply),
+            daemon=True
+        )
+        thread.start()
+        
+        print(f"[web] ✅ Optimization thread started")
+        
+        return jsonify({
+            "success": True,
+            "message": "Optimization started in background",
+            "status": "running"
+        })
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"[web] ❌ Error in api_optimize_strategies: {e}")
+        print(f"[web] ❌ Traceback: {error_trace}")
+        return jsonify({"error": str(e), "traceback": error_trace}), 500
+
+@app.route("/api/strategy/optimize/status", methods=["GET"])
+@login_required
+def api_optimize_strategies_status():
+    """Получить статус оптимизации стратегий."""
+    global optimization_status
+    
+    with optimization_lock:
+        status = {
+            "running": optimization_status["running"],
+            "progress": optimization_status["progress"],
+            "total": optimization_status["total"],
+            "current_test": optimization_status["current_test"],
+            "result": optimization_status["result"],
+            "error": optimization_status["error"]
+        }
+    
+    return jsonify(status)
 
 @app.route("/api/strategy/stats/all")
 @login_required
