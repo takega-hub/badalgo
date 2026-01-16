@@ -298,6 +298,22 @@ def load_settings() -> AppSettings:
         enable_ict_raw = cleaned_env_values.get("ENABLE_ICT_STRATEGY", "")
     enable_ict = enable_ict_raw.strip().lower() if enable_ict_raw else ""
     
+    # Загружаем настройки новых стратегий
+    enable_liquidation_hunter_raw = os.getenv("ENABLE_LIQUIDATION_HUNTER_STRATEGY", "")
+    if not enable_liquidation_hunter_raw:
+        enable_liquidation_hunter_raw = cleaned_env_values.get("ENABLE_LIQUIDATION_HUNTER_STRATEGY", "")
+    enable_liquidation_hunter = enable_liquidation_hunter_raw.strip().lower() if enable_liquidation_hunter_raw else ""
+    
+    enable_zscore_raw = os.getenv("ENABLE_ZSCORE_STRATEGY", "")
+    if not enable_zscore_raw:
+        enable_zscore_raw = cleaned_env_values.get("ENABLE_ZSCORE_STRATEGY", "")
+    enable_zscore = enable_zscore_raw.strip().lower() if enable_zscore_raw else ""
+    
+    enable_vbo_raw = os.getenv("ENABLE_VBO_STRATEGY", "")
+    if not enable_vbo_raw:
+        enable_vbo_raw = cleaned_env_values.get("ENABLE_VBO_STRATEGY", "")
+    enable_vbo = enable_vbo_raw.strip().lower() if enable_vbo_raw else ""
+    
     smc_max_fvg_age_bars = os.getenv("SMC_MAX_FVG_AGE_BARS", "").strip()
     if smc_max_fvg_age_bars:
         try:
@@ -410,6 +426,15 @@ def load_settings() -> AppSettings:
     if "ENABLE_ICT_STRATEGY" in cleaned_env_values or enable_ict_raw:
         settings.enable_ict_strategy = enable_ict in ("true", "1", "yes")
     
+    if "ENABLE_LIQUIDATION_HUNTER_STRATEGY" in cleaned_env_values or enable_liquidation_hunter_raw:
+        settings.enable_liquidation_hunter_strategy = enable_liquidation_hunter in ("true", "1", "yes")
+    
+    if "ENABLE_ZSCORE_STRATEGY" in cleaned_env_values or enable_zscore_raw:
+        settings.enable_zscore_strategy = enable_zscore in ("true", "1", "yes")
+    
+    if "ENABLE_VBO_STRATEGY" in cleaned_env_values or enable_vbo_raw:
+        settings.enable_vbo_strategy = enable_vbo in ("true", "1", "yes")
+    
     # Логируем загруженные настройки для отладки
     print(f"[config] Loaded strategy settings from .env:")
     print(f"  TRADING_SYMBOL='{trading_symbol_raw}' -> {settings.symbol}")
@@ -420,13 +445,16 @@ def load_settings() -> AppSettings:
     print(f"  ENABLE_LIQUIDITY_SWEEP_STRATEGY='{enable_liquidity_raw}' -> {settings.enable_liquidity_sweep_strategy}")
     print(f"  ENABLE_SMC_STRATEGY='{enable_smc_raw}' -> {settings.enable_smc_strategy}")
     print(f"  ENABLE_ICT_STRATEGY='{enable_ict_raw}' -> {settings.enable_ict_strategy}")
+    print(f"  ENABLE_LIQUIDATION_HUNTER_STRATEGY='{enable_liquidation_hunter_raw}' -> {settings.enable_liquidation_hunter_strategy}")
+    print(f"  ENABLE_ZSCORE_STRATEGY='{enable_zscore_raw}' -> {settings.enable_zscore_strategy}")
+    print(f"  ENABLE_VBO_STRATEGY='{enable_vbo_raw}' -> {settings.enable_vbo_strategy}")
     
     # Загружаем приоритет стратегии
     strategy_priority_raw = os.getenv("STRATEGY_PRIORITY", "")
     if not strategy_priority_raw:
         strategy_priority_raw = cleaned_env_values.get("STRATEGY_PRIORITY", "")
     strategy_priority = strategy_priority_raw.strip().lower() if strategy_priority_raw else ""
-    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "hybrid", "confluence")  # liquidity убрана - стратегия отключена
+    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence")  # liquidity убрана - стратегия отключена
     if strategy_priority in allowed_priorities:
         settings.strategy_priority = strategy_priority
         print(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")
