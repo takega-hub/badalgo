@@ -27,6 +27,11 @@ warnings.filterwarnings('ignore', message='.*XGBoost.*')
 warnings.filterwarnings('ignore', message='.*Booster.save_model.*')
 warnings.filterwarnings('ignore', message='.*serialized model.*')
 
+# Подавляем DeprecationWarning от pybit (datetime.utcnow() deprecated)
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='pybit')
+warnings.filterwarnings('ignore', message='.*datetime.datetime.utcnow.*')
+warnings.filterwarnings('ignore', message='.*is deprecated and scheduled for removal.*')
+
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
@@ -2301,14 +2306,21 @@ def _sync_closed_positions_from_bybit(
         Список синхронизированных сделок
     """
     try:
-        # Получаем закрытые позиции за последние 24 часа (или с last_sync_time)
+        # Получаем закрытые позиции (API Bybit ограничивает период до 7 дней)
+        end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+        
         if last_sync_time:
             start_time = int(last_sync_time.timestamp() * 1000)
         else:
-            # По умолчанию за последние 24 часа
-            start_time = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
+            # По умолчанию за последние 7 дней (максимум для API)
+            start_time = int((datetime.now(timezone.utc) - timedelta(days=7)).timestamp() * 1000)
         
-        end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+        # ВАЖНО: Всегда ограничиваем период до 7 дней (API Bybit не позволяет больше)
+        time_diff_ms = end_time - start_time
+        max_period_ms = 7 * 24 * 60 * 60 * 1000  # 7 дней в миллисекундах
+        if time_diff_ms > max_period_ms:
+            # Ограничиваем до 7 дней от текущего времени
+            start_time = end_time - max_period_ms
         
         # Получаем закрытые позиции
         closed_pnl_resp = client.get_closed_pnl(
@@ -2773,14 +2785,17 @@ def run_live_from_api(
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
     print(f"[live] [{symbol}] ========================================")
     
-    # Синхронизируем закрытые позиции при старте (за последние 30 дней для полной истории)
-    last_sync_time = datetime.now(timezone.utc) - timedelta(days=30)
+    # Синхронизируем закрытые позиции при старте (API Bybit ограничивает до 7 дней)
+    # Синхронизируем только последние 7 дней при старте, остальное будет синхронизировано периодически
     try:
-        synced_count = len(_sync_closed_positions_from_bybit(client, symbol, last_sync_time))
-        if synced_count > 0:
-            print(f"[live] [{symbol}] ✅ Synced {synced_count} closed positions from Bybit on startup")
+        sync_start = datetime.now(timezone.utc) - timedelta(days=7)
+        synced = _sync_closed_positions_from_bybit(client, symbol, sync_start)
+        if len(synced) > 0:
+            print(f"[live] [{symbol}] ✅ Synced {len(synced)} closed positions from Bybit on startup (last 7 days)")
     except Exception as e:
-        print(f"[live] [{symbol}] ⚠️ Error syncing closed positions on startup: {e}")
+        # Подавляем ошибки о превышении лимита, если они все еще возникают
+        if "cannot exceed 7 days" not in str(e):
+            print(f"[live] [{symbol}] ⚠️ Error syncing closed positions on startup: {e}")
     
     # Проверяем существующие открытые позиции при старте и устанавливаем TP/SL
     print(f"[live] [{symbol}] 🔍 Checking for existing open positions...")

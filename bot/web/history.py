@@ -128,12 +128,24 @@ def _load_history() -> Dict[str, List]:
         try:
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 history = json.load(f)
-            trades_count = len(history.get("trades", []))
-            signals_count = len(history.get("signals", []))
-            if trades_count > 0 or signals_count > 0:
-                print(f"[history] ✅ Loaded history from {HISTORY_FILE}: {trades_count} trades, {signals_count} signals")
+            # Логируем только при первой загрузке или при ошибках (убрали частые логи)
+        except json.JSONDecodeError as e:
+            # Ошибка парсинга JSON - возможно файл поврежден, пробуем восстановить
+            print(f"[history] ⚠️ JSON decode error in {HISTORY_FILE}: {e}")
+            # Пытаемся создать резервную копию и начать с пустой истории
+            try:
+                backup_file = HISTORY_FILE.with_suffix('.json.bak')
+                if HISTORY_FILE.exists():
+                    import shutil
+                    shutil.copy2(HISTORY_FILE, backup_file)
+                    print(f"[history] Created backup: {backup_file}")
+            except Exception:
+                pass
+            return {"trades": [], "signals": []}
         except Exception as e:
-            print(f"[history] ⚠️ Error loading history from {HISTORY_FILE}: {e}")
+            # Другие ошибки (IOError и т.д.) - логируем только серьезные
+            if "Expecting value" not in str(e) and "Extra data" not in str(e):
+                print(f"[history] ⚠️ Error loading history from {HISTORY_FILE}: {e}")
             return {"trades": [], "signals": []}
     else:
         # 2. Пытаемся найти legacy-файлы
@@ -167,7 +179,9 @@ def _load_history() -> Dict[str, List]:
         duplicates_removed = remove_duplicate_trades_internal(history)
         if duplicates_removed > 0:
             _save_history(history)
-            print(f"[history] Auto-removed {duplicates_removed} duplicate trades on load")
+            # Логируем только если удалено много дубликатов (>10)
+            if duplicates_removed > 10:
+                print(f"[history] Auto-removed {duplicates_removed} duplicate trades on load")
     except Exception as e:
         print(f"[history] ⚠️ Error removing duplicates on load: {e}")
 
@@ -258,7 +272,7 @@ def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) 
             # Если существующая сделка имеет unknown, а новая - нет, обновляем
             if existing_strategy == "unknown" and new_strategy != "unknown":
                 existing_trade["strategy_type"] = new_strategy
-                print(f"[history] Updated strategy_type for duplicate: {new_strategy} (time: {exit_time_normalized})")
+                # Убрали логирование - слишком часто
             
             duplicates_removed += 1
             # Не добавляем дубликат в unique_trades
@@ -275,12 +289,24 @@ def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) 
 
 
 def _save_history(history: Dict[str, List]):
-    """Сохранить историю в файл."""
+    """Сохранить историю в файл (атомарная запись через временный файл)."""
     try:
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        # Атомарная запись через временный файл для предотвращения повреждения при конкурентной записи
+        temp_file = HISTORY_FILE.with_suffix('.json.tmp')
+        with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
+        # Атомарно заменяем основной файл
+        import shutil
+        shutil.move(str(temp_file), str(HISTORY_FILE))
     except Exception as e:
-        print(f"[history] Error saving history: {e}")
+        print(f"[history] ⚠️ Error saving history: {e}")
+        # Пытаемся удалить временный файл если он остался
+        try:
+            temp_file = HISTORY_FILE.with_suffix('.json.tmp')
+            if temp_file.exists():
+                temp_file.unlink()
+        except Exception:
+            pass
 
 
 def add_signal(action: str, reason: str, price: float, timestamp: Any = None, symbol: str = "", strategy_type: str = "unknown", signal_id: Optional[str] = None):
@@ -470,7 +496,7 @@ def add_trade(
             if existing_trade.get("strategy_type", "unknown") == "unknown" and strategy_type != "unknown":
                 existing_trade["strategy_type"] = strategy_type
                 _save_history(history)
-                print(f"[history] Updated strategy_type for duplicate trade: {strategy_type}")
+                # Убрали логирование - слишком часто
             return  # Дубликат, не добавляем
     
     # Создаем новую сделку
@@ -496,9 +522,8 @@ def add_trade(
     if len(history["trades"]) > MAX_TRADES:
         history["trades"] = history["trades"][-MAX_TRADES:]
     
-    # Сохраняем историю в файл
+    # Сохраняем историю в файл (без лишнего логирования)
     _save_history(history)
-    print(f"[history] ✅ Saved trade to history: {symbol} {side} @ {entry_price_normalized:.2f} -> {exit_price_normalized:.2f} (PnL: {pnl_normalized:.2f} USDT, Strategy: {strategy_type})")
 
 
 def get_trades(limit: int = 50, strategy_filter: Optional[str] = None, symbol_filter: Optional[str] = None) -> List[Dict[str, Any]]:
