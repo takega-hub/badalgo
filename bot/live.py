@@ -3730,7 +3730,7 @@ def run_live_from_api(
             
             # Функция для проверки, является ли сигнал свежим (от последних 5-10 свечей для более гибкой обработки)
             def is_signal_fresh(sig, df_ready):
-                """Проверяет, является ли сигнал свежим (от последних 5-10 свечей)."""
+                """Проверяет, является ли сигнал свежим (не старше 15 минут от текущего времени)."""
                 try:
                     if df_ready.empty:
                         return True
@@ -3743,8 +3743,17 @@ def run_live_from_api(
                         else:
                             signal_ts = signal_ts.tz_convert('UTC')
                         
-                        # Проверяем последние 10 свечей (увеличено с 3 для более гибкой обработки)
-                        # Это позволяет обрабатывать сигналы, которые могли быть пропущены из-за задержек
+                        # Получаем текущее время
+                        current_time_utc = datetime.now(timezone.utc)
+                        if isinstance(current_time_utc, pd.Timestamp):
+                            current_time_utc = current_time_utc.to_pydatetime()
+                        
+                        # ВСЕ сигналы проверяются одинаково: не старше 15 минут от текущего времени
+                        time_diff_from_now = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds())
+                        if time_diff_from_now <= 900:  # 15 минут = 900 секунд
+                            return True
+                        
+                        # Дополнительно проверяем последние свечи (на случай, если время немного расходится)
                         num_candles_to_check = min(10, len(df_ready))
                         last_timestamps = df_ready.index[-num_candles_to_check:].tolist()
                         for last_ts in last_timestamps:
@@ -3755,10 +3764,9 @@ def run_live_from_api(
                                 else:
                                     last_ts_utc = last_ts_utc.tz_convert('UTC')
                                 
-                                # Сигнал считается свежим, если его timestamp совпадает с одной из последних 10 свечей (в пределах 5 минут)
-                                # Увеличено окно с 60 секунд до 5 минут для более гибкой обработки
+                                # Сигнал считается свежим, если его timestamp совпадает с одной из последних свечей (в пределах 15 минут)
                                 time_diff_seconds = abs((signal_ts - last_ts_utc).total_seconds())
-                                if time_diff_seconds < 300:  # 5 минут вместо 60 секунд
+                                if time_diff_seconds < 900:  # 15 минут
                                     return True
                     return False
                 except Exception as e:
@@ -4549,24 +4557,51 @@ def run_live_from_api(
                         print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                 else:
                     # Режим приоритета конкретной стратегии
+                    # Если установлен приоритет конкретной стратегии, используем ТОЛЬКО сигналы от этой стратегии
+                    # Сигналы от других стратегий, которые противоречат приоритетной, игнорируются
                     priority_sig = strategy_signals.get(strategy_priority)
-                    if priority_sig and is_signal_fresh(priority_sig, df_ready):
-                        sig = priority_sig
-                        print(f"[live] ✅ Priority {strategy_priority.upper()} (FRESH): {sig.action.value}")
-                    elif fresh_available:
-                        # Если приоритетная не свежая, но есть другие свежие - берем самую свежую
-                        fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                        sig = fresh_available[-1][1]
-                        strategy_name = fresh_available[-1][0]
-                        print(f"[live] ⚡ Priority {strategy_priority.upper()} no fresh signal. Using fresh {strategy_name.upper()}: {sig.action.value}")
-                    elif priority_sig:
-                        sig = priority_sig
-                        print(f"[live] ⚠️ Using fallback priority {strategy_priority.upper()} (not fresh)")
+                    
+                    if priority_sig:
+                        # Проверяем возраст сигнала от приоритетной стратегии
+                        priority_age_ok = True
+                        try:
+                            if isinstance(priority_sig.timestamp, pd.Timestamp):
+                                signal_ts = priority_sig.timestamp
+                                if signal_ts.tzinfo is None:
+                                    signal_ts = signal_ts.tz_localize('UTC')
+                                else:
+                                    signal_ts = signal_ts.tz_convert('UTC')
+                                
+                                current_time_utc = datetime.now(timezone.utc)
+                                age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                                
+                                # Для приоритетной стратегии используем лимит 15 минут
+                                if age_from_now_minutes > 15:
+                                    priority_age_ok = False
+                                    print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old ({age_from_now_minutes:.1f} min > 15 min), waiting for fresh signal")
+                        except Exception as e:
+                            print(f"[live] ⚠️ Error checking priority signal age: {e}")
+                        
+                        if priority_age_ok:
+                            sig = priority_sig
+                            is_fresh_priority = is_signal_fresh(priority_sig, df_ready)
+                            freshness_marker = "FRESH" if is_fresh_priority else "LATEST"
+                            print(f"[live] ✅ Priority {strategy_priority.upper()} ({freshness_marker}): {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                            
+                            # Проверяем, есть ли противоречащие сигналы от других стратегий
+                            conflicting_signals = [(name, s) for name, s in available_signals 
+                                                  if s and s != priority_sig and s.action != priority_sig.action]
+                            if conflicting_signals:
+                                conflicting_names = [name for name, _ in conflicting_signals]
+                                print(f"[live] ⚠️ Ignoring {len(conflicting_signals)} conflicting signal(s) from: {', '.join(conflicting_names)} (priority: {strategy_priority})")
+                        else:
+                            # Сигнал от приоритетной стратегии слишком старый - не используем
+                            sig = None
+                            print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old, waiting for fresh signal from priority strategy")
                     else:
-                        available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                        sig = available_signals[-1][1]
-                        strategy_name = available_signals[-1][0]
-                        print(f"[live] ⚠️ No priority or fresh signals. Using latest from {strategy_name.upper()}")
+                        # Нет сигнала от приоритетной стратегии - не открываем позицию
+                        sig = None
+                        print(f"[live] ⚠️ No signal from priority strategy ({strategy_priority.upper()}), waiting for priority signal")
 
             # 4. Проверяем подтверждение (agreement) для добавления к позиции
             if sig and sig.action != Action.HOLD:
@@ -4590,62 +4625,52 @@ def run_live_from_api(
             # --- КОНЕЦ ВЫБОРА СИГНАЛА ---
 
             # 6. Финальная проверка свежести (предотвращаем торговлю на «протухших» данных)
+            # ВСЕ сигналы проверяются одинаково: не старше 15 минут от текущего времени
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
             strategy_name_for_log = get_strategy_type_from_signal(sig.reason).upper()
             strategy_type = get_strategy_type_from_signal(sig.reason)
             print(f"[live] 🔍 Freshness check for {strategy_name_for_log} signal: is_fresh={is_fresh_check}, timestamp={ts}")
             
-            # Для новых стратегий (ICT, Liquidation Hunter, Z-Score, VBO) используем более мягкий критерий свежести
-            # Они могут иметь timestamp от прошлых свечей, но быть актуальными
-            is_new_strategy = strategy_type in ["ict", "liquidation_hunter", "zscore", "vbo"]
-            max_age_minutes = 60 if is_new_strategy else 15  # Для новых стратегий - 60 минут, для остальных - 15 минут
+            # Единый критерий для ВСЕХ стратегий: не старше 15 минут от текущего времени
+            max_age_minutes = 15  # 15 минут для всех стратегий
             
-            # Проверяем, является ли это сигналом из будущего или совсем старым
+            # Проверяем возраст сигнала от текущего времени
             if not is_fresh_check:
                 ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
                 strategy_name = get_strategy_type_from_signal(sig.reason).upper()
                 
-                # Вычисляем, насколько старый сигнал для информативности
+                # Вычисляем возраст сигнала от текущего времени (не от последней свечи)
                 should_filter = False
                 try:
-                    if isinstance(ts, pd.Timestamp) and not df_ready.empty:
+                    if isinstance(ts, pd.Timestamp):
                         signal_ts = ts
                         if signal_ts.tzinfo is None:
                             signal_ts = signal_ts.tz_localize('UTC')
                         else:
                             signal_ts = signal_ts.tz_convert('UTC')
                         
-                        last_candle_ts = df_ready.index[-1]
-                        if isinstance(last_candle_ts, pd.Timestamp):
-                            last_ts_utc = last_candle_ts
-                            if last_ts_utc.tzinfo is None:
-                                last_ts_utc = last_ts_utc.tz_localize('UTC')
-                            else:
-                                last_ts_utc = last_ts_utc.tz_convert('UTC')
-                            
-                            age_minutes = abs((signal_ts - last_ts_utc).total_seconds()) / 60
-                            age_hours = age_minutes / 60
-                            
-                            # Фильтруем только если сигнал старше максимального возраста
-                            if age_minutes > max_age_minutes:
-                                should_filter = True
-                                if age_hours >= 1:
-                                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_hours:.1f} hours, max: {max_age_minutes} min), waiting for fresh signal")
-                                else:
-                                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_minutes:.1f} minutes, max: {max_age_minutes} min), waiting for fresh signal")
-                            else:
-                                # Сигнал не слишком старый, разрешаем обработку
-                                print(f"[live] ✅ {strategy_name} signal age check passed: {age_minutes:.1f} minutes (max: {max_age_minutes} min) - proceeding")
+                        current_time_utc = datetime.now(timezone.utc)
+                        age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                        age_from_now_hours = age_from_now_minutes / 60
+                        
+                        # ВСЕ сигналы: если сигнал в пределах 15 минут от текущего времени - обрабатываем немедленно
+                        if age_from_now_minutes <= 15:
+                            print(f"[live] ✅ {strategy_name} signal is FRESH (age from now: {age_from_now_minutes:.1f} min) - processing IMMEDIATELY")
+                            is_fresh_check = True  # Помечаем как свежий для дальнейшей обработки
+                        # Если сигнал старше 15 минут - фильтруем
                         else:
                             should_filter = True
-                            print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
+                            if age_from_now_hours >= 1:
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_from_now_hours:.1f} hours, max: {max_age_minutes} min)")
+                            else:
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_from_now_minutes:.1f} minutes, max: {max_age_minutes} min)")
                     else:
                         should_filter = True
-                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
+                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - invalid timestamp: {ts_str}")
                 except Exception as e:
                     should_filter = True
-                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - not from recent candles (timestamp: {ts_str}), waiting for fresh signal")
+                    print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - error checking age: {e}")
                 
                 if should_filter:
                     if bot_state:
@@ -4709,8 +4734,8 @@ def run_live_from_api(
             
             print(f"[live] ✅ Signal passed processed check (ID: {signal_id}), proceeding to open position...")
             
-            # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут
-            # Это гарантирует, что мы обрабатываем только актуальные сигналы
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут от текущего времени
+            # ВСЕ сигналы проверяются одинаково: не старше 15 минут
             signal_age_minutes = None
             try:
                 # Используем signal_time_utc, если он был вычислен выше, иначе вычисляем заново
@@ -4741,12 +4766,12 @@ def run_live_from_api(
                     age_delta = current_time_utc - signal_time_for_age
                     signal_age_minutes = age_delta.total_seconds() / 60
                     
-                    # Если сигнал старше 15 минут - не обрабатываем
-                    if signal_age_minutes > 15:
+                    # Используем max_age_minutes, определенный выше (15 минут для всех стратегий)
+                    if signal_age_minutes > max_age_minutes:
                         strategy_name = get_strategy_type_from_signal(sig.reason).upper()
                         ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
-                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_minutes:.1f} minutes > 15 minutes limit)")
-                        print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: 15 minutes. Skipping this signal.")
+                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_minutes:.1f} minutes > {max_age_minutes} minutes limit)")
+                        print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: {max_age_minutes} minutes. Skipping this signal.")
                         if bot_state:
                             bot_state["current_status"] = "Running"
                             bot_state["last_action"] = f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal..."
@@ -4756,7 +4781,7 @@ def run_live_from_api(
                             break
                         continue
                     else:
-                        print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within 15 min limit)")
+                        print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit)")
             except Exception as e:
                 # В случае ошибки при проверке возраста - логируем, но продолжаем обработку
                 print(f"[live] ⚠️ Error checking signal age: {e}, proceeding with signal processing")
@@ -4768,7 +4793,7 @@ def run_live_from_api(
             ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
             age_info = f" (age: {signal_age_minutes:.1f} min)" if signal_age_minutes is not None else ""
             print(f"[live] ✅ SELECTED for processing: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id}){age_info}")
-            print(f"[live]   ℹ️  This is a NEW signal that has NOT been processed yet. Age: {signal_age_minutes:.1f} minutes (within 15 min limit). Proceeding with execution...")
+            print(f"[live]   ℹ️  This is a NEW signal that has NOT been processed yet. Age: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit). Proceeding with execution...")
             
             # Ограничиваем размер processed_signals для оптимизации памяти
             # ВАЖНО: Не удаляем слишком много, чтобы не потерять историю обработанных сигналов
