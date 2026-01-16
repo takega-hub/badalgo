@@ -291,6 +291,9 @@ def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) 
 def _save_history(history: Dict[str, List]):
     """Сохранить историю в файл (атомарная запись через временный файл)."""
     try:
+        # Убеждаемся, что директория существует
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
         # Атомарная запись через временный файл для предотвращения повреждения при конкурентной записи
         temp_file = HISTORY_FILE.with_suffix('.json.tmp')
         with open(temp_file, 'w', encoding='utf-8') as f:
