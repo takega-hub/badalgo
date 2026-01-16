@@ -2830,6 +2830,80 @@ def run_live_from_api(
                             print(f"[live] [{symbol}] 📊 Found existing {startup_bias.value} position, taking control...")
                             print(f"[live] [{symbol}]   Entry: ${startup_position.get('avg_price', 0):.2f}, Current: ${startup_price:.2f}, Size: {startup_position.get('size', 0):.3f}")
                             
+                            # Проверяем, есть ли открытая сделка в истории для этой позиции
+                            try:
+                                from bot.web.history import _load_history
+                                history = _load_history()
+                                trades = history.get("trades", [])
+                                
+                                position_side_normalized = "long" if startup_bias == Bias.LONG else "short"
+                                open_trades = [
+                                    t for t in trades
+                                    if t.get("symbol", "").upper() == symbol.upper() and
+                                    t.get("side", "").lower() == position_side_normalized and
+                                    (not t.get("exit_time") or t.get("exit_time") == "" or t.get("exit_time") is None)
+                                ]
+                                
+                                if not open_trades:
+                                    # Нет открытой сделки в истории - пытаемся найти последний сигнал и создать сделку
+                                    signals = history.get("signals", [])
+                                    matching_signals = [
+                                        s for s in signals
+                                        if s.get("symbol", "").upper() == symbol.upper() and
+                                        s.get("action", "").lower() == position_side_normalized and
+                                        abs(float(s.get("price", 0)) - startup_position.get('avg_price', 0)) / startup_position.get('avg_price', 1) < 0.05  # В пределах 5%
+                                    ]
+                                    
+                                    if matching_signals:
+                                        # Берем последний подходящий сигнал
+                                        matching_signals.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+                                        last_signal = matching_signals[0]
+                                        
+                                        entry_price = startup_position.get('avg_price', float(last_signal.get("price", 0)))
+                                        size_usd = startup_position.get("size", 0) * entry_price
+                                        
+                                        add_trade(
+                                            entry_time=last_signal.get("timestamp", datetime.now()),
+                                            exit_time=None,  # Позиция еще открыта
+                                            side=position_side_normalized,
+                                            entry_price=entry_price,
+                                            exit_price=0.0,
+                                            size_usd=size_usd,
+                                            pnl=0.0,
+                                            entry_reason=last_signal.get("reason", "unknown"),
+                                            exit_reason="",
+                                            strategy_type=last_signal.get("strategy_type", "unknown"),
+                                            symbol=symbol,
+                                            order_id="",
+                                            order_link_id="",
+                                        )
+                                        print(f"[live] [{symbol}] 💾 Created open trade from last signal: {last_signal.get('strategy_type', 'unknown')} @ ${entry_price:.2f} ({last_signal.get('reason', 'unknown')})")
+                                    else:
+                                        # Создаем сделку с базовой информацией
+                                        entry_price = startup_position.get('avg_price', startup_price)
+                                        size_usd = startup_position.get("size", 0) * entry_price
+                                        
+                                        add_trade(
+                                            entry_time=datetime.now(),
+                                            exit_time=None,
+                                            side=position_side_normalized,
+                                            entry_price=entry_price,
+                                            exit_price=0.0,
+                                            size_usd=size_usd,
+                                            pnl=0.0,
+                                            entry_reason="existing_position",
+                                            exit_reason="",
+                                            strategy_type="unknown",
+                                            symbol=symbol,
+                                            order_id="",
+                                            order_link_id="",
+                                        )
+                                        print(f"[live] [{symbol}] 💾 Created open trade for existing position: unknown @ ${entry_price:.2f}")
+                            except Exception as e:
+                                print(f"[live] [{symbol}] ⚠️ Error checking/creating open trade: {e}")
+                                import traceback
+                                traceback.print_exc()
+                            
                             # Инициализируем отслеживание прибыли для существующей позиции
                             _update_position_tracking(
                                 startup_position,
@@ -5689,6 +5763,37 @@ def run_live_from_api(
                                 add_count=0,
                                 entry_price=sig.price
                             )
+                            
+                            # Сохраняем открытую сделку в историю (реверс LONG)
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                add_trade(
+                                    entry_time=ts_log,
+                                    exit_time=None,  # Позиция еще открыта
+                                    side="long",
+                                    entry_price=sig.price,
+                                    exit_price=0.0,
+                                    size_usd=desired_usd,
+                                    pnl=0.0,
+                                    entry_reason=sig.reason,
+                                    exit_reason="",
+                                    strategy_type=strategy_type,
+                                    symbol=symbol,
+                                    order_id=order_id,
+                                    order_link_id=order_link_id_result,
+                                )
+                                print(f"[live] 💾 Saved open LONG trade to history (reversal): {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Failed to save open LONG trade to history (reversal): {e}")
+                                import traceback
+                                traceback.print_exc()
                         else:
                             strategy_type = get_strategy_type_from_signal(sig.reason)
                             print(f"[live] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open LONG position: {resp.get('retMsg', 'Unknown error')}")
@@ -6294,6 +6399,37 @@ def run_live_from_api(
                                 add_count=0,
                                 entry_price=sig.price
                             )
+                            
+                            # Сохраняем открытую сделку в историю (реверс LONG)
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                add_trade(
+                                    entry_time=ts_log,
+                                    exit_time=None,  # Позиция еще открыта
+                                    side="long",
+                                    entry_price=sig.price,
+                                    exit_price=0.0,
+                                    size_usd=desired_usd,
+                                    pnl=0.0,
+                                    entry_reason=sig.reason,
+                                    exit_reason="",
+                                    strategy_type=strategy_type,
+                                    symbol=symbol,
+                                    order_id=order_id,
+                                    order_link_id=order_link_id_result,
+                                )
+                                print(f"[live] 💾 Saved open LONG trade to history (reversal): {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Failed to save open LONG trade to history (reversal): {e}")
+                                import traceback
+                                traceback.print_exc()
                         elif resp.get("retCode") == 110072:
                             # Ошибка дубликата order_link_id - сигнал уже обработан
                             print(f"[live] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
@@ -6342,6 +6478,41 @@ def run_live_from_api(
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
+                        
+                        # Сохраняем открытую сделку в историю
+                        try:
+                            result = resp.get("result", {})
+                            order_id = result.get("orderId", "") if result else ""
+                            order_link_id = result.get("orderLinkId", "") if result else ""
+                            
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            add_trade(
+                                entry_time=ts_log,
+                                exit_time=None,  # Позиция еще открыта
+                                side="long",
+                                entry_price=sig.price,
+                                exit_price=0.0,
+                                size_usd=desired_usd,
+                                pnl=0.0,
+                                entry_reason=sig.reason,
+                                exit_reason="",
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=order_id,
+                                order_link_id=order_link_id,
+                            )
+                            print(f"[live] 💾 Saved open LONG trade to history: {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
+                        except Exception as e:
+                            print(f"[live] ⚠️ Failed to save open LONG trade to history: {e}")
+                            import traceback
+                            traceback.print_exc()
                     else:
                         strategy_type = get_strategy_type_from_signal(sig.reason)
                         print(f"[live] [{symbol}] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open LONG position: {resp.get('retMsg', 'Unknown error')}")
@@ -6429,6 +6600,41 @@ def run_live_from_api(
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
+                        
+                        # Сохраняем открытую сделку в историю
+                        try:
+                            result = resp.get("result", {})
+                            order_id = result.get("orderId", "") if result else ""
+                            order_link_id = result.get("orderLinkId", "") if result else ""
+                            
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            
+                            add_trade(
+                                entry_time=ts_log,
+                                exit_time=None,  # Позиция еще открыта
+                                side="short",
+                                entry_price=sig.price,
+                                exit_price=0.0,
+                                size_usd=desired_usd,
+                                pnl=0.0,
+                                entry_reason=sig.reason,
+                                exit_reason="",
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=order_id,
+                                order_link_id=order_link_id,
+                            )
+                            print(f"[live] 💾 Saved open SHORT trade to history: {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
+                        except Exception as e:
+                            print(f"[live] ⚠️ Failed to save open SHORT trade to history: {e}")
+                            import traceback
+                            traceback.print_exc()
                     else:
                         strategy_type = get_strategy_type_from_signal(sig.reason)
                         print(f"[live] [{symbol}] ❌ FAILED: {strategy_type.upper()} signal {sig.action.value} - Failed to open SHORT position: {resp.get('retMsg', 'Unknown error')}")
