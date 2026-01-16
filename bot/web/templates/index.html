@@ -2038,6 +2038,15 @@
                     const strategyType = positionData.strategy_type || (data.position?.strategy_type) || '';
                     const tradeId = positionData.trade_id || (data.position?.trade_id) || '';
                     
+                    // Логирование для отладки
+                    console.log('[Position Panel] Data:', {
+                        entry_reason: entryReason,
+                        strategy_type: strategyType,
+                        trade_id: tradeId,
+                        positionData: positionData,
+                        data_position: data.position
+                    });
+                    
                     // Форматируем название стратегии
                     let strategyDisplay = 'Unknown';
                     if (strategyType) {
@@ -2065,7 +2074,10 @@
                             positionStrategyEl.style.color = '#00d4ff';
                             positionStrategyContainer.style.display = 'flex';
                         } else {
-                            positionStrategyContainer.style.display = 'none';
+                            // Показываем "Unknown" если данных нет, но позиция открыта
+                            positionStrategyEl.textContent = 'Unknown';
+                            positionStrategyEl.style.color = '#888';
+                            positionStrategyContainer.style.display = 'flex';
                         }
                     }
                     
@@ -2086,7 +2098,10 @@
                             positionEntrySignalEl.style.color = '#aaa';
                             positionEntrySignalContainer.style.display = 'flex';
                         } else {
-                            positionEntrySignalContainer.style.display = 'none';
+                            // Показываем "N/A" если данных нет, но позиция открыта
+                            positionEntrySignalEl.textContent = 'N/A';
+                            positionEntrySignalEl.style.color = '#666';
+                            positionEntrySignalContainer.style.display = 'flex';
                         }
                     }
                     
@@ -2099,7 +2114,10 @@
                             positionTradeIdEl.style.color = '#888';
                             positionTradeIdContainer.style.display = 'flex';
                         } else {
-                            positionTradeIdContainer.style.display = 'none';
+                            // Показываем "N/A" если данных нет, но позиция открыта
+                            positionTradeIdEl.textContent = 'N/A';
+                            positionTradeIdEl.style.color = '#666';
+                            positionTradeIdContainer.style.display = 'flex';
                         }
                     }
                     

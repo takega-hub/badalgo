@@ -868,6 +868,7 @@ def api_status():
                                     "leverage": symbol_position.get('leverage', settings.leverage),
                                     "entry_reason": None,  # Будет заполнено ниже
                                     "strategy_type": None,  # Будет заполнено ниже
+                                    "trade_id": None,  # Будет заполнено ниже
                                 }
                                 if symbol_position and symbol_position.get("side") and (float(symbol_position.get('size', 0)) > 0)
                                 else None
@@ -903,10 +904,13 @@ def api_status():
                                         strategy_type = last_open_trade.get("strategy_type", "unknown")
                                         trade_id = last_open_trade.get("order_id") or last_open_trade.get("order_link_id") or last_open_trade.get("id", "")
                                         
+                                        print(f"[web] [{symbol}] Found open trade: entry_reason={entry_reason}, strategy_type={strategy_type}, trade_id={trade_id}")
+                                        
                                         if symbols_status[symbol].get("position"):
                                             symbols_status[symbol]["position"]["entry_reason"] = entry_reason
                                             symbols_status[symbol]["position"]["strategy_type"] = strategy_type
                                             symbols_status[symbol]["position"]["trade_id"] = trade_id
+                                            print(f"[web] [{symbol}] Updated position with trade info: {symbols_status[symbol]['position']}")
                             except Exception as e:
                                 print(f"[web] Error getting entry signal info for {symbol}: {e}")
                     except Exception as e:
@@ -1072,10 +1076,13 @@ def api_status():
                         strategy_type = last_open_trade.get("strategy_type", "unknown")
                         trade_id = last_open_trade.get("order_id") or last_open_trade.get("order_link_id") or last_open_trade.get("id", "")
                         
+                        print(f"[web] [{primary_symbol}] Found open trade: entry_reason={entry_reason}, strategy_type={strategy_type}, trade_id={trade_id}")
+                        
                         if response_data.get("position"):
                             response_data["position"]["entry_reason"] = entry_reason
                             response_data["position"]["strategy_type"] = strategy_type
                             response_data["position"]["trade_id"] = trade_id
+                            print(f"[web] [{primary_symbol}] Updated position with trade info: {response_data['position']}")
             except Exception as e:
                 print(f"[web] Error getting entry signal info for {primary_symbol}: {e}")
         
