@@ -829,6 +829,147 @@ def generate_report(strategies: List[str], symbols: List[str], days: int = 30, o
     print("=" * 100)
 
 
+def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl: float = 0.0, min_win_rate: float = 0.0) -> Dict:
+    """
+    Автоматически оптимизирует стратегии: тестирует все стратегии для всех символов,
+    определяет лучшие (прибыльные) стратегии и возвращает рекомендации по настройкам.
+    
+    Args:
+        symbols: Список символов для тестирования (по умолчанию: все доступные)
+        days: Количество дней для тестирования
+        min_pnl: Минимальный PnL для включения стратегии (по умолчанию: 0.0 - только прибыльные)
+        min_win_rate: Минимальный Win Rate для включения стратегии (по умолчанию: 0.0)
+    
+    Returns:
+        Dict с рекомендациями по настройкам для каждого символа
+    """
+    if symbols is None:
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    
+    # Все доступные стратегии (liquidity отключена)
+    all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "liquidation_hunter", "zscore", "vbo"]
+    
+    print("=" * 100)
+    print("🤖 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ СТРАТЕГИЙ")
+    print("=" * 100)
+    print(f"Символы: {', '.join(symbols)}")
+    print(f"Период: {days} дней")
+    print(f"Минимальный PnL: {min_pnl:+.2f} USDT")
+    print(f"Минимальный Win Rate: {min_win_rate:.1f}%")
+    print()
+    
+    # Тестируем все стратегии для всех символов
+    results: List[StrategyResult] = []
+    total_tests = len(all_strategies) * len(symbols)
+    current_test = 0
+    
+    for strategy in all_strategies:
+        for symbol in symbols:
+            current_test += 1
+            print(f"[{current_test}/{total_tests}] Тестирование {strategy.upper()} на {symbol}...", end=" ", flush=True)
+            result = test_strategy_silent(strategy, symbol, days)
+            results.append(result)
+            if result.error:
+                print(f"❌ Ошибка: {result.error}")
+            else:
+                status = "✅" if result.total_pnl > min_pnl and result.win_rate >= min_win_rate else "⚠️"
+                print(f"{status} {result.total_trades} сделок, PnL: {result.total_pnl:+.2f} USDT, WR: {result.win_rate:.1f}%")
+    
+    print("\n" + "=" * 100)
+    print("📊 АНАЛИЗ РЕЗУЛЬТАТОВ")
+    print("=" * 100)
+    
+    # Группируем результаты по символам
+    recommendations: Dict[str, Dict] = {}
+    
+    for symbol in symbols:
+        symbol_results = [r for r in results if r.symbol == symbol and not r.error]
+        
+        # Фильтруем только прибыльные стратегии
+        profitable_strategies = [
+            r for r in symbol_results 
+            if r.total_pnl > min_pnl and r.win_rate >= min_win_rate and r.total_trades > 0
+        ]
+        
+        # Сортируем по PnL (лучшие первыми)
+        profitable_strategies.sort(key=lambda x: x.total_pnl, reverse=True)
+        
+        # Определяем приоритетную стратегию (лучшая по PnL)
+        priority_strategy = None
+        if profitable_strategies:
+            priority_strategy = profitable_strategies[0].strategy
+        
+        # Формируем настройки для символа
+        symbol_settings = {
+            "enable_trend_strategy": False,
+            "enable_flat_strategy": False,
+            "enable_ml_strategy": False,
+            "enable_momentum_strategy": False,
+            "enable_liquidity_sweep_strategy": False,
+            "enable_smc_strategy": False,
+            "enable_ict_strategy": False,
+            "enable_liquidation_hunter_strategy": False,
+            "enable_zscore_strategy": False,
+            "enable_vbo_strategy": False,
+            "strategy_priority": priority_strategy if priority_strategy else "hybrid"
+        }
+        
+        # Включаем только прибыльные стратегии
+        for result in profitable_strategies:
+            strategy_key = f"enable_{result.strategy}_strategy"
+            if strategy_key in symbol_settings:
+                symbol_settings[strategy_key] = True
+        
+        # Если нет прибыльных стратегий, используем hybrid режим
+        if not profitable_strategies:
+            symbol_settings["strategy_priority"] = "hybrid"
+        
+        recommendations[symbol] = {
+            "settings": symbol_settings,
+            "profitable_strategies": [
+                {
+                    "strategy": r.strategy,
+                    "pnl": r.total_pnl,
+                    "win_rate": r.win_rate,
+                    "total_trades": r.total_trades
+                }
+                for r in profitable_strategies
+            ],
+            "all_results": [
+                {
+                    "strategy": r.strategy,
+                    "pnl": r.total_pnl,
+                    "win_rate": r.win_rate,
+                    "total_trades": r.total_trades,
+                    "error": r.error
+                }
+                for r in symbol_results
+            ]
+        }
+        
+        print(f"\n📈 {symbol}:")
+        print(f"  Прибыльных стратегий: {len(profitable_strategies)}")
+        if profitable_strategies:
+            print(f"  Приоритетная стратегия: {priority_strategy.upper()}")
+            print(f"  Включенные стратегии:")
+            for r in profitable_strategies:
+                print(f"    ✅ {r.strategy.upper()}: PnL {r.total_pnl:+.2f} USDT, WR {r.win_rate:.1f}%, {r.total_trades} сделок")
+        else:
+            print(f"  ⚠️ Нет прибыльных стратегий для {symbol}")
+    
+    print("\n" + "=" * 100)
+    print("✅ ОПТИМИЗАЦИЯ ЗАВЕРШЕНА")
+    print("=" * 100)
+    
+    return {
+        "recommendations": recommendations,
+        "test_period_days": days,
+        "min_pnl_threshold": min_pnl,
+        "min_win_rate_threshold": min_win_rate,
+        "generated_at": datetime.now().isoformat()
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Генерация сводного отчета по всем стратегиям")
     parser.add_argument("--strategies", type=str, nargs="+", 
@@ -841,10 +982,23 @@ def main():
                        help="Количество дней для тестирования (по умолчанию: 30)")
     parser.add_argument("--output", type=str, default=None,
                        help="Путь к файлу для сохранения JSON отчета")
+    parser.add_argument("--optimize", action="store_true",
+                       help="Запустить автоматическую оптимизацию стратегий")
+    parser.add_argument("--min-pnl", type=float, default=0.0,
+                       help="Минимальный PnL для включения стратегии (по умолчанию: 0.0)")
+    parser.add_argument("--min-win-rate", type=float, default=0.0,
+                       help="Минимальный Win Rate для включения стратегии (по умолчанию: 0.0)")
     
     args = parser.parse_args()
     
-    generate_report(args.strategies, args.symbols, args.days, args.output)
+    if args.optimize:
+        result = optimize_strategies_auto(args.symbols, args.days, args.min_pnl, args.min_win_rate)
+        if args.output:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            print(f"\n💾 Результаты сохранены в {args.output}")
+    else:
+        generate_report(args.strategies, args.symbols, args.days, args.output)
 
 
 if __name__ == "__main__":

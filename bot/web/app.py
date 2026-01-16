@@ -10,11 +10,16 @@ warnings.filterwarnings('ignore', message='.*delayed.*')
 
 import json
 import os
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional
 import pytz
+
+# Добавляем путь к корню проекта для импорта generate_report
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
@@ -27,6 +32,7 @@ import pandas as pd
 MATPLOTLIB_AVAILABLE = False
 
 from bot.config import load_settings, AppSettings, StrategyParams, RiskParams, SymbolStrategySettings, save_symbol_strategy_settings
+from generate_report import optimize_strategies_auto
 from bot.exchange.bybit_client import BybitClient
 
 # Конфигурация логирования
@@ -1133,6 +1139,7 @@ def api_get_settings():
         },
             "app": {
                 "symbol": settings.symbol,
+                "primary_symbol": settings.primary_symbol,
                 "timeframe": settings.timeframe,
                 "leverage": settings.leverage,
                 "live_poll_seconds": settings.live_poll_seconds,
@@ -1572,6 +1579,72 @@ def api_strategy_stats():
     stats = get_strategy_stats(strategy_type=strategy_type)
     return jsonify(stats)
 
+
+@app.route("/api/strategy/optimize", methods=["POST"])
+@login_required
+def api_optimize_strategies():
+    """Запустить автоматическую оптимизацию стратегий и применить лучшие настройки."""
+    global settings
+    
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        data = request.get_json() or {}
+        days = data.get("days", 30)
+        min_pnl = data.get("min_pnl", 0.0)
+        min_win_rate = data.get("min_win_rate", 0.0)
+        auto_apply = data.get("auto_apply", True)  # Автоматически применять настройки
+        
+        # Получаем список символов для оптимизации
+        symbols = data.get("symbols", None)
+        if not symbols:
+            symbols = settings.active_symbols if settings.active_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        
+        print(f"[web] 🚀 Starting strategy optimization for {symbols}, days={days}, min_pnl={min_pnl}, min_win_rate={min_win_rate}")
+        
+        # Запускаем оптимизацию
+        optimization_result = optimize_strategies_auto(
+            symbols=symbols,
+            days=days,
+            min_pnl=min_pnl,
+            min_win_rate=min_win_rate
+        )
+        
+        recommendations = optimization_result.get("recommendations", {})
+        
+        # Применяем настройки, если auto_apply=True
+        applied_settings = {}
+        if auto_apply:
+            for symbol, rec in recommendations.items():
+                symbol_settings_dict = rec.get("settings", {})
+                
+                # Создаем SymbolStrategySettings из словаря
+                symbol_settings = SymbolStrategySettings.from_dict(symbol_settings_dict)
+                
+                # Сохраняем настройки для символа
+                settings.set_strategy_settings_for_symbol(symbol, symbol_settings)
+                applied_settings[symbol] = symbol_settings_dict
+            
+            # Сохраняем в JSON файл
+            save_symbol_strategy_settings(settings)
+            
+            # Обновляем настройки в shared_settings для работающего бота
+            from bot.shared_settings import set_settings
+            set_settings(settings)
+            
+            print(f"[web] ✅ Applied optimized settings for {len(applied_settings)} symbol(s)")
+        
+        return jsonify({
+            "success": True,
+            "optimization_result": optimization_result,
+            "applied_settings": applied_settings if auto_apply else {},
+            "message": f"Optimization completed. {'Settings applied automatically.' if auto_apply else 'Review recommendations before applying.'}"
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/strategy/stats/all")
 @login_required
