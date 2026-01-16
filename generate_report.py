@@ -965,8 +965,8 @@ def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl:
     if symbols is None:
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     
-    # Все доступные стратегии (liquidity отключена)
-    all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "liquidation_hunter", "zscore", "vbo"]
+    # Все доступные стратегии (liquidity и ml отключены - ml может зависать при загрузке больших моделей)
+    all_strategies = ["trend", "flat", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo"]
     
     print("=" * 100)
     print("🤖 АВТОМАТИЧЕСКАЯ ОПТИМИЗАЦИЯ СТРАТЕГИЙ")
@@ -1121,7 +1121,7 @@ def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl:
 def main():
     parser = argparse.ArgumentParser(description="Генерация сводного отчета по всем стратегиям")
     parser.add_argument("--strategies", type=str, nargs="+", 
-                       default=["trend", "flat", "momentum", "smc", "ict", "ml", "liquidation_hunter", "zscore", "vbo"],  # liquidity отключена - не дает результатов
+                       default=["trend", "flat", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo"],  # liquidity и ml отключены
                        help="Список стратегий для тестирования")
     parser.add_argument("--symbols", type=str, nargs="+",
                        default=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
