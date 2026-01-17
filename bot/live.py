@@ -620,19 +620,19 @@ def _calculate_tp_sl_for_signal(
             return take_profit, stop_loss
         
         elif strategy_type == "liquidation_hunter":
-            # Для Liquidation Hunter стратегии (mean reversion) используем более узкие TP/SL
-            # Эта стратегия ловит развороты после ликвидаций, поэтому нужны быстрые тейки
-            # Рекомендуемые параметры: TP 1.5-2% от цены, SL 0.5-0.7% от цены (RR ~2.5:1)
+            # Для Liquidation Hunter стратегии (mean reversion) используем оптимизированные TP/SL
+            # Результаты показывают убыточность при узких TP/SL, увеличиваем для лучшего RR
+            # Рекомендуемые параметры: TP 2.5% от цены, SL 1.0% от цены (RR ~2.5:1)
             
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
             
-            # Для mean reversion стратегий используем более консервативные уровни
-            # TP: 1.8% от цены (18% от маржи при 10x)
-            # SL: 0.7% от цены (7% от маржи при 10x)
-            # RR: ~2.5:1
+            # Для mean reversion стратегий используем более широкие уровни для лучшего RR
+            # TP: 2.5% от цены (25% от маржи при 10x) - увеличен с 1.8%
+            # SL: 1.0% от цены (10% от маржи при 10x) - увеличен с 0.7%
+            # RR: ~2.5:1 - оптимальное соотношение для mean reversion
             
-            tp_pct_from_price = 0.018  # 1.8% от цены = 18% от маржи при 10x
-            sl_pct_from_price = 0.007   # 0.7% от цены = 7% от маржи при 10x
+            tp_pct_from_price = 0.025  # 2.5% от цены = 25% от маржи при 10x
+            sl_pct_from_price = 0.010   # 1.0% от цены = 10% от маржи при 10x
             
             # Проверяем, не превышают ли настройки максимальные границы
             max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30

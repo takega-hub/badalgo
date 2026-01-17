@@ -63,7 +63,7 @@ class ZScoreStrategy:
     
     def get_signals(self, df: pd.DataFrame, symbol: str = "Unknown") -> List[Signal]:
         """
-        Генерирует сигналы на основе Z-Score.
+        Генерирует сигналы на основе Z-Score с дополнительными фильтрами качества.
         
         Args:
             df: DataFrame с данными OHLCV
@@ -78,7 +78,25 @@ class ZScoreStrategy:
         signals = []
         z_scores = self.calculate_z_score(df)
         
-        # Генерируем сигналы
+        # Вычисляем дополнительные индикаторы для фильтров
+        df = df.copy()
+        
+        # RSI для фильтра перекупленности/перепроданности
+        if 'rsi' not in df.columns:
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+            rs = gain / loss.replace(0, np.nan)
+            df['rsi'] = 100 - (100 / (1 + rs))
+        
+        # Объемный фильтр: средний объем за последние 20 свечей
+        df['volume_sma'] = df['volume'].rolling(window=20, min_periods=1).mean()
+        
+        # SMA для фильтра тренда
+        if 'sma' not in df.columns:
+            df['sma'] = df['close'].rolling(window=20, min_periods=1).mean()
+        
+        # Генерируем сигналы с фильтрами качества
         for idx, row in df.iterrows():
             z = z_scores.loc[idx]
             
@@ -87,6 +105,24 @@ class ZScoreStrategy:
             
             # LONG сигнал: Z < -2.5 (цена аномально низка, ожидаем возврат к среднему)
             if z < self.z_threshold_long:
+                # ФИЛЬТР 1: RSI не должен быть в экстремальной перепроданности (< 20) - может быть ложный сигнал
+                rsi = row.get('rsi', np.nan)
+                if np.isfinite(rsi) and rsi < 20:
+                    continue  # Слишком экстремальная перепроданность - пропускаем
+                
+                # ФИЛЬТР 2: Объем должен быть выше среднего (подтверждение движения)
+                volume = row.get('volume', 0)
+                volume_sma = row.get('volume_sma', 0)
+                if volume_sma > 0 and volume < volume_sma * 0.8:  # Объем ниже среднего на 20%
+                    continue  # Низкий объем - пропускаем
+                
+                # ФИЛЬТР 3: Цена должна быть близко к SMA (не слишком далеко от среднего)
+                sma = row.get('sma', np.nan)
+                if np.isfinite(sma):
+                    price_deviation = abs(row['close'] - sma) / sma
+                    if price_deviation > 0.05:  # Отклонение больше 5% от SMA
+                        continue  # Слишком большое отклонение - пропускаем
+                
                 reason = f"zscore_long_z_{z:.2f}_below_{self.z_threshold_long}"
                 signals.append(Signal(
                     timestamp=idx,
@@ -97,6 +133,24 @@ class ZScoreStrategy:
             
             # SHORT сигнал: Z > +2.5 (цена аномально высока, ожидаем возврат к среднему)
             elif z > self.z_threshold_short:
+                # ФИЛЬТР 1: RSI не должен быть в экстремальной перекупленности (> 80) - может быть ложный сигнал
+                rsi = row.get('rsi', np.nan)
+                if np.isfinite(rsi) and rsi > 80:
+                    continue  # Слишком экстремальная перекупленность - пропускаем
+                
+                # ФИЛЬТР 2: Объем должен быть выше среднего (подтверждение движения)
+                volume = row.get('volume', 0)
+                volume_sma = row.get('volume_sma', 0)
+                if volume_sma > 0 and volume < volume_sma * 0.8:  # Объем ниже среднего на 20%
+                    continue  # Низкий объем - пропускаем
+                
+                # ФИЛЬТР 3: Цена должна быть близко к SMA (не слишком далеко от среднего)
+                sma = row.get('sma', np.nan)
+                if np.isfinite(sma):
+                    price_deviation = abs(row['close'] - sma) / sma
+                    if price_deviation > 0.05:  # Отклонение больше 5% от SMA
+                        continue  # Слишком большое отклонение - пропускаем
+                
                 reason = f"zscore_short_z_{z:.2f}_above_{self.z_threshold_short}"
                 signals.append(Signal(
                     timestamp=idx,
