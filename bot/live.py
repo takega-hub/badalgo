@@ -5855,7 +5855,11 @@ def run_live_from_api(
             ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
             age_info = f" (age: {signal_age_minutes:.1f} min)" if signal_age_minutes is not None else ""
             print(f"[live] ✅ SELECTED for processing: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id}){age_info}")
-            print(f"[live]   ℹ️  This is a NEW signal that has NOT been processed yet. Age: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit). Proceeding with execution...")
+            # Проверяем, что signal_age_minutes не None перед форматированием
+            if signal_age_minutes is not None:
+                print(f"[live]   ℹ️  This is a NEW signal that has NOT been processed yet. Age: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit). Proceeding with execution...")
+            else:
+                print(f"[live]   ℹ️  This is a NEW signal that has NOT been processed yet. Proceeding with execution...")
             
             # Ограничиваем размер processed_signals для оптимизации памяти
             # ВАЖНО: Не удаляем слишком много, чтобы не потерять историю обработанных сигналов
