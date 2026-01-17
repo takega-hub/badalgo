@@ -6028,7 +6028,7 @@ def run_live_from_api(
                 
                 if position and current_position_bias == Bias.SHORT:
                     # Есть SHORT позиция и приходит LONG сигнал
-                    # Проверяем, защищена ли позиция приоритетом
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: Если сигнал от той же стратегии, что открыла позицию - закрываем позицию
                     entry_reason = None
                     try:
                         from bot.web.history import get_open_trade
@@ -6041,15 +6041,28 @@ def run_live_from_api(
                         print(f"[live] ⚠️ Error getting entry_reason: {e}")
                     
                     position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
-                    is_priority_position = position_strategy_type == strategy_priority
                     
-                    if is_priority_position and signal_strategy_type != strategy_priority:
-                        # Позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
-                        can_close_position = False
-                        print(f"[live] 🛡️ PRIORITY PROTECTION: SHORT position opened by {strategy_priority.upper()} strategy, ignoring opposite LONG signal from {signal_strategy_type.upper()}")
-                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
-                            break
-                        continue
+                    # Если позиция открыта по той же стратегии, что и сигнал - проверяем свежесть сигнала
+                    if position_strategy_type and position_strategy_type == signal_strategy_type:
+                        # Проверяем, является ли сигнал свежим
+                        is_fresh = is_signal_fresh(sig, df_ready)
+                        if is_fresh:
+                            print(f"[live] 🔄 SAME STRATEGY REVERSAL (FRESH): SHORT position opened by {position_strategy_type.upper()}, fresh opposite LONG signal from same strategy - closing and opening new position")
+                            can_close_position = True  # Принудительно разрешаем закрытие и открытие новой позиции
+                        else:
+                            print(f"[live] ⚠️ SAME STRATEGY REVERSAL (NOT FRESH): SHORT position opened by {position_strategy_type.upper()}, but opposite LONG signal is not fresh - closing position only")
+                            can_close_position = True  # Закрываем позицию, но не открываем новую (сигнал не свежий)
+                    else:
+                        # Проверяем приоритет стратегии только если сигнал от другой стратегии
+                        is_priority_position = position_strategy_type == strategy_priority
+                        
+                        if is_priority_position and signal_strategy_type != strategy_priority:
+                            # Позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
+                            can_close_position = False
+                            print(f"[live] 🛡️ PRIORITY PROTECTION: SHORT position opened by {strategy_priority.upper()} strategy, ignoring opposite LONG signal from {signal_strategy_type.upper()}")
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
                 
                 # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть SHORT позиция и приходит LONG сигнал - закрываем SHORT и открываем LONG
                 if position and current_position_bias == Bias.SHORT and can_close_position:
@@ -6086,6 +6099,8 @@ def run_live_from_api(
                                                 break
                                         if position is None:
                                             print(f"[live] [{symbol}] ✅ Position confirmed closed, proceeding to open LONG")
+                                            # Продолжаем выполнение, чтобы открыть новую позицию
+                                            # Не делаем break или continue - код продолжит выполнение и откроет LONG позицию
                                         else:
                                             print(f"[live] [{symbol}] ⚠️ Position still exists after close attempt, skipping LONG open")
                                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
@@ -6801,7 +6816,7 @@ def run_live_from_api(
                 
                 if position and current_position_bias == Bias.LONG:
                     # Есть LONG позиция и приходит SHORT сигнал
-                    # Проверяем, защищена ли позиция приоритетом
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: Если сигнал от той же стратегии, что открыла позицию - закрываем позицию
                     entry_reason = None
                     try:
                         from bot.web.history import get_open_trade
@@ -6814,15 +6829,28 @@ def run_live_from_api(
                         print(f"[live] ⚠️ Error getting entry_reason: {e}")
                     
                     position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
-                    is_priority_position = position_strategy_type == strategy_priority
                     
-                    if is_priority_position and signal_strategy_type != strategy_priority:
-                        # Позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
-                        can_close_position = False
-                        print(f"[live] 🛡️ PRIORITY PROTECTION: LONG position opened by {strategy_priority.upper()} strategy, ignoring opposite SHORT signal from {signal_strategy_type.upper()}")
-                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
-                            break
-                        continue
+                    # Если позиция открыта по той же стратегии, что и сигнал - проверяем свежесть сигнала
+                    if position_strategy_type and position_strategy_type == signal_strategy_type:
+                        # Проверяем, является ли сигнал свежим
+                        is_fresh = is_signal_fresh(sig, df_ready)
+                        if is_fresh:
+                            print(f"[live] 🔄 SAME STRATEGY REVERSAL (FRESH): LONG position opened by {position_strategy_type.upper()}, fresh opposite SHORT signal from same strategy - closing and opening new position")
+                            can_close_position = True  # Принудительно разрешаем закрытие и открытие новой позиции
+                        else:
+                            print(f"[live] ⚠️ SAME STRATEGY REVERSAL (NOT FRESH): LONG position opened by {position_strategy_type.upper()}, but opposite SHORT signal is not fresh - closing position only")
+                            can_close_position = True  # Закрываем позицию, но не открываем новую (сигнал не свежий)
+                    else:
+                        # Проверяем приоритет стратегии только если сигнал от другой стратегии
+                        is_priority_position = position_strategy_type == strategy_priority
+                        
+                        if is_priority_position and signal_strategy_type != strategy_priority:
+                            # Позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
+                            can_close_position = False
+                            print(f"[live] 🛡️ PRIORITY PROTECTION: LONG position opened by {strategy_priority.upper()} strategy, ignoring opposite SHORT signal from {signal_strategy_type.upper()}")
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
                 
                 # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть LONG позиция и приходит SHORT сигнал - закрываем LONG и открываем SHORT
                 if position and current_position_bias == Bias.LONG and can_close_position:
@@ -6859,6 +6887,8 @@ def run_live_from_api(
                                                 break
                                         if position is None:
                                             print(f"[live] [{symbol}] ✅ Position confirmed closed, proceeding to open SHORT")
+                                            # Продолжаем выполнение, чтобы открыть новую позицию
+                                            # Не делаем break или continue - код продолжит выполнение и откроет SHORT позицию
                                         else:
                                             print(f"[live] [{symbol}] ⚠️ Position still exists after close attempt, skipping SHORT open")
                                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
