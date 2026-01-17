@@ -1284,7 +1284,8 @@ def _ensure_tp_sl_set(
                 base_sl = avg_price * 1.01
         
         # ВАЛИДАЦИЯ: Проверяем, что TP/SL корректны для направления позиции
-        # НО: не перезаписываем правильные значения, только исправляем явно неправильные
+        # ВАЖНО: Для стратегических TP/SL выполняем только базовую валидацию (направление),
+        # не перезаписываем значения, так как они уже рассчитаны стратегией
         leverage = settings.leverage if hasattr(settings, 'leverage') else 10
         min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
         max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
@@ -1297,18 +1298,20 @@ def _ensure_tp_sl_set(
                 print(f"[live] ⚠️ WARNING: TP ({base_tp:.2f}) <= entry price ({avg_price:.2f}) for LONG position, adjusting...")
                 base_tp = avg_price * 1.01  # Минимальный TP 1% выше входа
             
-            # Для SL: проверяем, что он в правильном направлении И в диапазоне 7-10% от маржи
+            # Для SL: проверяем, что он в правильном направлении
             if base_sl >= avg_price:
                 print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) >= entry price ({avg_price:.2f}) for LONG position, adjusting...")
                 # Используем минимальный SL от маржи (7%)
                 base_sl = avg_price * (1 - min_sl_pct_from_price)
                 print(f"[live]   Adjusted SL to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
-            else:
-                # Проверяем, что SL в диапазоне 7-10% от маржи
+            elif not strategy_tp_sl_applied:
+                # Проверяем диапазон 7-10% от маржи ТОЛЬКО если это не стратегические TP/SL
+                # Для стратегических TP/SL значения уже правильные и не требуют корректировки
                 sl_deviation_pct_from_price = abs(avg_price - base_sl) / avg_price
                 sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                 
-                if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                # Добавляем небольшой допуск для округления (0.001 = 0.1%)
+                if sl_deviation_pct_from_margin < min_sl_pct_from_margin - 0.001:
                     print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting...")
                     base_sl = avg_price * (1 - min_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
@@ -1319,24 +1322,29 @@ def _ensure_tp_sl_set(
                 else:
                     # Убрано verbose сообщение "SL is correct" - логируется только при проблемах
                     pass
+            else:
+                # Для стратегических TP/SL: только проверяем направление, не корректируем значения
+                print(f"[live] ✅ Strategy-specific SL ({base_sl:.2f}) validated - direction correct, keeping strategy value")
         else:  # SHORT
             # Для SHORT: TP должен быть ниже цены входа, SL должен быть выше
             if base_tp >= avg_price:
                 print(f"[live] ⚠️ WARNING: TP ({base_tp:.2f}) >= entry price ({avg_price:.2f}) for SHORT position, adjusting...")
                 base_tp = avg_price * 0.99  # Минимальный TP 1% ниже входа
             
-            # Для SL: проверяем, что он в правильном направлении И в диапазоне 7-10% от маржи
+            # Для SL: проверяем, что он в правильном направлении
             if base_sl <= avg_price:
                 print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) <= entry price ({avg_price:.2f}) for SHORT position, adjusting...")
                 # Используем минимальный SL от маржи (7%)
                 base_sl = avg_price * (1 + min_sl_pct_from_price)
                 print(f"[live]   Adjusted SL to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
-            else:
-                # Проверяем, что SL в диапазоне 7-10% от маржи
+            elif not strategy_tp_sl_applied:
+                # Проверяем диапазон 7-10% от маржи ТОЛЬКО если это не стратегические TP/SL
+                # Для стратегических TP/SL значения уже правильные и не требуют корректировки
                 sl_deviation_pct_from_price = abs(base_sl - avg_price) / avg_price
                 sl_deviation_pct_from_margin = sl_deviation_pct_from_price * leverage
                 
-                if sl_deviation_pct_from_margin < min_sl_pct_from_margin:
+                # Добавляем небольшой допуск для округления (0.001 = 0.1%)
+                if sl_deviation_pct_from_margin < min_sl_pct_from_margin - 0.001:
                     print(f"[live] ⚠️ WARNING: SL ({base_sl:.2f}) too small ({sl_deviation_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), adjusting...")
                     base_sl = avg_price * (1 + min_sl_pct_from_price)
                     print(f"[live]   Adjusted SL to {min_sl_pct_from_margin*100:.0f}% from margin ({min_sl_pct_from_price*100:.2f}% from price)")
@@ -1347,6 +1355,9 @@ def _ensure_tp_sl_set(
                 else:
                     # Убрано verbose сообщение "SL is correct" - логируется только при проблемах
                     pass
+            else:
+                # Для стратегических TP/SL: только проверяем направление, не корректируем значения
+                print(f"[live] ✅ Strategy-specific SL ({base_sl:.2f}) validated - direction correct, keeping strategy value")
         
         # Инициализируем целевые TP/SL базовыми значениями
         target_tp = base_tp
