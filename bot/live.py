@@ -4924,8 +4924,25 @@ def run_live_from_api(
             # Логируем все доступные сигналы для отладки
             if zscore_sig_latest:
                 is_fresh_zscore = is_signal_fresh(zscore_sig_latest, df_ready)
+                # Дополнительно проверяем возраст от текущего времени для более точной оценки
+                age_from_now_minutes = None
+                try:
+                    if isinstance(zscore_sig_latest.timestamp, pd.Timestamp):
+                        signal_ts = zscore_sig_latest.timestamp
+                        if signal_ts.tzinfo is None:
+                            signal_ts = signal_ts.tz_localize('UTC')
+                        else:
+                            signal_ts = signal_ts.tz_convert('UTC')
+                        current_time_utc = datetime.now(timezone.utc)
+                        age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                except Exception:
+                    pass
+                
                 ts_str_zscore = zscore_sig_latest.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(zscore_sig_latest.timestamp, 'strftime') else str(zscore_sig_latest.timestamp)
-                _log(f"🔍 ZSCORE signal available: {zscore_sig_latest.action.value} @ ${zscore_sig_latest.price:.2f} ({zscore_sig_latest.reason}) [{ts_str_zscore}] fresh={is_fresh_zscore}", symbol)
+                age_str = f", age: {age_from_now_minutes:.1f} min" if age_from_now_minutes is not None else ""
+                # Сигнал считается действительно свежим только если он свежий по функции И возраст <= 15 минут
+                is_really_fresh = is_fresh_zscore and (age_from_now_minutes is None or age_from_now_minutes <= 15)
+                _log(f"🔍 ZSCORE signal available: {zscore_sig_latest.action.value} @ ${zscore_sig_latest.price:.2f} ({zscore_sig_latest.reason}) [{ts_str_zscore}] fresh={is_really_fresh} (is_fresh={is_fresh_zscore}{age_str})", symbol)
             
             # Для обратной совместимости сохраняем main_sig и ml_sig
             main_sig = trend_sig if trend_sig else flat_sig
@@ -5124,7 +5141,10 @@ def run_live_from_api(
                     priority_sig = strategy_signals.get(strategy_priority)
                     
                     if priority_sig:
-                        # Проверяем возраст сигнала от приоритетной стратегии
+                        # Проверяем свежесть сигнала от приоритетной стратегии используя ту же функцию is_signal_fresh
+                        is_fresh_priority = is_signal_fresh(priority_sig, df_ready)
+                        
+                        # Дополнительно проверяем возраст от текущего времени для более строгой проверки
                         priority_age_ok = True
                         try:
                             if isinstance(priority_sig.timestamp, pd.Timestamp):
@@ -5137,16 +5157,18 @@ def run_live_from_api(
                                 current_time_utc = datetime.now(timezone.utc)
                                 age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                 
-                                # Для приоритетной стратегии используем лимит 15 минут
-                                if age_from_now_minutes > 15:
+                                # Для приоритетной стратегии используем лимит 15 минут от текущего времени
+                                # И сигнал должен быть свежим по функции is_signal_fresh
+                                if age_from_now_minutes > 15 or not is_fresh_priority:
                                     priority_age_ok = False
-                                    print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old ({age_from_now_minutes:.1f} min > 15 min), waiting for fresh signal")
+                                    print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old (age: {age_from_now_minutes:.1f} min, fresh={is_fresh_priority}), waiting for fresh signal")
                         except Exception as e:
                             print(f"[live] ⚠️ Error checking priority signal age: {e}")
+                            # В случае ошибки считаем сигнал не свежим
+                            priority_age_ok = False
                         
                         if priority_age_ok:
                             sig = priority_sig
-                            is_fresh_priority = is_signal_fresh(priority_sig, df_ready)
                             freshness_marker = "FRESH" if is_fresh_priority else "LATEST"
                             print(f"[live] ✅ Priority {strategy_priority.upper()} ({freshness_marker}): {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             
@@ -5157,7 +5179,7 @@ def run_live_from_api(
                                 conflicting_names = [name for name, _ in conflicting_signals]
                                 print(f"[live] ⚠️ Ignoring {len(conflicting_signals)} conflicting signal(s) from: {', '.join(conflicting_names)} (priority: {strategy_priority})")
                         else:
-                            # Сигнал от приоритетной стратегии слишком старый - не используем
+                            # Сигнал от приоритетной стратегии слишком старый - не используем, но продолжаем работу
                             sig = None
                             print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old, waiting for fresh signal from priority strategy")
                             # Обновляем статус - воркер все еще работает, просто ждет свежий сигнал
