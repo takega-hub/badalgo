@@ -5283,8 +5283,10 @@ def run_live_from_api(
                         primary_symbol_allowed_action = None
                         try:
                             primary_symbol = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
+                            _log(f"🔍 Checking PRIMARY_SYMBOL filter for {symbol}: primary_symbol={primary_symbol}", symbol)
                             if primary_symbol and symbol.upper() != primary_symbol.upper():
                                 # Проверяем позицию на PRIMARY_SYMBOL
+                                _log(f"🔍 Fetching position info for PRIMARY_SYMBOL ({primary_symbol})...", symbol)
                                 pos_resp = client.get_position_info(symbol=primary_symbol)
                                 if pos_resp.get("retCode") == 0:
                                     pos_list = pos_resp.get("result", {}).get("list", [])
@@ -5294,10 +5296,20 @@ def run_live_from_api(
                                             side = pos_item.get("side", "").upper()
                                             primary_bias = Bias.LONG if side == "BUY" else Bias.SHORT
                                             primary_symbol_allowed_action = Action.LONG if primary_bias == Bias.LONG else Action.SHORT
-                                            _log(f"🔍 PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value} position - filtering signals for {symbol}: only {primary_symbol_allowed_action.value} allowed", symbol)
+                                            _log(f"🔍 PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value} position (size={size}) - filtering signals for {symbol}: only {primary_symbol_allowed_action.value} allowed", symbol)
                                             break
+                                    if not primary_symbol_allowed_action:
+                                        _log(f"✅ PRIMARY_SYMBOL ({primary_symbol}) has no open position - no filter applied for {symbol}", symbol)
+                                else:
+                                    _log(f"⚠️ Failed to get position info for PRIMARY_SYMBOL ({primary_symbol}): {pos_resp.get('retMsg', 'Unknown error')}", symbol)
+                            elif not primary_symbol:
+                                _log(f"ℹ️ PRIMARY_SYMBOL not set - skipping filter for {symbol}", symbol)
+                            else:
+                                _log(f"ℹ️ Current symbol ({symbol}) is PRIMARY_SYMBOL - skipping filter", symbol)
                         except Exception as e:
                             _log(f"⚠️ Error checking PRIMARY_SYMBOL position for signal filtering: {e}", symbol)
+                            import traceback
+                            traceback.print_exc()
                         
                         # Фильтруем сигналы по направлению PRIMARY_SYMBOL
                         if primary_symbol_allowed_action:
@@ -6937,6 +6949,40 @@ def run_live_from_api(
                         position_max_profit.pop(symbol, None)
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
+                        
+                        # КРИТИЧЕСКИ ВАЖНО: Сохраняем SHORT позицию в историю
+                        try:
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            elif isinstance(ts_log, datetime):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.replace(tzinfo=timezone.utc)
+                            else:
+                                ts_log = datetime.now(timezone.utc)
+                            
+                            add_trade(
+                                entry_time=ts_log,
+                                exit_time=None,  # Позиция еще открыта
+                                side="short",  # ВАЖНО: SHORT позиция
+                                entry_price=sig.price,
+                                exit_price=0.0,
+                                size_usd=desired_usd,
+                                pnl=0.0,
+                                entry_reason=sig.reason,
+                                exit_reason="",
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=order_id,
+                                order_link_id=order_link_id_result,
+                            )
+                            _log(f"💾 Saved SHORT position to history: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                        except Exception as e:
+                            _log(f"⚠️ Error saving SHORT position to history: {e}", symbol)
                     elif resp.get("retCode") == 110072:
                         # Ошибка дубликата order_link_id - сигнал уже обработан
                         print(f"[live] [{symbol}] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
@@ -7190,8 +7236,30 @@ def run_live_from_api(
                                     signal_id=sig_signal_id,
                                 )
                                 print(f"[live] 💾 Saved SHORT signal to history (reversal): {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                                
+                                # КРИТИЧЕСКИ ВАЖНО: Сохраняем SHORT позицию в историю при реверсе
+                                result = resp.get("result", {})
+                                order_id = result.get("orderId", "") if result else ""
+                                order_link_id_result = result.get("orderLinkId", unique_order_link_id) if result else unique_order_link_id
+                                
+                                add_trade(
+                                    entry_time=ts_log,
+                                    exit_time=None,  # Позиция еще открыта
+                                    side="short",  # ВАЖНО: SHORT позиция
+                                    entry_price=sig.price,
+                                    exit_price=0.0,
+                                    size_usd=desired_usd,
+                                    pnl=0.0,
+                                    entry_reason=sig.reason,
+                                    exit_reason="",
+                                    strategy_type=strategy_type,
+                                    symbol=symbol,
+                                    order_id=order_id,
+                                    order_link_id=order_link_id_result,
+                                )
+                                print(f"[live] 💾 Saved open SHORT trade to history (reversal): {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
                             except Exception as e:
-                                print(f"[live] ⚠️ Failed to save SHORT signal to history (reversal): {e}")
+                                print(f"[live] ⚠️ Failed to save SHORT signal/trade to history (reversal): {e}")
                                 import traceback
                                 traceback.print_exc()
                             

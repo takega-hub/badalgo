@@ -50,7 +50,21 @@ def check_recent_loss_trade(
             if t.get("symbol", "").upper() == symbol.upper() and t.get("side", "").lower() == side.lower()
         ]
         
+        # Логируем для отладки
+        print(f"[history] 🔍 check_recent_loss_trade: checking {side} trades for {symbol}")
+        print(f"[history]   Total trades in history: {len(trades)}")
+        print(f"[history]   Relevant trades ({side} for {symbol}): {len(relevant_trades)}")
+        if relevant_trades:
+            for i, t in enumerate(relevant_trades[:3]):  # Показываем первые 3
+                trade_side = t.get("side", "unknown")
+                trade_symbol = t.get("symbol", "unknown")
+                trade_pnl = t.get("pnl", 0)
+                trade_exit_time = t.get("exit_time", "unknown")
+                trade_exit_reason = t.get("exit_reason", "unknown")
+                print(f"[history]   [{i+1}] {trade_symbol} {trade_side} PnL={trade_pnl:.2f} exit_time={trade_exit_time} reason={trade_exit_reason}")
+        
         if not relevant_trades:
+            print(f"[history] ✅ No {side} trades found for {symbol} - no cooldown needed")
             return False, None
         
         # Сортируем по времени выхода (последние сначала)
@@ -93,15 +107,23 @@ def check_recent_loss_trade(
             
             if is_loss:
                 recent_losses.append(trade)
+                print(f"[history]   ⚠️ Found loss trade: {trade.get('side', 'unknown')} PnL={pnl:.2f} reason={exit_reason} age={time_diff.total_seconds()/60:.1f}min")
         
         # Если было слишком много убыточных сделок подряд - блокируем
         if len(recent_losses) >= max_losses:
+            print(f"[history]   ⛔ BLOCKING: {len(recent_losses)} consecutive losses >= {max_losses}")
             return True, recent_losses[0] if recent_losses else None
         
         # Если была хотя бы одна убыточная сделка в период cooldown - блокируем
         if recent_losses:
-            return True, recent_losses[0]
+            last_loss = recent_losses[0]
+            last_loss_side = last_loss.get("side", "unknown")
+            last_loss_pnl = last_loss.get("pnl", 0)
+            last_loss_reason = last_loss.get("exit_reason", "unknown")
+            print(f"[history]   ⛔ BLOCKING: recent {last_loss_side} loss (PnL={last_loss_pnl:.2f}, reason={last_loss_reason}) within {cooldown_minutes}min cooldown")
+            return True, last_loss
         
+        print(f"[history]   ✅ No recent losses found - cooldown check passed")
         return False, None
     
     except Exception as e:
@@ -472,6 +494,19 @@ def add_trade(
     order_link_id: Optional[str] = None,  # Custom ID ордера
 ):
     """Добавить сделку в историю с проверкой на дубликаты."""
+    # ВАЛИДАЦИЯ: Убеждаемся, что side правильный
+    side_normalized = side.lower().strip()
+    if side_normalized not in ["long", "short"]:
+        print(f"[history] ⚠️ WARNING: Invalid side '{side}' for trade {symbol}, normalizing to '{side_normalized}'")
+        # Пытаемся определить по entry_reason или другим признакам
+        if "short" in entry_reason.lower() or "sell" in entry_reason.lower():
+            side_normalized = "short"
+        elif "long" in entry_reason.lower() or "buy" in entry_reason.lower():
+            side_normalized = "long"
+        else:
+            print(f"[history] ⚠️ ERROR: Cannot determine side for trade {symbol}, using 'long' as default")
+            side_normalized = "long"  # Fallback
+    
     history = _load_history()
     
     # Нормализуем время выхода для сравнения
@@ -516,11 +551,11 @@ def add_trade(
                 # Убрали логирование - слишком часто
             return  # Дубликат, не добавляем
     
-    # Создаем новую сделку
+    # Создаем новую сделку (используем нормализованный side)
     trade = {
         "entry_time": entry_time_str,
         "exit_time": exit_time_str,
-        "side": side,
+        "side": side_normalized,  # ВАЖНО: используем нормализованный side
         "entry_price": entry_price_normalized,
         "exit_price": exit_price_normalized,
         "size_usd": size_usd_normalized,
@@ -532,6 +567,9 @@ def add_trade(
         "order_id": order_id,  # ID ордера от Bybit
         "order_link_id": order_link_id,  # Custom ID ордера
     }
+    
+    # Логируем для отладки
+    print(f"[history] 💾 Saving trade: {symbol} {side_normalized.upper()} @ ${entry_price_normalized:.2f} (entry_reason: {entry_reason}, strategy: {strategy_type})")
     
     history["trades"].append(trade)
     

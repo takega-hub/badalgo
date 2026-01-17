@@ -147,11 +147,65 @@ class LiquidationHunterStrategy:
                 # Для SHORT: предпочитаем цену выше EMA, но не блокируем
                 ema_ok_short = row['close'] > row['ema_200'] * 0.98  # Допуск 2%
             
-            # LONG сигнал: всплеск ликвидаций + (поддержка ИЛИ длинная нижняя тень) + EMA опционально
-            if (volume_spikes.loc[idx] and 
-                (support_zones.loc[idx] or long_lower_shadows.loc[idx]) and
-                ema_ok_long):
+            # Проверяем условия для LONG и SHORT сигналов
+            long_condition = (volume_spikes.loc[idx] and 
+                            (support_zones.loc[idx] or long_lower_shadows.loc[idx]) and
+                            ema_ok_long)
+            
+            short_condition = (volume_spikes.loc[idx] and 
+                             (resistance_zones.loc[idx] or long_upper_shadows.loc[idx]) and
+                             ema_ok_short)
+            
+            # КРИТИЧЕСКИ ВАЖНО: Если оба условия выполняются одновременно, выбираем только один сигнал
+            # Приоритет: выбираем сигнал с более сильным паттерном (тень + зона > только тень > только зона)
+            if long_condition and short_condition:
+                # Вычисляем "силу" каждого паттерна
+                long_strength = 0
+                if support_zones.loc[idx]:
+                    long_strength += 1
+                if long_lower_shadows.loc[idx]:
+                    long_strength += 1
                 
+                short_strength = 0
+                if resistance_zones.loc[idx]:
+                    short_strength += 1
+                if long_upper_shadows.loc[idx]:
+                    short_strength += 1
+                
+                # Выбираем сигнал с большей силой
+                if long_strength >= short_strength:
+                    # Генерируем LONG сигнал
+                    reason = f"liquidation_hunter_long_spike_{self.liq_spike_multiplier}x"
+                    if support_zones.loc[idx]:
+                        reason += "_support"
+                    if long_lower_shadows.loc[idx]:
+                        reason += "_shadow"
+                    signals.append(Signal(
+                        timestamp=idx,
+                        action=Action.LONG,
+                        reason=reason,
+                        price=row['close']
+                    ))
+                    # Пропускаем SHORT сигнал для этой свечи
+                    continue
+                else:
+                    # Генерируем SHORT сигнал
+                    reason = f"liquidation_hunter_short_spike_{self.liq_spike_multiplier}x"
+                    if resistance_zones.loc[idx]:
+                        reason += "_resistance"
+                    if long_upper_shadows.loc[idx]:
+                        reason += "_shadow"
+                    signals.append(Signal(
+                        timestamp=idx,
+                        action=Action.SHORT,
+                        reason=reason,
+                        price=row['close']
+                    ))
+                    # Пропускаем LONG сигнал для этой свечи
+                    continue
+            
+            # LONG сигнал: всплеск ликвидаций + (поддержка ИЛИ длинная нижняя тень) + EMA опционально
+            if long_condition:
                 reason = f"liquidation_hunter_long_spike_{self.liq_spike_multiplier}x"
                 if support_zones.loc[idx]:
                     reason += "_support"
@@ -165,10 +219,7 @@ class LiquidationHunterStrategy:
                 ))
             
             # SHORT сигнал: всплеск ликвидаций + (сопротивление ИЛИ длинная верхняя тень) + EMA опционально
-            elif (volume_spikes.loc[idx] and 
-                  (resistance_zones.loc[idx] or long_upper_shadows.loc[idx]) and
-                  ema_ok_short):
-                
+            elif short_condition:
                 reason = f"liquidation_hunter_short_spike_{self.liq_spike_multiplier}x"
                 if resistance_zones.loc[idx]:
                     reason += "_resistance"
