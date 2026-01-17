@@ -3908,16 +3908,6 @@
                 await loadSymbolsStatus();
             }
         }
-                
-                console.log(`[UI] ✅ Successfully switched to ${symbol}`);
-                
-            } catch (error) {
-                console.error('[UI] Error switching primary symbol:', error);
-                alert(`Error switching to ${symbol}: ${error.message}`);
-                // Восстанавливаем статус символов
-                await loadSymbolsStatus();
-            }
-        }
         
         // Переменная для хранения текущего выбранного символа
         let currentSymbol = null;
