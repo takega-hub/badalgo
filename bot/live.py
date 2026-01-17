@@ -5396,14 +5396,30 @@ def run_live_from_api(
                         position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
                         is_priority_position = position_strategy_type == strategy_priority
                         
+                        # Логируем информацию о позиции и приоритете
+                        print(f"[live] 🔍 [{symbol}] Position analysis:")
+                        print(f"[live]   Position strategy: {position_strategy_type or 'unknown'}")
+                        print(f"[live]   Priority strategy: {strategy_priority}")
+                        print(f"[live]   Is priority position: {is_priority_position}")
+                        print(f"[live]   Position bias: {current_position_bias.value if current_position_bias else 'None'}")
+                        print(f"[live]   Available strategy signals: {list(strategy_signals.keys())}")
+                        
                         if is_priority_position:
                             # Позиция открыта по приоритетной стратегии - защищаем её
                             # Игнорируем противоположные сигналы от других стратегий
                             # Разрешаем только сигналы в том же направлении (для усиления) или свежий сигнал от приоритетной стратегии (для пересмотра)
                             priority_sig = strategy_signals.get(strategy_priority)
                             
+                            print(f"[live]   Priority signal from {strategy_priority}: {'Found' if priority_sig else 'Not found'}")
+                            if priority_sig:
+                                print(f"[live]     Action: {priority_sig.action.value}, Price: ${priority_sig.price:.2f}, Reason: {priority_sig.reason}")
+                                ts_str = priority_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(priority_sig.timestamp, 'strftime') else str(priority_sig.timestamp)
+                                print(f"[live]     Timestamp: {ts_str}")
+                            
                             # Проверяем свежесть приоритетного сигнала
                             priority_sig_fresh = False
+                            priority_sig_acceptable = False  # Приемлемый для обработки (даже если не свежий)
+                            age_from_now_minutes = float('inf')
                             if priority_sig:
                                 try:
                                     if isinstance(priority_sig.timestamp, pd.Timestamp):
@@ -5415,14 +5431,32 @@ def run_live_from_api(
                                         current_time_utc = datetime.now(timezone.utc)
                                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                         priority_sig_fresh = age_from_now_minutes <= 15
-                                except Exception:
-                                    pass
+                                        
+                                        # ВАЖНО: Если сигнал от приоритетной стратегии в противоположном направлении,
+                                        # обрабатываем его даже если он не очень свежий (до 1 часа)
+                                        is_opposite_direction = (
+                                            current_position_bias == Bias.LONG and priority_sig.action == Action.SHORT
+                                        ) or (
+                                            current_position_bias == Bias.SHORT and priority_sig.action == Action.LONG
+                                        )
+                                        
+                                        if is_opposite_direction:
+                                            # Для противоположных сигналов от приоритетной стратегии используем более мягкий лимит (1 час)
+                                            priority_sig_acceptable = age_from_now_minutes <= 60
+                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Opposite direction: {is_opposite_direction}, Acceptable: {priority_sig_acceptable}")
+                                        else:
+                                            # Для сигналов в том же направлении используем строгий лимит (15 минут)
+                                            priority_sig_acceptable = priority_sig_fresh
+                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Same direction: True")
+                                except Exception as e:
+                                    print(f"[live]     ⚠️ Error checking freshness: {e}")
                             
-                            # Если есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
-                            if priority_sig and priority_sig_fresh:
+                            # Если есть свежий или приемлемый сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
+                            if priority_sig and (priority_sig_fresh or priority_sig_acceptable):
                                 sig = priority_sig
-                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if 'age_from_now_minutes' in locals() else ""
-                                print(f"[live] ✅ Priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
+                                freshness_str = "Fresh" if priority_sig_fresh else "Acceptable (opposite direction)"
+                                print(f"[live] ✅ Priority position: {freshness_str} {strategy_priority.upper()} signal{age_str} - can review position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
                                 # Нет свежего сигнала от приоритетной стратегии
                                 # Ищем сигналы в том же направлении для усиления позиции
@@ -5443,8 +5477,16 @@ def run_live_from_api(
                             # Новый свежий сигнал от приоритетной стратегии может закрыть/развернуть позицию
                             priority_sig = strategy_signals.get(strategy_priority)
                             
+                            print(f"[live]   Priority signal from {strategy_priority}: {'Found' if priority_sig else 'Not found'}")
+                            if priority_sig:
+                                print(f"[live]     Action: {priority_sig.action.value}, Price: ${priority_sig.price:.2f}, Reason: {priority_sig.reason}")
+                                ts_str = priority_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(priority_sig.timestamp, 'strftime') else str(priority_sig.timestamp)
+                                print(f"[live]     Timestamp: {ts_str}")
+                            
                             # Проверяем свежесть приоритетного сигнала
                             priority_sig_fresh = False
+                            priority_sig_acceptable = False  # Приемлемый для обработки (даже если не свежий)
+                            age_from_now_minutes = float('inf')
                             if priority_sig:
                                 try:
                                     if isinstance(priority_sig.timestamp, pd.Timestamp):
@@ -5456,14 +5498,32 @@ def run_live_from_api(
                                         current_time_utc = datetime.now(timezone.utc)
                                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                         priority_sig_fresh = age_from_now_minutes <= 15
-                                except Exception:
-                                    pass
+                                        
+                                        # ВАЖНО: Если сигнал от приоритетной стратегии в противоположном направлении,
+                                        # обрабатываем его даже если он не очень свежий (до 1 часа)
+                                        is_opposite_direction = (
+                                            current_position_bias == Bias.LONG and priority_sig.action == Action.SHORT
+                                        ) or (
+                                            current_position_bias == Bias.SHORT and priority_sig.action == Action.LONG
+                                        )
+                                        
+                                        if is_opposite_direction:
+                                            # Для противоположных сигналов от приоритетной стратегии используем более мягкий лимит (1 час)
+                                            priority_sig_acceptable = age_from_now_minutes <= 60
+                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Opposite direction: {is_opposite_direction}, Acceptable: {priority_sig_acceptable}")
+                                        else:
+                                            # Для сигналов в том же направлении используем строгий лимит (15 минут)
+                                            priority_sig_acceptable = priority_sig_fresh
+                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Same direction: True")
+                                except Exception as e:
+                                    print(f"[live]     ⚠️ Error checking freshness: {e}")
                             
-                            if priority_sig and priority_sig_fresh:
+                            if priority_sig and (priority_sig_fresh or priority_sig_acceptable):
                                 # Есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
                                 sig = priority_sig
-                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if 'age_from_now_minutes' in locals() else ""
-                                print(f"[live] ✅ Non-priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
+                                freshness_str = "Fresh" if priority_sig_fresh else "Acceptable (opposite direction)"
+                                print(f"[live] ✅ Non-priority position: {freshness_str} {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
                                 # Нет свежего сигнала от приоритетной стратегии
                                 # Ищем сигналы в том же направлении для усиления позиции
