@@ -3980,22 +3980,9 @@
                     primarySelect.value = symbol;
                 }
                 
-                // Обновляем Active Symbol селектор (для просмотра) только если пользователь не менял его вручную
-                const topSelect = document.getElementById('primary-symbol-select');
-                if (topSelect) {
-                    // Меняем только если текущий выбор совпадает со старым PRIMARY_SYMBOL
-                    // Это позволяет пользователю отдельно выбирать символ для просмотра
-                    const oldPrimarySymbol = topSelect.value;
-                    if (!currentSymbol || currentSymbol === oldPrimarySymbol) {
-                        topSelect.value = symbol;
-                        currentSymbol = symbol;
-                        // Триггерим событие change для обновления графика и других элементов
-                        topSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }
-                
-                // Обновляем глобальную переменную ПЕРЕД вызовом loadChartLW
-                window.currentSymbol = symbol;
+                // НЕ обновляем Active Symbol селектор (для просмотра графика)
+                // Эти два селекта полностью независимы - пользователь выбирает символ для просмотра отдельно на дашборде
+                // PRIMARY_SYMBOL устанавливается только во вкладке Symbols и не влияет на выбор символа для просмотра
                 
                 // Сбрасываем кэш последнего символа, чтобы график пересоздался
                 window.lastChartSymbol = null;
