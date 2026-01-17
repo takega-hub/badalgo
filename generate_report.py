@@ -448,6 +448,11 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                         # Для Liquidation Hunter используем специальные TP/SL: TP=1.8%, SL=0.7% от цены
                         tp_pct = 0.018  # 1.8% от цены
                         sl_pct = 0.007  # 0.7% от цены
+                    elif strategy_name == "zscore":
+                        # Для ZSCORE используем оптимизированные TP/SL: TP=2.0%, SL=0.8% от цены
+                        # ZSCORE - mean reversion стратегия, нужны быстрые тейки с хорошим RR
+                        tp_pct = 0.020  # 2.0% от цены (20% от маржи при 10x)
+                        sl_pct = 0.008  # 0.8% от цены (8% от маржи при 10x) - RR ~2.5:1
                     else:
                         sl_pct = settings.risk.stop_loss_pct
                         tp_pct = settings.risk.take_profit_pct

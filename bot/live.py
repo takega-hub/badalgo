@@ -808,6 +808,105 @@ def _calculate_tp_sl_for_signal(
             print(f"[live]   → TP: {tp_pct_from_price*100:.2f}% from price ({tp_pct_from_price*leverage*100:.1f}% from margin), SL: {sl_pct_from_price*100:.2f}% from price ({sl_pct_from_price*leverage*100:.1f}% from margin)")
             
             return take_profit, stop_loss
+        
+        elif strategy_type == "zscore":
+            # Для ZSCORE стратегии (Mean Reversion) используем оптимизированные TP/SL
+            # ZSCORE ловит возврат к среднему, поэтому нужны быстрые тейки
+            # Результаты показывают высокий WR (90%, 88.2%), но отрицательный PnL из-за плохого RR
+            # Нужно улучшить RR для mean reversion стратегий
+            
+            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            
+            # Для mean reversion стратегий используем более узкие уровни, но с лучшим RR
+            # TP: 2.0% от цены (20% от маржи при 10x) - достаточно для возврата к среднему
+            # SL: 0.8% от цены (8% от маржи при 10x) - узкий для быстрого выхода
+            # RR: ~2.5:1 - оптимальное соотношение для mean reversion
+            
+            tp_pct_from_price = 0.020  # 2.0% от цены = 20% от маржи при 10x
+            sl_pct_from_price = 0.008   # 0.8% от цены = 8% от маржи при 10x
+            
+            # Проверяем максимальные границы из настроек
+            max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
+            max_sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
+            
+            # Нормализуем проценты
+            if max_tp_pct_margin > 1.0:
+                max_tp_pct_margin = max_tp_pct_margin / 100.0
+            if max_sl_pct_margin > 1.0:
+                max_sl_pct_margin = max_sl_pct_margin / 100.0
+            
+            max_tp_pct = max_tp_pct_margin / leverage
+            max_sl_pct = max_sl_pct_margin / leverage
+            
+            # Ограничиваем нашими значениями, но не превышаем максимумы
+            tp_pct_from_price = min(tp_pct_from_price, max_tp_pct)
+            # Для SL: минимум 7% от маржи, максимум 10% от маржи (или max_sl_pct_margin, если меньше)
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            max_sl_pct_from_margin = min(0.10, max_sl_pct_margin)  # Максимум 10% от маржи или настройка
+            min_sl_pct_from_price = min_sl_pct_from_margin / leverage
+            max_sl_pct_from_price = max_sl_pct_from_margin / leverage
+            
+            # Убеждаемся, что SL в допустимом диапазоне (0.8% = 8% от маржи при 10x - в пределах 7-10%)
+            sl_pct_from_price = max(min_sl_pct_from_price, min(sl_pct_from_price, max_sl_pct_from_price))
+            
+            # Используем уровни поддержки/сопротивления, если они находятся в пределах наших параметров
+            if use_sr_levels:
+                if sig.action == Action.LONG:
+                    # Для LONG: TP на сопротивление, SL на поддержку
+                    if nearest_resistance and nearest_resistance > entry_price:
+                        resistance_tp_pct = (nearest_resistance - entry_price) / entry_price
+                        if resistance_tp_pct <= tp_pct_from_price and resistance_tp_pct >= tp_pct_from_price * 0.5:  # Не слишком близко
+                            take_profit = nearest_resistance
+                        else:
+                            take_profit = entry_price * (1 + tp_pct_from_price)
+                    else:
+                        take_profit = entry_price * (1 + tp_pct_from_price)
+                    
+                    if nearest_support and nearest_support < entry_price:
+                        support_sl_pct = (entry_price - nearest_support) / entry_price
+                        if support_sl_pct <= sl_pct_from_price and support_sl_pct >= min_sl_pct_from_price:
+                            stop_loss = nearest_support
+                        else:
+                            stop_loss = entry_price * (1 - sl_pct_from_price)
+                    else:
+                        stop_loss = entry_price * (1 - sl_pct_from_price)
+                else:  # SHORT
+                    # Для SHORT: TP на поддержку, SL на сопротивление
+                    if nearest_support and nearest_support < entry_price:
+                        support_tp_pct = (entry_price - nearest_support) / entry_price
+                        if support_tp_pct <= tp_pct_from_price and support_tp_pct >= tp_pct_from_price * 0.5:  # Не слишком близко
+                            take_profit = nearest_support
+                        else:
+                            take_profit = entry_price * (1 - tp_pct_from_price)
+                    else:
+                        take_profit = entry_price * (1 - tp_pct_from_price)
+                    
+                    if nearest_resistance and nearest_resistance > entry_price:
+                        resistance_sl_pct = (nearest_resistance - entry_price) / entry_price
+                        if resistance_sl_pct <= sl_pct_from_price and resistance_sl_pct >= min_sl_pct_from_price:
+                            stop_loss = nearest_resistance
+                        else:
+                            stop_loss = entry_price * (1 + sl_pct_from_price)
+                    else:
+                        stop_loss = entry_price * (1 + sl_pct_from_price)
+            else:
+                # Fallback на фиксированные проценты
+                if sig.action == Action.LONG:
+                    take_profit = entry_price * (1 + tp_pct_from_price)
+                    stop_loss = entry_price * (1 - sl_pct_from_price)
+                else:  # SHORT
+                    take_profit = entry_price * (1 - tp_pct_from_price)
+                    stop_loss = entry_price * (1 + sl_pct_from_price)
+            
+            # Логируем расчет
+            risk = abs(entry_price - stop_loss)
+            reward = abs(take_profit - entry_price)
+            rr_ratio = reward / risk if risk > 0 else 0
+            
+            print(f"[live] 📊 ZSCORE TP/SL: TP=${take_profit:.2f} (+{((take_profit - entry_price) / entry_price * 100):.2f}%), SL=${stop_loss:.2f} ({((stop_loss - entry_price) / entry_price * 100):.2f}%), RR={rr_ratio:.2f}:1")
+            print(f"[live]   → TP: {tp_pct_from_price*100:.2f}% from price ({tp_pct_from_price*leverage*100:.1f}% from margin), SL: {sl_pct_from_price*100:.2f}% from price ({sl_pct_from_price*leverage*100:.1f}% from margin)")
+            
+            return take_profit, stop_loss
             
         else:
             # Для TREND/FLAT стратегий используем настройки как МАКСИМАЛЬНЫЕ границы
