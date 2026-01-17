@@ -3476,7 +3476,8 @@ def run_live_from_api(
             current_settings = replace(
                 current_settings_raw,
                 symbol=symbol,
-                primary_symbol=symbol
+                # ВАЖНО: primary_symbol НЕ переопределяем - он должен оставаться глобальным PRIMARY_SYMBOL
+                # primary_symbol остается из current_settings_raw (глобальный PRIMARY_SYMBOL из .env)
             )
             # Копируем вложенные dataclasses для независимости
             current_settings.strategy = replace(current_settings_raw.strategy)
@@ -5327,8 +5328,18 @@ def run_live_from_api(
                             original_count = len(available_signals)
                             original_fresh_count = len(fresh_available)
                             
+                            # Логируем все доступные сигналы ДО фильтрации
+                            _log(f"🔍 PRIMARY_SYMBOL filter: Before filtering - {original_count} total signals, {original_fresh_count} fresh signals", symbol)
+                            for name, s in available_signals[:5]:  # Показываем первые 5 для отладки
+                                _log(f"   - {name.upper()}: {s.action.value} @ ${s.price:.2f} ({s.reason})", symbol)
+                            
                             available_signals = [(name, s) for name, s in available_signals if s.action == primary_symbol_allowed_action]
                             fresh_available = [(name, s) for name, s in fresh_available if s.action == primary_symbol_allowed_action]
+                            
+                            # Логируем все доступные сигналы ПОСЛЕ фильтрации
+                            _log(f"🔍 PRIMARY_SYMBOL filter: After filtering - {len(available_signals)} total signals, {len(fresh_available)} fresh signals (allowed: {primary_symbol_allowed_action.value})", symbol)
+                            for name, s in available_signals[:5]:  # Показываем первые 5 для отладки
+                                _log(f"   - {name.upper()}: {s.action.value} @ ${s.price:.2f} ({s.reason})", symbol)
                             
                             if available_signals:
                                 _log(f"📊 PRIMARY_SYMBOL filter applied: {len(available_signals)}/{original_count} signals passed (fresh: {len(fresh_available)}/{original_fresh_count})", symbol)
@@ -5343,6 +5354,8 @@ def run_live_from_api(
                                 if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                     break
                                 continue
+                        else:
+                            _log(f"ℹ️ PRIMARY_SYMBOL filter: No filter applied (primary_symbol_allowed_action is None)", symbol)
                         
                         print(f"[live] 🔍 Priority mode (no position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                         if fresh_available:
@@ -5526,19 +5539,30 @@ def run_live_from_api(
                                 print(f"[live] ✅ Non-priority position: {freshness_str} {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
                                 # Нет свежего сигнала от приоритетной стратегии
-                                # Ищем сигналы в том же направлении для усиления позиции
-                                same_direction_signals = [(name, s) for name, s in fresh_available 
-                                                         if s.action.value == current_position_bias.value]
-                                if same_direction_signals:
-                                    # Есть сигналы в том же направлении - используем самый свежий для усиления
-                                    same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                                    sig = same_direction_signals[-1][1]
-                                    strategy_name = same_direction_signals[-1][0]
-                                    print(f"[live] ✅ Non-priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                                # Сначала проверяем противоположные свежие сигналы от других стратегий (для закрытия/разворота)
+                                opposite_action = Action.LONG if current_position_bias == Bias.SHORT else Action.SHORT
+                                opposite_fresh_signals = [(name, s) for name, s in fresh_available 
+                                                          if s.action == opposite_action]
+                                if opposite_fresh_signals:
+                                    # Есть свежий противоположный сигнал - используем его для закрытия/разворота позиции
+                                    opposite_fresh_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                                    sig = opposite_fresh_signals[-1][1]
+                                    strategy_name = opposite_fresh_signals[-1][0]
+                                    print(f"[live] ✅ Non-priority position: Fresh opposite signal from {strategy_name.upper()} - can close/reverse position: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
                                 else:
-                                    # Нет сигналов для усиления - не обрабатываем противоположные сигналы
-                                    sig = None
-                                    print(f"[live] ⏸️ Non-priority position: No same direction signals. Waiting for fresh priority signal or same direction signal.")
+                                    # Нет противоположных свежих сигналов - ищем сигналы в том же направлении для усиления позиции
+                                    same_direction_signals = [(name, s) for name, s in fresh_available 
+                                                             if s.action.value == current_position_bias.value]
+                                    if same_direction_signals:
+                                        # Есть сигналы в том же направлении - используем самый свежий для усиления
+                                        same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                                        sig = same_direction_signals[-1][1]
+                                        strategy_name = same_direction_signals[-1][0]
+                                        print(f"[live] ✅ Non-priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                                    else:
+                                        # Нет сигналов для усиления - не обрабатываем противоположные сигналы
+                                        sig = None
+                                        print(f"[live] ⏸️ Non-priority position: No same direction signals. Waiting for fresh priority signal or same direction signal.")
 
             # 4. Проверяем подтверждение (agreement) для добавления к позиции
             if sig and sig.action != Action.HOLD:
@@ -6087,14 +6111,22 @@ def run_live_from_api(
                     # Если сигналы подтверждают друг друга, это уже учтено в выборе сигнала
                     
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем LONG, если на PRIMARY_SYMBOL есть SHORT позиция
+                    _log(f"🔍 [FINAL CHECK] Checking PRIMARY_SYMBOL position before opening LONG for {symbol}...", symbol)
+                    _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) from {strategy_name}", symbol)
+                    primary_symbol_from_settings = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
+                    _log(f"   PRIMARY_SYMBOL from settings: {primary_symbol_from_settings}", symbol)
+                    _log(f"   Current symbol: {symbol}", symbol)
+                    
                     should_block, block_reason = _check_primary_symbol_position(
                         client=client,
                         current_symbol=symbol,
                         settings=current_settings,
                         target_action=Action.LONG,
                     )
+                    
+                    _log(f"   [FINAL CHECK RESULT] PRIMARY_SYMBOL check result: should_block={should_block}, reason={block_reason}", symbol)
                     if should_block:
-                        _log(f"⛔ BLOCKED: {block_reason}", symbol)
+                        _log(f"⛔ [FINAL CHECK] BLOCKED: {block_reason}", symbol)
                         _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - waiting for PRIMARY_SYMBOL position to close or reverse", symbol)
                         if bot_state:
                             bot_state["current_status"] = "Running"
@@ -6104,6 +6136,8 @@ def run_live_from_api(
                         if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                             break
                         continue
+                    else:
+                        _log(f"✅ [FINAL CHECK] PRIMARY_SYMBOL check passed - LONG position allowed for {symbol}", symbol)
                     
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
@@ -6783,18 +6817,22 @@ def run_live_from_api(
                     # Позиции нет → открываем SHORT
                     
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем SHORT, если на PRIMARY_SYMBOL есть LONG позиция
-                    _log(f"🔍 Checking PRIMARY_SYMBOL position before opening SHORT for {symbol}...", symbol)
+                    _log(f"🔍 [FINAL CHECK] Checking PRIMARY_SYMBOL position before opening SHORT for {symbol}...", symbol)
                     _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) from {strategy_name}", symbol)
-                    _log(f"   PRIMARY_SYMBOL from settings: {getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)}", symbol)
+                    primary_symbol_from_settings = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
+                    _log(f"   PRIMARY_SYMBOL from settings: {primary_symbol_from_settings}", symbol)
+                    _log(f"   Current symbol: {symbol}", symbol)
+                    
                     should_block, block_reason = _check_primary_symbol_position(
                         client=client,
                         current_symbol=symbol,
                         settings=current_settings,
                         target_action=Action.SHORT,
                     )
-                    _log(f"   PRIMARY_SYMBOL check result: should_block={should_block}, reason={block_reason}", symbol)
+                    
+                    _log(f"   [FINAL CHECK RESULT] PRIMARY_SYMBOL check result: should_block={should_block}, reason={block_reason}", symbol)
                     if should_block:
-                        _log(f"⛔ BLOCKED: {block_reason}", symbol)
+                        _log(f"⛔ [FINAL CHECK] BLOCKED: {block_reason}", symbol)
                         _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - waiting for PRIMARY_SYMBOL position to close or reverse", symbol)
                         if bot_state:
                             bot_state["current_status"] = "Running"
@@ -6804,6 +6842,8 @@ def run_live_from_api(
                         if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                             break
                         continue
+                    else:
+                        _log(f"✅ [FINAL CHECK] PRIMARY_SYMBOL check passed - SHORT position allowed for {symbol}", symbol)
                     
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
