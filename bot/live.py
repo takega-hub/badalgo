@@ -5627,8 +5627,12 @@ def run_live_from_api(
                     bot_state["last_action"] = "No actionable signal, waiting..."
                     bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
                 update_worker_status(symbol, current_status="Running", last_action="No actionable signal, waiting...")
+                # ВАЖНО: Проверяем stop_event, но если он не установлен, продолжаем цикл
                 if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                    _log(f"🛑 Stop event received during signal selection, stopping bot for {symbol}", symbol)
                     break
+                # Продолжаем цикл - воркер должен работать постоянно
+                _log(f"🔄 Continuing worker loop after no actionable signal, waiting for new signals...", symbol)
                 continue
             
             # --- КОНЕЦ ВЫБОРА СИГНАЛА ---
@@ -5702,8 +5706,12 @@ def run_live_from_api(
                     # Используем короткую задержку (5 секунд) вместо полного live_poll_seconds,
                     # чтобы воркер не считался "мертвым" во время ожидания свежего сигнала
                     # и продолжал обновлять статус
+                    # ВАЖНО: Проверяем stop_event, но если он не установлен, продолжаем цикл
                     if _wait_with_stop_check(stop_event, 5.0, symbol):
+                        _log(f"🛑 Stop event received during freshness check, stopping bot for {symbol}", symbol)
                         break
+                    # Продолжаем цикл - воркер должен работать постоянно
+                    _log(f"🔄 Continuing worker loop after filtering signal, waiting for fresh signal...", symbol)
                     continue
             
             # Конвертируем timestamp сигнала в UTC для использования ниже
@@ -5759,53 +5767,83 @@ def run_live_from_api(
             print(f"[live] ✅ Signal passed processed check (ID: {signal_id}), proceeding to open position...")
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут от текущего времени
-            # ВСЕ сигналы проверяются одинаково: не старше 15 минут
+            # ИСКЛЮЧЕНИЕ: fallback сигналы могут быть старше, но не более 24 часов
+            # ПРИМЕЧАНИЕ: Эта проверка дублирует логику выше, но оставлена для дополнительной безопасности
+            # Если сигнал уже прошел проверку выше (is_fresh_check = True), то эта проверка должна пропустить его
             signal_age_minutes = None
             try:
-                # Используем signal_time_utc, если он был вычислен выше, иначе вычисляем заново
-                signal_time_for_age = signal_time_utc
-                if not signal_time_for_age:
-                    # Fallback: вычисляем signal_time_utc заново
-                    if isinstance(ts, pd.Timestamp):
-                        signal_ts = ts
-                        if signal_ts.tzinfo is None:
-                            signal_ts = signal_ts.tz_localize('UTC')
-                        else:
-                            signal_ts = signal_ts.tz_convert('UTC')
-                        signal_time_for_age = signal_ts.to_pydatetime()
-                        if signal_time_for_age.tzinfo is None:
-                            signal_time_for_age = signal_time_for_age.replace(tzinfo=timezone.utc)
-                    elif hasattr(ts, 'tzinfo'):
-                        signal_time_for_age = ts
-                        if signal_time_for_age.tzinfo is None:
-                            signal_time_for_age = signal_time_for_age.replace(tzinfo=timezone.utc)
-                        else:
-                            signal_time_for_age = signal_time_for_age.astimezone(timezone.utc)
-                
-                if signal_time_for_age:
-                    # Получаем текущее время в UTC
-                    current_time_utc = datetime.now(timezone.utc)
+                # Если сигнал уже прошел проверку свежести выше (is_fresh_check = True), пропускаем эту проверку
+                if is_fresh_check:
+                    print(f"[live] ✅ Signal already passed freshness check above, skipping duplicate age check")
+                else:
+                    # Используем signal_time_utc, если он был вычислен выше, иначе вычисляем заново
+                    signal_time_for_age = signal_time_utc
+                    if not signal_time_for_age:
+                        # Fallback: вычисляем signal_time_utc заново
+                        if isinstance(ts, pd.Timestamp):
+                            signal_ts = ts
+                            if signal_ts.tzinfo is None:
+                                signal_ts = signal_ts.tz_localize('UTC')
+                            else:
+                                signal_ts = signal_ts.tz_convert('UTC')
+                            signal_time_for_age = signal_ts.to_pydatetime()
+                            if signal_time_for_age.tzinfo is None:
+                                signal_time_for_age = signal_time_for_age.replace(tzinfo=timezone.utc)
+                        elif hasattr(ts, 'tzinfo'):
+                            signal_time_for_age = ts
+                            if signal_time_for_age.tzinfo is None:
+                                signal_time_for_age = signal_time_for_age.replace(tzinfo=timezone.utc)
+                            else:
+                                signal_time_for_age = signal_time_for_age.astimezone(timezone.utc)
                     
-                    # Вычисляем возраст сигнала в минутах
-                    age_delta = current_time_utc - signal_time_for_age
-                    signal_age_minutes = age_delta.total_seconds() / 60
-                    
-                    # Используем max_age_minutes, определенный выше (15 минут для всех стратегий)
-                    if signal_age_minutes > max_age_minutes:
-                        strategy_name = get_strategy_type_from_signal(sig.reason).upper()
-                        ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
-                        print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_minutes:.1f} minutes > {max_age_minutes} minutes limit)")
-                        print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: {max_age_minutes} minutes. Skipping this signal.")
-                        if bot_state:
-                            bot_state["current_status"] = "Running"
-                            bot_state["last_action"] = f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal..."
-                            bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                        update_worker_status(symbol, current_status="Running", last_action=f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal...")
-                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
-                            break
-                        continue
-                    else:
-                        print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit)")
+                    if signal_time_for_age:
+                        # Получаем текущее время в UTC
+                        current_time_utc = datetime.now(timezone.utc)
+                        
+                        # Вычисляем возраст сигнала в минутах и часах
+                        age_delta = current_time_utc - signal_time_for_age
+                        signal_age_minutes = age_delta.total_seconds() / 60
+                        signal_age_hours = signal_age_minutes / 60
+                        
+                        # Проверяем возраст сигнала с учетом fallback статуса
+                        should_filter_by_age = False
+                        if signal_age_minutes <= max_age_minutes:
+                            # Сигнал свежий (в пределах 15 минут)
+                            print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit)")
+                        elif is_fallback_signal:
+                            # Fallback сигналы могут быть старше 15 минут, но не более 24 часов
+                            if signal_age_hours <= max_age_fallback_hours:
+                                print(f"[live] ✅ FALLBACK signal age check passed: {signal_age_hours:.1f} hours (within {max_age_fallback_hours} hours limit)")
+                            else:
+                                should_filter_by_age = True
+                                strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                                ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} FALLBACK signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_hours:.1f} hours > {max_age_fallback_hours} hours limit)")
+                                print(f"[live]   ℹ️  Signal age: {signal_age_hours:.1f} hours. Maximum allowed for fallback: {max_age_fallback_hours} hours. Skipping this signal.")
+                        else:
+                            # Не fallback сигнал старше 15 минут - фильтруем
+                            should_filter_by_age = True
+                            strategy_name = get_strategy_type_from_signal(sig.reason).upper()
+                            ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
+                            if signal_age_hours >= 1:
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_hours:.1f} hours > {max_age_minutes} min limit)")
+                            else:
+                                print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_minutes:.1f} minutes > {max_age_minutes} minutes limit)")
+                            print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: {max_age_minutes} minutes. Skipping this signal.")
+                        
+                        if should_filter_by_age:
+                            if bot_state:
+                                bot_state["current_status"] = "Running"
+                                bot_state["last_action"] = f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal..."
+                                bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                            update_worker_status(symbol, current_status="Running", last_action=f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal...")
+                            # ВАЖНО: Проверяем stop_event, но если он не установлен, продолжаем цикл
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                _log(f"🛑 Stop event received during age check, stopping bot for {symbol}", symbol)
+                                break
+                            # Продолжаем цикл - воркер должен работать постоянно
+                            _log(f"🔄 Continuing worker loop after filtering old signal, waiting for fresh signal...", symbol)
+                            continue
             except Exception as e:
                 # В случае ошибки при проверке возраста - логируем, но продолжаем обработку
                 print(f"[live] ⚠️ Error checking signal age: {e}, proceeding with signal processing")
