@@ -106,7 +106,24 @@ class VBOStrategy:
         # Рассчитываем средний объем для фильтра
         avg_volume = df['volume'].rolling(window=20, min_periods=1).mean()
         
-        # Генерируем сигналы с базовыми фильтрами (без EMA - он слишком строгий)
+        # Дополнительные индикаторы для фильтров качества
+        # RSI для фильтрации перекупленности/перепроданности
+        if 'rsi' in df.columns:
+            rsi = df['rsi']
+        else:
+            try:
+                import pandas_ta as ta
+                rsi = ta.rsi(df['close'], length=14)
+            except:
+                rsi = pd.Series([50.0] * len(df), index=df.index)  # Нейтральное значение если RSI недоступен
+        
+        # SMA для фильтрации тренда
+        if 'sma' in df.columns:
+            sma = df['sma']
+        else:
+            sma = df['close'].rolling(window=20, min_periods=1).mean()
+        
+        # Генерируем сигналы с улучшенными фильтрами качества
         for idx, row in df.iterrows():
             # Фильтр 1: Волатильность - если текущий диапазон уже слишком велик, не входим
             if current_range.loc[idx] > (atr.loc[idx] * self.atr_multiplier):
@@ -116,15 +133,31 @@ class VBOStrategy:
             if prev_range.loc[idx] < (row['close'] * self.min_range_pct / 100):
                 continue
             
-            # Фильтр 3: Объем должен подтверждать пробой
-            if row['volume'] < (avg_volume.loc[idx] * self.volume_multiplier):
+            # Фильтр 3: Объем должен подтверждать пробой (усилен - требуется повышенный объем)
+            volume_mult = 1.2  # Требуем объем выше среднего на 20%
+            if row['volume'] < (avg_volume.loc[idx] * volume_mult):
                 continue
             
             # Фильтр 4: Проверяем, что пробой действительно произошел (цена закрылась за уровнем)
             # LONG сигнал: цена пробила уровень входа вверх И закрылась выше уровня
-            # Убрана проверка на открытие - она слишком строгая
             if (row['high'] >= entry_long.loc[idx] and 
                 row['close'] > entry_long.loc[idx]):
+                
+                # ФИЛЬТР КАЧЕСТВА 5: RSI не должен быть в зоне перекупленности для LONG
+                current_rsi = rsi.loc[idx] if pd.notna(rsi.loc[idx]) else 50.0
+                if current_rsi > 70:  # Перекупленность - пропускаем LONG
+                    continue
+                
+                # ФИЛЬТР КАЧЕСТВА 6: Цена должна быть выше SMA для LONG (подтверждение тренда)
+                current_sma = sma.loc[idx] if pd.notna(sma.loc[idx]) else row['close']
+                if row['close'] < current_sma * 0.995:  # Цена ниже SMA на 0.5% - слабый сигнал
+                    continue
+                
+                # ФИЛЬТР КАЧЕСТВА 7: Проверяем силу пробоя (цена должна закрыться значительно выше уровня)
+                breakout_strength = (row['close'] - entry_long.loc[idx]) / entry_long.loc[idx]
+                if breakout_strength < 0.001:  # Пробой менее 0.1% - слишком слабый
+                    continue
+                
                 reason = f"vbo_long_breakout_k_{self.k_coefficient}_range_{prev_range.loc[idx]:.2f}"
                 signals.append(Signal(
                     timestamp=idx,
@@ -134,9 +167,24 @@ class VBOStrategy:
                 ))
             
             # SHORT сигнал: цена пробила уровень входа вниз И закрылась ниже уровня
-            # Убрана проверка на открытие - она слишком строгая
             elif (row['low'] <= entry_short.loc[idx] and 
                   row['close'] < entry_short.loc[idx]):
+                
+                # ФИЛЬТР КАЧЕСТВА 5: RSI не должен быть в зоне перепроданности для SHORT
+                current_rsi = rsi.loc[idx] if pd.notna(rsi.loc[idx]) else 50.0
+                if current_rsi < 30:  # Перепроданность - пропускаем SHORT
+                    continue
+                
+                # ФИЛЬТР КАЧЕСТВА 6: Цена должна быть ниже SMA для SHORT (подтверждение тренда)
+                current_sma = sma.loc[idx] if pd.notna(sma.loc[idx]) else row['close']
+                if row['close'] > current_sma * 1.005:  # Цена выше SMA на 0.5% - слабый сигнал
+                    continue
+                
+                # ФИЛЬТР КАЧЕСТВА 7: Проверяем силу пробоя (цена должна закрыться значительно ниже уровня)
+                breakout_strength = (entry_short.loc[idx] - row['close']) / entry_short.loc[idx]
+                if breakout_strength < 0.001:  # Пробой менее 0.1% - слишком слабый
+                    continue
+                
                 reason = f"vbo_short_breakout_k_{self.k_coefficient}_range_{prev_range.loc[idx]:.2f}"
                 signals.append(Signal(
                     timestamp=idx,

@@ -104,7 +104,7 @@ class StrategyParams:
     ict_fvg_max_age_bars: int = 20  # Максимальный возраст FVG для входа (в свечах)
     ict_liquidity_lookback_days: int = 1  # Количество дней для поиска ликвидности
     ict_atr_multiplier_sl: float = 2.0  # Множитель ATR для стоп-лосса
-    ict_rr_ratio: float = 2.0  # Минимальное соотношение Risk/Reward (1:2)
+    ict_rr_ratio: float = 3.0  # Минимальное соотношение Risk/Reward (1:3) - улучшено с 2.0 для лучших результатов
 
 
 @dataclass

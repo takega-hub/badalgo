@@ -562,21 +562,37 @@ class ICTStrategy:
                             atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
                             sl_price = current_price - current_atr * atr_mult
                         
-                        # Take Profit: минимум R:R из параметров
+                        # ВАЛИДАЦИЯ SL: Проверяем, что SL соответствует требованиям (7-10% от маржи)
+                        # Предполагаем leverage = 10x (можно получить из params если доступно)
+                        leverage = getattr(self.params, 'leverage', 10)
+                        min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+                        max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+                        min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # 0.7% от цены при 10x
+                        max_sl_pct_from_price = max_sl_pct_from_margin / leverage  # 1.0% от цены при 10x
+                        
+                        sl_distance_pct = (current_price - sl_price) / current_price
+                        
+                        # Если SL слишком близко (< 7% от маржи), используем минимальный SL
+                        if sl_distance_pct < min_sl_pct_from_price:
+                            sl_price = current_price * (1 - min_sl_pct_from_price)
+                            sl_distance_pct = min_sl_pct_from_price
+                        # Если SL слишком далеко (> 10% от маржи), используем максимальный SL
+                        elif sl_distance_pct > max_sl_pct_from_price:
+                            sl_price = current_price * (1 - max_sl_pct_from_price)
+                            sl_distance_pct = max_sl_pct_from_price
+                        
+                        # Take Profit: используем улучшенный R:R (3.0 вместо 2.0 для лучших результатов)
                         risk = current_price - sl_price
                         if risk > 0:
-                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 2.0)
+                            # Увеличиваем R:R до 3.0 для ICT стратегии (лучше для FVG ретестов)
+                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)  # Изменено с 2.0 на 3.0
+                            if rr_ratio < 3.0:
+                                rr_ratio = 3.0  # Минимум 3.0 для ICT
                             tp_price = current_price + risk * rr_ratio
                             
-                            # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный R:R (слишком маленький риск не стоит)
-                            min_risk_pct = current_price * 0.001  # Минимум 0.1% риска (ослаблено с 0.2%)
-                            if risk < min_risk_pct:
+                            # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный риск (0.7% от цены = 7% от маржи)
+                            if risk < min_sl_pct_from_price * current_price:
                                 continue  # Слишком маленький риск - пропускаем
-                            
-                            # ФИЛЬТР КАЧЕСТВА 4: Проверяем, что SL не слишком близко (минимум 0.05% от цены)
-                            sl_distance_pct = (current_price - sl_price) / current_price
-                            if sl_distance_pct < 0.0005:  # Меньше 0.05% (ослаблено с 0.1%)
-                                continue  # SL слишком близко - пропускаем
                             
                             signals.append(Signal(
                                 timestamp=current_ts,
@@ -606,21 +622,37 @@ class ICTStrategy:
                             atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
                             sl_price = current_price + current_atr * atr_mult
                         
-                        # Take Profit: минимум R:R из параметров
+                        # ВАЛИДАЦИЯ SL: Проверяем, что SL соответствует требованиям (7-10% от маржи)
+                        # Предполагаем leverage = 10x (можно получить из params если доступно)
+                        leverage = getattr(self.params, 'leverage', 10)
+                        min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+                        max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+                        min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # 0.7% от цены при 10x
+                        max_sl_pct_from_price = max_sl_pct_from_margin / leverage  # 1.0% от цены при 10x
+                        
+                        sl_distance_pct = (sl_price - current_price) / current_price
+                        
+                        # Если SL слишком близко (< 7% от маржи), используем минимальный SL
+                        if sl_distance_pct < min_sl_pct_from_price:
+                            sl_price = current_price * (1 + min_sl_pct_from_price)
+                            sl_distance_pct = min_sl_pct_from_price
+                        # Если SL слишком далеко (> 10% от маржи), используем максимальный SL
+                        elif sl_distance_pct > max_sl_pct_from_price:
+                            sl_price = current_price * (1 + max_sl_pct_from_price)
+                            sl_distance_pct = max_sl_pct_from_price
+                        
+                        # Take Profit: используем улучшенный R:R (3.0 вместо 2.0 для лучших результатов)
                         risk = sl_price - current_price
                         if risk > 0:
-                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 2.0)
+                            # Увеличиваем R:R до 3.0 для ICT стратегии (лучше для FVG ретестов)
+                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)  # Изменено с 2.0 на 3.0
+                            if rr_ratio < 3.0:
+                                rr_ratio = 3.0  # Минимум 3.0 для ICT
                             tp_price = current_price - risk * rr_ratio
                             
-                            # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный R:R (слишком маленький риск не стоит)
-                            min_risk_pct = current_price * 0.002  # Минимум 0.2% риска
-                            if risk < min_risk_pct:
+                            # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный риск (0.7% от цены = 7% от маржи)
+                            if risk < min_sl_pct_from_price * current_price:
                                 continue  # Слишком маленький риск - пропускаем
-                            
-                            # ФИЛЬТР КАЧЕСТВА 4: Проверяем, что SL не слишком близко (минимум 0.1% от цены)
-                            sl_distance_pct = (sl_price - current_price) / current_price
-                            if sl_distance_pct < 0.001:  # Меньше 0.1%
-                                continue  # SL слишком близко - пропускаем
                             
                             signals.append(Signal(
                                 timestamp=current_ts,

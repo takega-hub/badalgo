@@ -438,6 +438,16 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                     if strategy_name == "flat":
                         sl_pct = settings.strategy.range_stop_loss_pct
                         tp_pct = settings.risk.take_profit_pct
+                    elif strategy_name == "vbo":
+                        # Для VBO используем сбалансированные TP/SL: TP=3.2%, SL=1.1% от цены
+                        # Пробои волатильности требуют баланса: достаточно широкий TP, но не слишком
+                        # чтобы не терять сделки по SL до достижения TP
+                        tp_pct = 0.032  # 3.2% от цены (32% от маржи при 10x)
+                        sl_pct = 0.011  # 1.1% от цены (11% от маржи при 10x) - RR ~2.9:1
+                    elif strategy_name == "liquidation_hunter":
+                        # Для Liquidation Hunter используем специальные TP/SL: TP=1.8%, SL=0.7% от цены
+                        tp_pct = 0.018  # 1.8% от цены
+                        sl_pct = 0.007  # 0.7% от цены
                     else:
                         sl_pct = settings.risk.stop_loss_pct
                         tp_pct = settings.risk.take_profit_pct
@@ -583,6 +593,50 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                         if sl_match and tp_match and simulator.position:
                             sl_price = float(sl_match.group(1))
                             tp_price = float(tp_match.group(1))
+                            
+                            # ВАЛИДАЦИЯ И ПЕРЕСЧЕТ TP/SL для ICT
+                            # Проверяем, что SL соответствует требованиям (7-10% от маржи)
+                            entry_price = simulator.position.avg_price
+                            position_side = simulator.position.side
+                            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+                            
+                            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+                            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+                            min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # 0.7% от цены при 10x
+                            max_sl_pct_from_price = max_sl_pct_from_margin / leverage  # 1.0% от цены при 10x
+                            
+                            # Проверяем SL
+                            if position_side.value == "long":
+                                sl_distance_pct = (entry_price - sl_price) / entry_price
+                                if sl_distance_pct < min_sl_pct_from_price:
+                                    # SL слишком близко - используем минимальный SL
+                                    sl_price = entry_price * (1 - min_sl_pct_from_price)
+                                    sl_distance_pct = min_sl_pct_from_price
+                                elif sl_distance_pct > max_sl_pct_from_price:
+                                    # SL слишком далеко - используем максимальный SL
+                                    sl_price = entry_price * (1 - max_sl_pct_from_price)
+                                    sl_distance_pct = max_sl_pct_from_price
+                                
+                                # Пересчитываем TP с R:R = 3.0 (улучшенное соотношение)
+                                risk = entry_price - sl_price
+                                rr_ratio = 3.0  # Улучшенный R:R для ICT
+                                tp_price = entry_price + risk * rr_ratio
+                            else:  # SHORT
+                                sl_distance_pct = (sl_price - entry_price) / entry_price
+                                if sl_distance_pct < min_sl_pct_from_price:
+                                    # SL слишком близко - используем минимальный SL
+                                    sl_price = entry_price * (1 + min_sl_pct_from_price)
+                                    sl_distance_pct = min_sl_pct_from_price
+                                elif sl_distance_pct > max_sl_pct_from_price:
+                                    # SL слишком далеко - используем максимальный SL
+                                    sl_price = entry_price * (1 + max_sl_pct_from_price)
+                                    sl_distance_pct = max_sl_pct_from_price
+                                
+                                # Пересчитываем TP с R:R = 3.0 (улучшенное соотношение)
+                                risk = sl_price - entry_price
+                                rr_ratio = 3.0  # Улучшенный R:R для ICT
+                                tp_price = entry_price - risk * rr_ratio
+                            
                             position_tp_sl[simulator.position.entry_reason] = {"tp": tp_price, "sl": sl_price}
                     elif sig.action in (Action.LONG, Action.SHORT) and sig.reason.startswith("ml_"):
                         import re
@@ -643,6 +697,14 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                             if strategy_name == "flat":
                                 sl_pct = settings.strategy.range_stop_loss_pct
                                 tp_pct = settings.risk.take_profit_pct
+                            elif strategy_name == "vbo":
+                                # Для VBO используем сбалансированные TP/SL: TP=3.2%, SL=1.1% от цены
+                                tp_pct = 0.032  # 3.2% от цены (32% от маржи при 10x)
+                                sl_pct = 0.011  # 1.1% от цены (11% от маржи при 10x) - RR ~2.9:1
+                            elif strategy_name == "liquidation_hunter":
+                                # Для Liquidation Hunter используем специальные TP/SL: TP=1.8%, SL=0.7% от цены
+                                tp_pct = 0.018  # 1.8% от цены
+                                sl_pct = 0.007  # 0.7% от цены
                             else:
                                 sl_pct = settings.risk.stop_loss_pct
                                 tp_pct = settings.risk.take_profit_pct
@@ -720,6 +782,14 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
                 if strategy_name == "flat":
                     sl_pct = settings.strategy.range_stop_loss_pct
                     tp_pct = settings.risk.take_profit_pct
+                elif strategy_name == "vbo":
+                    # Для VBO используем сбалансированные TP/SL: TP=3.2%, SL=1.1% от цены
+                    tp_pct = 0.032  # 3.2% от цены (32% от маржи при 10x)
+                    sl_pct = 0.011  # 1.1% от цены (11% от маржи при 10x) - RR ~2.9:1
+                elif strategy_name == "liquidation_hunter":
+                    # Для Liquidation Hunter используем специальные TP/SL: TP=1.8%, SL=0.7% от цены
+                    tp_pct = 0.018  # 1.8% от цены
+                    sl_pct = 0.007  # 0.7% от цены
                 else:
                     sl_pct = settings.risk.stop_loss_pct
                     tp_pct = settings.risk.take_profit_pct

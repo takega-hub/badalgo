@@ -711,20 +711,20 @@ def _calculate_tp_sl_for_signal(
             return take_profit, stop_loss
         
         elif strategy_type == "vbo":
-            # Для VBO стратегии (Volatility Breakout) используем более широкие TP/SL
-            # VBO ловит пробои волатильности, которые могут развиваться дальше
-            # Рекомендуемые параметры: TP 3-4% от цены, SL 1-1.5% от цены (RR ~2.5-3:1)
+            # Для VBO стратегии (Volatility Breakout) используем сбалансированные TP/SL
+            # VBO ловит пробои волатильности, но слишком широкий TP может привести к закрытию по SL
+            # Нужен баланс: достаточно широкий TP для движения, но не слишком, чтобы не терять по SL
+            # Рекомендуемые параметры: TP 3.0-3.5% от цены, SL 1.0-1.2% от цены (RR ~2.5-3:1)
             
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
             
-            # Для VBO используем более широкие уровни для улавливания движения
-            # TP: 3.5% от цены (35% от маржи при 10x)
-            # SL: 1.2% от цены (12% от маржи при 10x)
-            # RR: ~2.9:1
-            # ВАЖНО: SL должен быть в диапазоне 7-10% от маржи, но для VBO можно немного больше (до 12%)
+            # Для VBO используем сбалансированные уровни для пробоев волатильности
+            # TP: 3.2% от цены (32% от маржи при 10x) - достаточно широкий, но реалистичный
+            # SL: 1.1% от цены (11% от маржи при 10x) - дает больше пространства для пробоя
+            # RR: ~2.9:1 - сбалансированное соотношение для пробоев
             
-            tp_pct_from_price = 0.035  # 3.5% от цены = 35% от маржи при 10x
-            sl_pct_from_price = 0.012   # 1.2% от цены = 12% от маржи при 10x (немного больше для пробоев)
+            tp_pct_from_price = 0.032  # 3.2% от цены = 32% от маржи при 10x
+            sl_pct_from_price = 0.011   # 1.1% от цены = 11% от маржи при 10x (немного больше для пробоев)
             
             # Проверяем максимальные границы из настроек
             max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
@@ -741,13 +741,13 @@ def _calculate_tp_sl_for_signal(
             
             # Ограничиваем нашими значениями, но не превышаем максимумы
             tp_pct_from_price = min(tp_pct_from_price, max_tp_pct)
-            # Для SL: минимум 7% от маржи, максимум 12% от маржи (или max_sl_pct_margin, если меньше)
+            # Для SL: минимум 7% от маржи, максимум 10% от маржи (или max_sl_pct_margin, если меньше)
             min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
-            max_sl_pct_from_margin = min(0.12, max_sl_pct_margin)  # Максимум 12% от маржи или настройка
+            max_sl_pct_from_margin = min(0.10, max_sl_pct_margin)  # Максимум 10% от маржи или настройка
             min_sl_pct_from_price = min_sl_pct_from_margin / leverage
             max_sl_pct_from_price = max_sl_pct_from_margin / leverage
             
-            # Убеждаемся, что SL в допустимом диапазоне
+            # Убеждаемся, что SL в допустимом диапазоне (0.9% = 9% от маржи при 10x - в пределах 7-10%)
             sl_pct_from_price = max(min_sl_pct_from_price, min(sl_pct_from_price, max_sl_pct_from_price))
             
             # Используем уровни поддержки/сопротивления, если они находятся в пределах наших параметров
