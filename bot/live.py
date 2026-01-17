@@ -812,18 +812,18 @@ def _calculate_tp_sl_for_signal(
         elif strategy_type == "zscore":
             # Для ZSCORE стратегии (Mean Reversion) используем оптимизированные TP/SL
             # ZSCORE ловит возврат к среднему, поэтому нужны быстрые тейки
-            # Результаты показывают высокий WR (90%, 88.2%), но отрицательный PnL из-за плохого RR
-            # Нужно улучшить RR для mean reversion стратегий
+            # Результаты показывают: SOLUSDT работает хорошо (65.2% WR, +3.34), но BTCUSDT/ETHUSDT убыточные
+            # Увеличиваем TP/SL для лучшего RR и более широких уровней для волатильных пар
             
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
             
-            # Для mean reversion стратегий используем более узкие уровни, но с лучшим RR
-            # TP: 2.0% от цены (20% от маржи при 10x) - достаточно для возврата к среднему
-            # SL: 0.8% от цены (8% от маржи при 10x) - узкий для быстрого выхода
-            # RR: ~2.5:1 - оптимальное соотношение для mean reversion
+            # Для mean reversion стратегий используем более широкие уровни с лучшим RR
+            # TP: 2.5% от цены (25% от маржи при 10x) - достаточно для возврата к среднему
+            # SL: 0.9% от цены (9% от маржи при 10x) - узкий для быстрого выхода
+            # RR: ~2.78:1 - улучшенное соотношение для mean reversion
             
-            tp_pct_from_price = 0.020  # 2.0% от цены = 20% от маржи при 10x
-            sl_pct_from_price = 0.008   # 0.8% от цены = 8% от маржи при 10x
+            tp_pct_from_price = 0.025  # 2.5% от цены = 25% от маржи при 10x
+            sl_pct_from_price = 0.009   # 0.9% от цены = 9% от маржи при 10x
             
             # Проверяем максимальные границы из настроек
             max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
