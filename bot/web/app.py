@@ -660,37 +660,37 @@ def api_symbols_set_active():
         if multi_symbol_manager:
             if active_symbols_changed:
                 # Активные символы изменились - нужен перезапуск
-                def update_and_restart():
-                    """Обновление настроек и перезапуск в фоновом потоке."""
-                    global multi_symbol_manager
-                    try:
-                        print("[web] [background] Updating MultiSymbolManager settings from api_symbols_set_active...")
-                        multi_symbol_manager.update_settings(settings)
-                        print("[web] [background] Settings updated successfully")
-                        
-                        # Если менеджер уже запущен, перезапускаем его с новыми настройками
-                        if multi_symbol_manager.running:
-                            print(f"[web] [background] Restarting MultiSymbolManager with new active symbols: {active_symbols}")
-                            multi_symbol_manager.stop()
-                            # Даем время на остановку
-                            import time
-                            time.sleep(2)
-                            multi_symbol_manager.start()
-                            print("[web] [background] MultiSymbolManager restarted successfully")
-                    except Exception as e:
-                        print(f"[web] [background] Error updating/restarting MultiSymbolManager: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                # Запускаем в фоновом потоке, чтобы не блокировать Flask
-                import threading
-                update_thread = threading.Thread(
-                    target=update_and_restart,
-                    name="SymbolSettingsUpdateThread",
-                    daemon=True
-                )
-                update_thread.start()
-                print("[web] Settings update thread launched (won't block server)")
+            def update_and_restart():
+                """Обновление настроек и перезапуск в фоновом потоке."""
+                global multi_symbol_manager
+                try:
+                    print("[web] [background] Updating MultiSymbolManager settings from api_symbols_set_active...")
+                    multi_symbol_manager.update_settings(settings)
+                    print("[web] [background] Settings updated successfully")
+                    
+                    # Если менеджер уже запущен, перезапускаем его с новыми настройками
+                    if multi_symbol_manager.running:
+                        print(f"[web] [background] Restarting MultiSymbolManager with new active symbols: {active_symbols}")
+                        multi_symbol_manager.stop()
+                        # Даем время на остановку
+                        import time
+                        time.sleep(2)
+                        multi_symbol_manager.start()
+                        print("[web] [background] MultiSymbolManager restarted successfully")
+                except Exception as e:
+                    print(f"[web] [background] Error updating/restarting MultiSymbolManager: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Запускаем в фоновом потоке, чтобы не блокировать Flask
+            import threading
+            update_thread = threading.Thread(
+                target=update_and_restart,
+                name="SymbolSettingsUpdateThread",
+                daemon=True
+            )
+            update_thread.start()
+            print("[web] Settings update thread launched (won't block server)")
             else:
                 # Изменился только primary_symbol - просто обновляем настройки без перезапуска
                 print(f"[web] Only primary_symbol changed ({old_primary} -> {primary_symbol}), updating settings without restart")
@@ -794,8 +794,8 @@ def api_status():
         if symbol_from_query and symbol_from_query in (settings.active_symbols if settings.active_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]):
             primary_symbol = symbol_from_query
         else:
-            # Получаем основной символ для отображения
-            primary_symbol = settings.primary_symbol if settings.primary_symbol else (settings.symbol if settings.symbol else "BTCUSDT")
+        # Получаем основной символ для отображения
+        primary_symbol = settings.primary_symbol if settings.primary_symbol else (settings.symbol if settings.symbol else "BTCUSDT")
         
         try:
             balance = _get_balance(client)
@@ -2446,15 +2446,15 @@ def api_ml_model_retrain():
         return jsonify({"error": "Settings not loaded"}), 500
     
     try:
-        data = request.json or {}
-        symbol = data.get("symbol", settings.symbol)
+    data = request.json or {}
+    symbol = data.get("symbol", settings.symbol)
         mode = data.get("mode", "optimal")
-        
-        # Проверяем доступные пары
-        available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-        if symbol not in available_symbols:
-            return jsonify({"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}), 400
-
+    
+    # Проверяем доступные пары
+    available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    if symbol not in available_symbols:
+        return jsonify({"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}), 400
+    
         script_name = "retrain_ml_optimized.py" if mode == "optimal" else "retrain_ultra_aggressive.py"
         mode_display = "Оптимальный" if mode == "optimal" else "Агрессивный"
         
@@ -2518,7 +2518,7 @@ def api_ml_model_retrain_all():
                 
             except Exception as e:
                 print(f"[web] ❌ Ошибка при выполнении {script_name}: {e}")
-
+        
         # Запускаем в отдельном потоке
         import threading
         thread = threading.Thread(target=run_retrain_script, daemon=True)
@@ -3223,16 +3223,16 @@ def api_chart_data():
         
         # Вычисляем индикаторы
         try:
-            df_ind = prepare_with_indicators(
-                df_raw,
-                adx_length=settings.strategy.adx_length,
-                di_length=settings.strategy.di_length,
-                sma_length=settings.strategy.sma_length,
-                rsi_length=settings.strategy.rsi_length,
-                breakout_lookback=settings.strategy.breakout_lookback,
-                bb_length=settings.strategy.bb_length,
-                bb_std=settings.strategy.bb_std,
-                atr_length=14,  # ATR период
+        df_ind = prepare_with_indicators(
+            df_raw,
+            adx_length=settings.strategy.adx_length,
+            di_length=settings.strategy.di_length,
+            sma_length=settings.strategy.sma_length,
+            rsi_length=settings.strategy.rsi_length,
+            breakout_lookback=settings.strategy.breakout_lookback,
+            bb_length=settings.strategy.bb_length,
+            bb_std=settings.strategy.bb_std,
+            atr_length=14,  # ATR период
                 ema_fast_length=settings.strategy.ema_fast_length,
                 ema_slow_length=settings.strategy.ema_slow_length,
                 ema_timeframe=settings.strategy.momentum_ema_timeframe,
@@ -3782,10 +3782,10 @@ def api_chart_data():
                                     elif hasattr(sig.timestamp, 'timestamp'):
                                         # datetime объект
                                         timestamp_ms = int(sig.timestamp.timestamp() * 1000)
-                                    else:
+                                        else:
                                         # Строка - парсим
-                                        dt = pd.to_datetime(str(sig.timestamp))
-                                        if dt.tzinfo is None:
+                                            dt = pd.to_datetime(str(sig.timestamp))
+                                            if dt.tzinfo is None:
                                             dt = dt.tz_localize('UTC')
                                         timestamp_ms = int(dt.timestamp() * 1000)
                                 except Exception as e:
@@ -3847,11 +3847,11 @@ def api_chart_data():
                         print(f"[web] ⚠️ ANOMALY: SL ${sl_float:.2f} is {sl_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}. Ignoring.")
                         sl_float = 0.0  # Игнорируем явно некорректный SL
                 
-                position_info = {
-                    "side": position["side"],
-                    "size": float(position["size"]),
+            position_info = {
+                "side": position["side"],
+                "size": float(position["size"]),
                     "entry_price": entry_price,
-                    "unrealised_pnl": float(position["unrealised_pnl"]),
+                "unrealised_pnl": float(position["unrealised_pnl"]),
                     "take_profit": tp_float,
                     "stop_loss": sl_float,
                 }
@@ -3865,7 +3865,7 @@ def api_chart_data():
                     "unrealised_pnl": position.get("unrealised_pnl", 0),
                     "take_profit": 0.0,
                     "stop_loss": 0.0,
-                }
+            }
         
         return jsonify({
             "candles": candles,

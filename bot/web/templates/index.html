@@ -3546,19 +3546,15 @@
                         checkbox.checked = data.active_symbols.includes(checkbox.value);
                     });
                     
-                    // Обновляем селектор основного символа (ТОЛЬКО если он еще не выбран пользователем или при первой загрузке)
+                    // Обновляем селектор основного символа для торговой логики (PRIMARY_SYMBOL)
                     const primarySelect = document.getElementById('symbols-primary-select');
-                    const topSelect = document.getElementById('primary-symbol-select');
                     
                     if (primarySelect) {
                         primarySelect.value = data.primary_symbol;
                     }
                     
-                    // Не переопределяем topSelect, если пользователь уже что-то выбрал вручную
-                    if (topSelect && (!currentSymbol || currentSymbol === data.primary_symbol)) {
-                        topSelect.value = data.primary_symbol;
-                        currentSymbol = data.primary_symbol;
-                    }
+                    // НЕ синхронизируем topSelect (селект для просмотра графика) с PRIMARY_SYMBOL
+                    // Эти два селекта независимы - пользователь выбирает символ для просмотра отдельно
                     
                     // Обновляем статус активных символов
                     const statusSpan = document.getElementById('active-symbols-status');
@@ -3618,16 +3614,8 @@
                         primarySelect.value = primarySymbol;
                     }
                     
-                    // Обновляем Active Symbol селектор (для просмотра) только если он совпадает с PRIMARY_SYMBOL
-                    const topSelect = document.getElementById('primary-symbol-select');
-                    if (topSelect) {
-                        // Меняем только если текущий выбор совпадает со старым PRIMARY_SYMBOL
-                        // Или если пользователь не менял его вручную
-                        if (!currentSymbol || currentSymbol === data.primary_symbol || topSelect.value === data.primary_symbol) {
-                            topSelect.value = primarySymbol;
-                            currentSymbol = primarySymbol;
-                        }
-                    }
+                    // НЕ обновляем Active Symbol селектор (для просмотра графика)
+                    // Эти два селекта независимы - пользователь выбирает символ для просмотра отдельно
                     
                     // Обновляем сообщение о статусе
                     const statusMessage = document.getElementById('symbols-status-message');
