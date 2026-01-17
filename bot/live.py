@@ -4424,9 +4424,8 @@ def run_live_from_api(
                         
                         if should_filter:
                             ml_filtered.append((sig, filter_reason))
-                            # Детальное логирование отфильтрованных сигналов для диагностики
-                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                            _log(f"  ⛔ FILTERED ML signal: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}] - Reason: {filter_reason}", symbol)
+                            # Детальное логирование отфильтрованных сигналов убрано для уменьшения шума в логах
+                            # Итоговая статистика выводится ниже
                         else:
                             ml_actionable.append(sig)
                             all_signals.append(sig)
@@ -5334,8 +5333,12 @@ def run_live_from_api(
                 strategy_name = available_signals[0][0]
                 # Проверяем, является ли единственный сигнал свежим
                 if not is_signal_fresh(sig, df_ready):
-                    is_fallback_signal = True  # Это fallback сигнал, если не свежий
-                print(f"[live] ✅ Selected {strategy_name.upper()} signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
+                    # КРИТИЧЕСКИ ВАЖНО: Не обрабатываем старые сигналы, даже если это единственный доступный
+                    sig = None
+                    ts_str = available_signals[0][1].timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(available_signals[0][1].timestamp, 'strftime') else str(available_signals[0][1].timestamp)
+                    print(f"[live] ⏳ Only one signal available from {strategy_name.upper()}, but it's not fresh (timestamp: {ts_str}). Waiting for fresh signals (max age: 15 minutes)...")
+                else:
+                    print(f"[live] ✅ Selected {strategy_name.upper()} signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
             else:
                 # 1. Сначала определяем свежие сигналы
                 fresh_available = [(name, s) for name, s in available_signals if is_signal_fresh(s, df_ready)]
@@ -5422,24 +5425,11 @@ def run_live_from_api(
                             strategy_name = strategy_name_fresh
                             ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                             print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
-                    elif available_signals:
-                        # Если нет свежих сигналов, но есть доступные - выбираем самый свежий по timestamp
-                        is_fallback_signal = True  # Это fallback сигнал
-                        available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                        sig = available_signals[-1][1]
-                        strategy_name = available_signals[-1][0]
-                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
-                        # Если нет свежих сигналов - выбираем самый свежий по timestamp из всех доступных
-                        # Это позволяет выбирать сигналы от новых стратегий (ICT, Liquidation Hunter, Z-Score, VBO),
-                        # которые могут иметь timestamp от прошлых свечей, но быть актуальными
-                        is_fallback_signal = True  # Это fallback сигнал
-                        available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                        sig = available_signals[-1][1]
-                        strategy_name = available_signals[-1][0]
-                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                        # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
+                        # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
+                        sig = None
+                        print(f"[live] ⏳ Hybrid mode: No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
                 else:
                     # Режим приоритета конкретной стратегии
                     # ПРИОРИТЕТ - это защита открытой позиции, а не ограничение на выбор сигналов
@@ -5530,29 +5520,10 @@ def run_live_from_api(
                             ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                             print(f"[live] ✅ Priority mode (no position): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                         elif available_signals:
-                            # Если нет свежих сигналов, но есть доступные - предпочитаем сигнал от приоритетной стратегии
-                            is_fallback_signal = True  # Это fallback сигнал
-                            priority_sig_in_available = None
-                            priority_sig_name = None
-                            for name, s in available_signals:
-                                if name == strategy_priority:
-                                    priority_sig_in_available = s
-                                    priority_sig_name = name
-                                    break
-                            
-                            if priority_sig_in_available:
-                                # Есть сигнал от приоритетной стратегии - используем его
-                                sig = priority_sig_in_available
-                                strategy_name = priority_sig_name
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                print(f"[live] ⚠️ Priority mode (no position, no fresh): Selected {strategy_name.upper()} signal (priority strategy): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
-                            else:
-                                # Нет сигнала от приоритетной стратегии - выбираем самый свежий по timestamp
-                                available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                                sig = available_signals[-1][1]
-                                strategy_name = available_signals[-1][0]
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                print(f"[live] ⚠️ Priority mode (no position, no fresh): No {strategy_priority.upper()} signal, selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                            # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
+                            # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
+                            sig = None
+                            print(f"[live] ⏳ Priority mode (no position): No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
                         else:
                             sig = None
                             print(f"[live] ⚠️ Priority mode (no position): No signals available")
@@ -5610,31 +5581,25 @@ def run_live_from_api(
                                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                         priority_sig_fresh = age_from_now_minutes <= 15
                                         
-                                        # ВАЖНО: Если сигнал от приоритетной стратегии в противоположном направлении,
-                                        # обрабатываем его даже если он не очень свежий (до 1 часа)
+                                        # КРИТИЧЕСКИ ВАЖНО: Все сигналы проверяются строго - не старше 15 минут
+                                        # Не делаем исключений для противоположных сигналов
+                                        priority_sig_acceptable = priority_sig_fresh
                                         is_opposite_direction = (
                                             current_position_bias == Bias.LONG and priority_sig.action == Action.SHORT
                                         ) or (
                                             current_position_bias == Bias.SHORT and priority_sig.action == Action.LONG
                                         )
-                                        
-                                        if is_opposite_direction:
-                                            # Для противоположных сигналов от приоритетной стратегии используем более мягкий лимит (1 час)
-                                            priority_sig_acceptable = age_from_now_minutes <= 60
-                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Opposite direction: {is_opposite_direction}, Acceptable: {priority_sig_acceptable}")
-                                        else:
-                                            # Для сигналов в том же направлении используем строгий лимит (15 минут)
-                                            priority_sig_acceptable = priority_sig_fresh
-                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Same direction: True")
+                                        direction_str = "opposite" if is_opposite_direction else "same"
+                                        print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Direction: {direction_str}")
                                 except Exception as e:
                                     print(f"[live]     ⚠️ Error checking freshness: {e}")
                             
-                            # Если есть свежий или приемлемый сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
-                            if priority_sig and (priority_sig_fresh or priority_sig_acceptable):
+                            # Если есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
+                            # КРИТИЧЕСКИ ВАЖНО: Только свежие сигналы (не старше 15 минут)
+                            if priority_sig and priority_sig_fresh:
                                 sig = priority_sig
                                 age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
-                                freshness_str = "Fresh" if priority_sig_fresh else "Acceptable (opposite direction)"
-                                print(f"[live] ✅ Priority position: {freshness_str} {strategy_priority.upper()} signal{age_str} - can review position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                                print(f"[live] ✅ Priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
                                 # Нет свежего сигнала от приоритетной стратегии
                                 # Ищем сигналы в том же направлении для усиления позиции
@@ -5677,31 +5642,25 @@ def run_live_from_api(
                                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                         priority_sig_fresh = age_from_now_minutes <= 15
                                         
-                                        # ВАЖНО: Если сигнал от приоритетной стратегии в противоположном направлении,
-                                        # обрабатываем его даже если он не очень свежий (до 1 часа)
+                                        # КРИТИЧЕСКИ ВАЖНО: Все сигналы проверяются строго - не старше 15 минут
+                                        # Не делаем исключений для противоположных сигналов
+                                        priority_sig_acceptable = priority_sig_fresh
                                         is_opposite_direction = (
                                             current_position_bias == Bias.LONG and priority_sig.action == Action.SHORT
                                         ) or (
                                             current_position_bias == Bias.SHORT and priority_sig.action == Action.LONG
                                         )
-                                        
-                                        if is_opposite_direction:
-                                            # Для противоположных сигналов от приоритетной стратегии используем более мягкий лимит (1 час)
-                                            priority_sig_acceptable = age_from_now_minutes <= 60
-                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Opposite direction: {is_opposite_direction}, Acceptable: {priority_sig_acceptable}")
-                                        else:
-                                            # Для сигналов в том же направлении используем строгий лимит (15 минут)
-                                            priority_sig_acceptable = priority_sig_fresh
-                                            print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Same direction: True")
+                                        direction_str = "opposite" if is_opposite_direction else "same"
+                                        print(f"[live]     Age: {age_from_now_minutes:.1f} minutes, Fresh: {priority_sig_fresh}, Direction: {direction_str}")
                                 except Exception as e:
                                     print(f"[live]     ⚠️ Error checking freshness: {e}")
                             
-                            if priority_sig and (priority_sig_fresh or priority_sig_acceptable):
+                            # КРИТИЧЕСКИ ВАЖНО: Только свежие сигналы (не старше 15 минут)
+                            if priority_sig and priority_sig_fresh:
                                 # Есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
                                 sig = priority_sig
                                 age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
-                                freshness_str = "Fresh" if priority_sig_fresh else "Acceptable (opposite direction)"
-                                print(f"[live] ✅ Non-priority position: {freshness_str} {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                                print(f"[live] ✅ Non-priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
                                 # Нет свежего сигнала от приоритетной стратегии
                                 # Сначала проверяем противоположные свежие сигналы от других стратегий (для закрытия/разворота)
