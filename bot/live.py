@@ -3573,6 +3573,13 @@ def run_live_from_api(
                 _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                 break
             
+            # Обновляем статус перед получением данных (может занимать время)
+            try:
+                from bot.multi_symbol_manager import update_worker_status
+                update_worker_status(symbol, current_status="Running", last_action="Fetching market data...", error=None)
+            except ImportError:
+                pass
+            
             # Получаем свечи
             try:
                 interval = _timeframe_to_bybit_interval(current_settings.timeframe)
@@ -3633,6 +3640,13 @@ def run_live_from_api(
                         break
                     continue
                 
+                # Обновляем статус перед вычислением индикаторов (может занимать время)
+                try:
+                    from bot.multi_symbol_manager import update_worker_status
+                    update_worker_status(symbol, current_status="Running", last_action="Computing indicators...", error=None)
+                except ImportError:
+                    pass
+                
                 df_ind = prepare_with_indicators(
                     df_raw,
                     adx_length=current_settings.strategy.adx_length,
@@ -3647,6 +3661,13 @@ def run_live_from_api(
                     ema_slow_length=current_settings.strategy.ema_slow_length,
                     ema_timeframe=current_settings.strategy.momentum_ema_timeframe,
                 )
+                # Обновляем статус перед обогащением для стратегии
+                try:
+                    from bot.multi_symbol_manager import update_worker_status
+                    update_worker_status(symbol, current_status="Running", last_action="Enriching data for strategies...", error=None)
+                except ImportError:
+                    pass
+                
                 df_ready = enrich_for_strategy(df_ind, current_settings.strategy)
                 
                 # Проверяем stop_event после вычисления индикаторов
