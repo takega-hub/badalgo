@@ -3458,6 +3458,9 @@ def run_live_from_api(
     
     while True:
         try:
+            # Флаг для отслеживания обработки свежих сигналов (для оптимизации интервала ожидания)
+            fresh_signal_processed = False
+            
             # Обновляем статус воркера для мониторинга (если используется MultiSymbolManager)
             # ВАЖНО: Обновляем статус в начале каждой итерации, чтобы MultiSymbolManager не считал воркер "мертвым"
             try:
@@ -5149,6 +5152,33 @@ def run_live_from_api(
             # Собираем все доступные сигналы (не None)
             available_signals = [(name, sig_obj) for name, sig_obj in strategy_signals.items() if sig_obj is not None]
             
+            # ВАЖНО: Проверяем наличие свежих сигналов сразу после их сохранения в историю
+            # Это позволяет обрабатывать свежие сигналы немедленно, как только они попадают в таблицу
+            fresh_signals_available = False
+            if available_signals:
+                # Проверяем, есть ли свежие сигналы (в пределах 15 минут)
+                for name, s in available_signals:
+                    if is_signal_fresh(s, df_ready):
+                        # Дополнительно проверяем возраст от текущего времени
+                        try:
+                            if isinstance(s.timestamp, pd.Timestamp):
+                                signal_ts = s.timestamp
+                                if signal_ts.tzinfo is None:
+                                    signal_ts = signal_ts.tz_localize('UTC')
+                                else:
+                                    signal_ts = signal_ts.tz_convert('UTC')
+                                current_time_utc = datetime.now(timezone.utc)
+                                age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                                if age_from_now_minutes <= 15:
+                                    fresh_signals_available = True
+                                    break
+                        except Exception:
+                            pass
+            
+            # Если есть свежие сигналы - логируем для информации
+            if fresh_signals_available:
+                _log(f"⚡ Fresh signals detected - will process immediately", symbol)
+            
             # Фильтруем сигналы по тренду BTC (если BTC в активных парах и это не сам BTC)
             if btc_trend and available_signals:
                 filtered_signals = []
@@ -5638,18 +5668,16 @@ def run_live_from_api(
             # --- КОНЕЦ ВЫБОРА СИГНАЛА ---
 
             # 6. Финальная проверка свежести (предотвращаем торговлю на «протухших» данных)
-            # ВСЕ сигналы проверяются одинаково: не старше 15 минут от текущего времени
-            # ИСКЛЮЧЕНИЕ: fallback сигналы (когда нет свежих) могут быть старше 15 минут
+            # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
+            # Если свежих сигналов нет - бот ждет новых сигналов, НЕ открывает позиции по старым
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
             strategy_name_for_log = get_strategy_type_from_signal(sig.reason).upper()
             strategy_type = get_strategy_type_from_signal(sig.reason)
-            print(f"[live] 🔍 Freshness check for {strategy_name_for_log} signal: is_fresh={is_fresh_check}, timestamp={ts}, is_fallback={is_fallback_signal}")
+            print(f"[live] 🔍 Freshness check for {strategy_name_for_log} signal: is_fresh={is_fresh_check}, timestamp={ts}")
             
-            # Единый критерий для ВСЕХ стратегий: не старше 15 минут от текущего времени
-            # ИСКЛЮЧЕНИЕ: fallback сигналы могут быть старше, но не более 24 часов
-            max_age_minutes = 15  # 15 минут для свежих сигналов
-            max_age_fallback_hours = 24  # 24 часа для fallback сигналов (когда нет свежих)
+            # СТРОГИЙ критерий: ТОЛЬКО сигналы не старше 15 минут от текущего времени
+            max_age_minutes = 15  # 15 минут - максимальный возраст сигнала для открытия позиции
             
             # Проверяем возраст сигнала от текущего времени
             if not is_fresh_check:
@@ -5674,22 +5702,14 @@ def run_live_from_api(
                         if age_from_now_minutes <= 15:
                             print(f"[live] ✅ {strategy_name} signal is FRESH (age from now: {age_from_now_minutes:.1f} min) - processing IMMEDIATELY")
                             is_fresh_check = True  # Помечаем как свежий для дальнейшей обработки
-                        # Если сигнал старше 15 минут - проверяем, является ли он fallback сигналом
-                        elif is_fallback_signal:
-                            # Fallback сигналы могут быть старше 15 минут, но не более 24 часов
-                            if age_from_now_hours <= max_age_fallback_hours:
-                                print(f"[live] ⚠️ {strategy_name} FALLBACK signal (age: {age_from_now_hours:.1f} hours) - allowing because no fresh signals available")
-                                is_fresh_check = True  # Разрешаем fallback сигнал
-                            else:
-                                should_filter = True
-                                print(f"[live] ⚠️ FILTERED: {strategy_name} FALLBACK signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_from_now_hours:.1f} hours, max: {max_age_fallback_hours} hours)")
                         else:
-                            # Не fallback сигнал старше 15 минут - фильтруем
+                            # Сигнал старше 15 минут - ФИЛЬТРУЕМ (не открываем позицию)
                             should_filter = True
                             if age_from_now_hours >= 1:
                                 print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_from_now_hours:.1f} hours, max: {max_age_minutes} min)")
                             else:
                                 print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_from_now_minutes:.1f} minutes, max: {max_age_minutes} min)")
+                            print(f"[live]   ℹ️  Bot will wait for fresh signals (max age: {max_age_minutes} minutes). Market changes quickly, old signals are not reliable.")
                     else:
                         should_filter = True
                         print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - invalid timestamp: {ts_str}")
@@ -5700,9 +5720,9 @@ def run_live_from_api(
                 if should_filter:
                     if bot_state:
                         bot_state["current_status"] = "Running"
-                        bot_state["last_action"] = "Waiting for fresh signal..."
+                        bot_state["last_action"] = "Waiting for fresh signal (max age: 15 min)..."
                         bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                    update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal...")
+                    update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal (max age: 15 min)...")
                     # Используем короткую задержку (5 секунд) вместо полного live_poll_seconds,
                     # чтобы воркер не считался "мертвым" во время ожидания свежего сигнала
                     # и продолжал обновлять статус
@@ -5710,8 +5730,8 @@ def run_live_from_api(
                     if _wait_with_stop_check(stop_event, 5.0, symbol):
                         _log(f"🛑 Stop event received during freshness check, stopping bot for {symbol}", symbol)
                         break
-                    # Продолжаем цикл - воркер должен работать постоянно
-                    _log(f"🔄 Continuing worker loop after filtering signal, waiting for fresh signal...", symbol)
+                    # Продолжаем цикл - воркер должен работать постоянно и ждать свежих сигналов
+                    _log(f"🔄 Continuing worker loop after filtering old signal, waiting for fresh signal (max age: {max_age_minutes} min)...", symbol)
                     continue
             
             # Конвертируем timestamp сигнала в UTC для использования ниже
@@ -5767,7 +5787,6 @@ def run_live_from_api(
             print(f"[live] ✅ Signal passed processed check (ID: {signal_id}), proceeding to open position...")
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут от текущего времени
-            # ИСКЛЮЧЕНИЕ: fallback сигналы могут быть старше, но не более 24 часов
             # ПРИМЕЧАНИЕ: Эта проверка дублирует логику выше, но оставлена для дополнительной безопасности
             # Если сигнал уже прошел проверку выше (is_fresh_check = True), то эта проверка должна пропустить его
             signal_age_minutes = None
@@ -5800,28 +5819,18 @@ def run_live_from_api(
                         # Получаем текущее время в UTC
                         current_time_utc = datetime.now(timezone.utc)
                         
-                        # Вычисляем возраст сигнала в минутах и часах
+                        # Вычисляем возраст сигнала в минутах
                         age_delta = current_time_utc - signal_time_for_age
                         signal_age_minutes = age_delta.total_seconds() / 60
                         signal_age_hours = signal_age_minutes / 60
                         
-                        # Проверяем возраст сигнала с учетом fallback статуса
+                        # СТРОГАЯ проверка: ТОЛЬКО сигналы в пределах 15 минут
                         should_filter_by_age = False
                         if signal_age_minutes <= max_age_minutes:
                             # Сигнал свежий (в пределах 15 минут)
                             print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit)")
-                        elif is_fallback_signal:
-                            # Fallback сигналы могут быть старше 15 минут, но не более 24 часов
-                            if signal_age_hours <= max_age_fallback_hours:
-                                print(f"[live] ✅ FALLBACK signal age check passed: {signal_age_hours:.1f} hours (within {max_age_fallback_hours} hours limit)")
-                            else:
-                                should_filter_by_age = True
-                                strategy_name = get_strategy_type_from_signal(sig.reason).upper()
-                                ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
-                                print(f"[live] ⚠️ FILTERED: {strategy_name} FALLBACK signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_hours:.1f} hours > {max_age_fallback_hours} hours limit)")
-                                print(f"[live]   ℹ️  Signal age: {signal_age_hours:.1f} hours. Maximum allowed for fallback: {max_age_fallback_hours} hours. Skipping this signal.")
                         else:
-                            # Не fallback сигнал старше 15 минут - фильтруем
+                            # Сигнал старше 15 минут - ФИЛЬТРУЕМ (не открываем позицию)
                             should_filter_by_age = True
                             strategy_name = get_strategy_type_from_signal(sig.reason).upper()
                             ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
@@ -5829,20 +5838,20 @@ def run_live_from_api(
                                 print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_hours:.1f} hours > {max_age_minutes} min limit)")
                             else:
                                 print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] - too old ({signal_age_minutes:.1f} minutes > {max_age_minutes} minutes limit)")
-                            print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: {max_age_minutes} minutes. Skipping this signal.")
+                            print(f"[live]   ℹ️  Signal age: {signal_age_minutes:.1f} minutes. Maximum allowed: {max_age_minutes} minutes. Bot will wait for fresh signals.")
                         
                         if should_filter_by_age:
                             if bot_state:
                                 bot_state["current_status"] = "Running"
-                                bot_state["last_action"] = f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal..."
+                                bot_state["last_action"] = f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal (max: {max_age_minutes} min)..."
                                 bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                            update_worker_status(symbol, current_status="Running", last_action=f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal...")
+                            update_worker_status(symbol, current_status="Running", last_action=f"Signal too old ({signal_age_minutes:.1f} min), waiting for fresh signal (max: {max_age_minutes} min)...")
                             # ВАЖНО: Проверяем stop_event, но если он не установлен, продолжаем цикл
                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                 _log(f"🛑 Stop event received during age check, stopping bot for {symbol}", symbol)
                                 break
-                            # Продолжаем цикл - воркер должен работать постоянно
-                            _log(f"🔄 Continuing worker loop after filtering old signal, waiting for fresh signal...", symbol)
+                            # Продолжаем цикл - воркер должен работать постоянно и ждать свежих сигналов
+                            _log(f"🔄 Continuing worker loop after filtering old signal, waiting for fresh signal (max age: {max_age_minutes} min)...", symbol)
                             continue
             except Exception as e:
                 # В случае ошибки при проверке возраста - логируем, но продолжаем обработку
@@ -6423,6 +6432,11 @@ def run_live_from_api(
                         print(f"[live]   Order Link ID: {unique_order_link_id}")
                         print("=" * 80)
                         
+                        # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
+                        if is_fresh_check:
+                            fresh_signal_processed = True
+                            _log(f"✅ Fresh signal processed - will check for new signals immediately", symbol)
+                        
                         # Устанавливаем TP/SL сразу после успешного открытия позиции
                         if take_profit and stop_loss:
                             try:
@@ -6767,6 +6781,11 @@ def run_live_from_api(
                             print(f"[live]   Quantity: {qty:.3f} (${desired_usd:.2f})")
                             print(f"[live]   Order Link ID: {unique_order_link_id_reverse}")
                             print("=" * 80)
+                            
+                            # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
+                            if is_fresh_check:
+                                fresh_signal_processed = True
+                                _log(f"✅ Fresh signal processed (reversal) - will check for new signals immediately", symbol)
                             
                             # КРИТИЧЕСКИ ВАЖНО: Сохраняем сигнал LONG в историю при реверсе
                             try:
@@ -7210,6 +7229,11 @@ def run_live_from_api(
                         print(f"[live]   Order Link ID: {unique_order_link_id}")
                         print("=" * 80)
                         
+                        # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
+                        if is_fresh_check:
+                            fresh_signal_processed = True
+                            _log(f"✅ Fresh signal processed - will check for new signals immediately", symbol)
+                        
                         # Устанавливаем TP/SL сразу после успешного открытия позиции
                         if take_profit and stop_loss:
                             try:
@@ -7530,6 +7554,11 @@ def run_live_from_api(
                             print(f"[live]   Quantity: {qty:.3f} (${desired_usd:.2f})")
                             print(f"[live]   Order Link ID: {unique_order_link_id}")
                             print("=" * 80)
+                            
+                            # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
+                            if is_fresh_check:
+                                fresh_signal_processed = True
+                                _log(f"✅ Fresh signal processed (reversal) - will check for new signals immediately", symbol)
                             
                             # КРИТИЧЕСКИ ВАЖНО: Сохраняем сигнал SHORT в историю при реверсе
                             try:
@@ -8012,7 +8041,23 @@ def run_live_from_api(
             update_worker_status(symbol, current_status="Running", last_action="Signal processed, waiting...")
             
             # Пауза перед следующей итерацией
-            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+            # ВАЖНО: Если обработан свежий сигнал ИЛИ есть свежие сигналы - используем короткий интервал для немедленной проверки
+            # Это гарантирует, что новые сигналы обрабатываются сразу же, как только попадают в историю
+            if fresh_signal_processed:
+                # Короткий интервал (5 секунд) для быстрой проверки новых сигналов после обработки свежего
+                wait_interval = 5.0
+                _log(f"⚡ Fresh signal was processed - using short interval ({wait_interval}s) to check for new signals immediately", symbol)
+            elif fresh_signals_available:
+                # Короткий интервал (5 секунд) если есть свежие сигналы, но они еще не обработаны
+                # Это позволяет обработать их в следующей итерации немедленно
+                wait_interval = 5.0
+                _log(f"⚡ Fresh signals available - using short interval ({wait_interval}s) to process them immediately", symbol)
+            else:
+                # Обычный интервал, если нет свежих сигналов
+                wait_interval = current_settings.live_poll_seconds
+                _log(f"⏳ No fresh signals - using normal interval ({wait_interval}s)", symbol)
+            
+            if _wait_with_stop_check(stop_event, wait_interval, symbol):
                 break
         
         except KeyboardInterrupt:
