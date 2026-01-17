@@ -102,12 +102,38 @@ def _wait_with_stop_check(stop_event: Optional[threading.Event], timeout: float,
         time.sleep(timeout)
         return False
     else:
-        # Используем wait с таймаутом - вернет True если событие установлено
-        if stop_event.wait(timeout=timeout):
-            if symbol:
-                _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
-            return True
-        return False
+        # Для длительных ожиданий (> 10 секунд) обновляем статус воркера периодически
+        # чтобы MultiSymbolManager не считал воркер "мертвым"
+        if timeout > 10.0:
+            # Обновляем статус каждые 10 секунд во время ожидания
+            update_interval = 10.0
+            elapsed = 0.0
+            try:
+                from bot.multi_symbol_manager import update_worker_status
+                update_worker_status_available = True
+            except ImportError:
+                update_worker_status_available = False
+            
+            while elapsed < timeout:
+                remaining = min(update_interval, timeout - elapsed)
+                if stop_event.wait(timeout=remaining):
+                    if symbol:
+                        _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                    return True
+                elapsed += remaining
+                
+                # Обновляем статус воркера каждые 10 секунд
+                if update_worker_status_available and symbol:
+                    update_worker_status(symbol, current_status="Running", last_action="Waiting...", error=None)
+            
+            return False
+        else:
+            # Для коротких ожиданий используем обычный wait
+            if stop_event.wait(timeout=timeout):
+                if symbol:
+                    _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                return True
+            return False
 
 
 def _load_processed_signals(processed_signals_file: Path) -> set:
@@ -353,21 +379,28 @@ def _check_primary_symbol_position(
             
             # Если на PRIMARY_SYMBOL нет позиции - проверку не делаем
             if not primary_position:
+                print(f"[live] [{current_symbol}] ℹ️  No position on PRIMARY_SYMBOL ({primary_symbol}), skipping check")
                 return False, None
             
-            # Проверяем конфликт направлений
-            if primary_bias == Bias.LONG and target_action == Action.SHORT:
-                # На PRIMARY_SYMBOL есть LONG, пытаемся открыть SHORT на другом символе - блокируем
-                print(f"[live] [{current_symbol}] ⛔ CONFLICT: PRIMARY_SYMBOL ({primary_symbol}) has LONG position, blocking SHORT on {current_symbol}")
-                return True, f"PRIMARY_SYMBOL ({primary_symbol}) has LONG position - cannot open SHORT on {current_symbol}"
+            # Преобразуем target_action (Action) в Bias для сравнения
+            target_bias = Bias.LONG if target_action == Action.LONG else Bias.SHORT
             
-            if primary_bias == Bias.SHORT and target_action == Action.LONG:
-                # На PRIMARY_SYMBOL есть SHORT, пытаемся открыть LONG на другом символе - блокируем
-                print(f"[live] [{current_symbol}] ⛔ CONFLICT: PRIMARY_SYMBOL ({primary_symbol}) has SHORT position, blocking LONG on {current_symbol}")
-                return True, f"PRIMARY_SYMBOL ({primary_symbol}) has SHORT position - cannot open LONG on {current_symbol}"
+            # Логируем детали проверки
+            primary_size = float(primary_position.get("size", 0))
+            primary_side = primary_position.get("side", "UNKNOWN")
+            print(f"[live] [{current_symbol}] 🔍 PRIMARY_SYMBOL check: {primary_symbol} has {primary_bias.value} position (size={primary_size}, side={primary_side})")
+            print(f"[live] [{current_symbol}]    Target action: {target_action.value} (bias: {target_bias.value})")
             
-            # Нет конфликта - можно открывать
-            print(f"[live] [{current_symbol}] ✅ No conflict: PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value}, target is {target_action.value} - OK to open")
+            # ВАЖНО: Если на PRIMARY_SYMBOL есть позиция, на других символах можно открывать ТОЛЬКО в том же направлении
+            # Если направление не совпадает - блокируем
+            if primary_bias != target_bias:
+                # Направление не совпадает с PRIMARY_SYMBOL - блокируем
+                print(f"[live] [{current_symbol}] ⛔ BLOCKED: PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value} position, but trying to open {target_action.value} ({target_bias.value}) on {current_symbol}")
+                print(f"[live] [{current_symbol}]    Only {primary_bias.value} positions allowed on other symbols when PRIMARY_SYMBOL has {primary_bias.value} position")
+                return True, f"PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value} position - can only open {primary_bias.value} on {current_symbol}, not {target_action.value}"
+            
+            # Направление совпадает - можно открывать
+            print(f"[live] [{current_symbol}] ✅ ALLOWED: PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value}, target is {target_action.value} ({target_bias.value}) - same direction, OK to open")
             return False, None
             
         except Exception as e:
@@ -5244,6 +5277,50 @@ def run_live_from_api(
                     if not has_open_position:
                         # Позиции нет - открываем по любому свежему сигналу
                         # Но если нет свежих сигналов, предпочитаем сигнал от приоритетной стратегии
+                        
+                        # ВАЖНО: Фильтруем сигналы по направлению PRIMARY_SYMBOL ДО выбора сигнала
+                        # Если на PRIMARY_SYMBOL есть позиция, на других символах можно открывать только в том же направлении
+                        primary_symbol_allowed_action = None
+                        try:
+                            primary_symbol = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
+                            if primary_symbol and symbol.upper() != primary_symbol.upper():
+                                # Проверяем позицию на PRIMARY_SYMBOL
+                                pos_resp = client.get_position_info(symbol=primary_symbol)
+                                if pos_resp.get("retCode") == 0:
+                                    pos_list = pos_resp.get("result", {}).get("list", [])
+                                    for pos_item in pos_list:
+                                        size = float(pos_item.get("size", 0))
+                                        if size > 0:
+                                            side = pos_item.get("side", "").upper()
+                                            primary_bias = Bias.LONG if side == "BUY" else Bias.SHORT
+                                            primary_symbol_allowed_action = Action.LONG if primary_bias == Bias.LONG else Action.SHORT
+                                            _log(f"🔍 PRIMARY_SYMBOL ({primary_symbol}) has {primary_bias.value} position - filtering signals for {symbol}: only {primary_symbol_allowed_action.value} allowed", symbol)
+                                            break
+                        except Exception as e:
+                            _log(f"⚠️ Error checking PRIMARY_SYMBOL position for signal filtering: {e}", symbol)
+                        
+                        # Фильтруем сигналы по направлению PRIMARY_SYMBOL
+                        if primary_symbol_allowed_action:
+                            original_count = len(available_signals)
+                            original_fresh_count = len(fresh_available)
+                            
+                            available_signals = [(name, s) for name, s in available_signals if s.action == primary_symbol_allowed_action]
+                            fresh_available = [(name, s) for name, s in fresh_available if s.action == primary_symbol_allowed_action]
+                            
+                            if available_signals:
+                                _log(f"📊 PRIMARY_SYMBOL filter applied: {len(available_signals)}/{original_count} signals passed (fresh: {len(fresh_available)}/{original_fresh_count})", symbol)
+                            else:
+                                _log(f"⚠️ PRIMARY_SYMBOL filter removed all signals - no {primary_symbol_allowed_action.value} signals available for {symbol}", symbol)
+                                sig = None
+                                if bot_state:
+                                    bot_state["current_status"] = "Running"
+                                    bot_state["last_action"] = f"No {primary_symbol_allowed_action.value} signals (PRIMARY_SYMBOL filter)"
+                                    bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
+                                update_worker_status(symbol, current_status="Running", last_action=f"No {primary_symbol_allowed_action.value} signals (PRIMARY_SYMBOL filter)")
+                                if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                    break
+                                continue
+                        
                         print(f"[live] 🔍 Priority mode (no position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                         if fresh_available:
                             # Если есть свежие сигналы - выбираем самый свежий по timestamp

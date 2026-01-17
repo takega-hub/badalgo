@@ -879,8 +879,20 @@ class MultiSymbolManager:
                         
                         # Проверка 3: Поток жив, но нет обновлений слишком долго (таймаут)
                         elif worker.running and worker.thread and worker.thread.is_alive():
-                            if worker.last_update:
-                                time_since_update = current_time - worker.last_update
+                            # ВАЖНО: Проверяем как worker.last_update, так и status_updates напрямую
+                            # Это предотвращает ложные срабатывания, если sync не произошел
+                            status_update_time = None
+                            if symbol in status_updates and status_updates[symbol].get("last_update"):
+                                status_update_time = status_updates[symbol].get("last_update")
+                                # Синхронизируем worker.last_update с актуальным значением из status_updates
+                                if not worker.last_update or status_update_time > worker.last_update:
+                                    worker.last_update = status_update_time
+                            
+                            # Используем самое свежее значение для проверки таймаута
+                            check_time = worker.last_update or status_update_time
+                            
+                            if check_time:
+                                time_since_update = current_time - check_time
                                 if time_since_update > self.worker_timeout:
                                     is_dead = True
                                     reason = f"No update for {time_since_update:.0f}s (timeout: {self.worker_timeout}s)"
