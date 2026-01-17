@@ -3762,7 +3762,8 @@
                 // Проверяем, что symbols_status существует и не пустой
                 if (data.symbols_status && Object.keys(data.symbols_status).length > 0) {
                     // Функция для генерации HTML таблицы статуса символов
-                    const generateStatusTable = (symbolsStatus, currentPrimarySymbol = null) => {
+                    // currentDisplaySymbol - это Active Symbol для просмотра графика (НЕ PRIMARY_SYMBOL!)
+                    const generateStatusTable = (symbolsStatus, currentDisplaySymbol = null) => {
                         let html = '<table style="width: 100%; border-collapse: collapse;"><thead><tr><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">Symbol</th><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">Status</th><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">Position</th><th style="padding: 10px; text-align: left; border-bottom: 1px solid #333;">PnL</th></tr></thead><tbody>';
                         
                         for (const [symbol, status] of Object.entries(symbolsStatus)) {
@@ -3772,19 +3773,19 @@
                             const positionInfo = position && position.side ? `${position.side} ${position.size ? position.size.toFixed(3) : '0.000'} @ $${position.avg_price ? position.avg_price.toFixed(2) : '0.00'}` : 'No position';
                             const pnlDisplay = position ? `$${pnl.toFixed(2)}` : '$0.00';
                             
-                            // Определяем, является ли этот символ текущим primary
-                            const isPrimary = currentPrimarySymbol && symbol === currentPrimarySymbol;
-                            const symbolStyle = isPrimary ? 
+                            // Определяем, является ли этот символ текущим Active Symbol для просмотра (НЕ PRIMARY_SYMBOL!)
+                            const isCurrentDisplaySymbol = currentDisplaySymbol && symbol === currentDisplaySymbol;
+                            const symbolStyle = isCurrentDisplaySymbol ? 
                                 'padding: 10px; background: rgba(0, 255, 136, 0.1); border-left: 3px solid #00ff88;' : 
                                 'padding: 10px;';
                             
-                            // Делаем название символа кликабельным
+                            // Делаем название символа кликабельным - клик меняет ТОЛЬКО Active Symbol для просмотра графика
                             const symbolLink = `<a href="#" onclick="switchPrimarySymbol('${symbol}'); return false;" 
-                                style="color: ${isPrimary ? '#00ff88' : '#4a9eff'}; text-decoration: none; font-weight: bold; cursor: pointer; 
+                                style="color: ${isCurrentDisplaySymbol ? '#00ff88' : '#4a9eff'}; text-decoration: none; font-weight: bold; cursor: pointer; 
                                 transition: color 0.2s; padding: 2px 6px; border-radius: 3px; display: inline-block;"
                                 onmouseover="this.style.color='#00ff88'; this.style.background='rgba(0, 255, 136, 0.1)';" 
-                                onmouseout="this.style.color='${isPrimary ? '#00ff88' : '#4a9eff'}'; this.style.background='transparent';"
-                                title="Click to switch to ${symbol}">${symbol}${isPrimary ? ' ⭐' : ''}</a>`;
+                                onmouseout="this.style.color='${isCurrentDisplaySymbol ? '#00ff88' : '#4a9eff'}'; this.style.background='transparent';"
+                                title="Click to switch chart view to ${symbol} (does not change PRIMARY_SYMBOL)">${symbol}${isCurrentDisplaySymbol ? ' ⭐' : ''}</a>`;
                             
                             html += `<tr style="border-bottom: 1px solid #2a2a2a;">
                                 <td style="${symbolStyle}">${symbolLink}</td>
@@ -3801,9 +3802,11 @@
                         return html;
                     };
                     
-                    // Получаем текущий primary_symbol из данных аккаунта
-                    const currentPrimarySymbol = data.account?.primary_symbol || data.account?.symbol || null;
-                    const statusHtml = generateStatusTable(data.symbols_status, currentPrimarySymbol);
+                    // Получаем текущий символ для просмотра (НЕ PRIMARY_SYMBOL!)
+                    // Это символ, выбранный пользователем для отображения графика на дашборде
+                    const topSelect = document.getElementById('primary-symbol-select');
+                    const currentDisplaySymbol = (topSelect && topSelect.value) || window.currentSymbol || data.account?.primary_symbol || data.account?.symbol || null;
+                    const statusHtml = generateStatusTable(data.symbols_status, currentDisplaySymbol);
                     
                     // Обновляем панель на вкладке Symbols
                     const statusList = document.getElementById('symbols-status-list');
@@ -3887,173 +3890,24 @@
             }
         }
         
-        // Функция для переключения активной торговой пары
+        // Функция для переключения символа для просмотра графика (НЕ меняет PRIMARY_SYMBOL!)
         async function switchPrimarySymbol(symbol) {
             try {
-                console.log(`[UI] Switching primary symbol to ${symbol}`);
+                console.log(`[UI] Switching display symbol to ${symbol} (for chart view only, NOT changing PRIMARY_SYMBOL)`);
                 
-                // Показываем индикатор загрузки
-                const statusList = document.getElementById('symbols-status-list');
-                const dashboardStatusList = document.getElementById('dashboard-symbols-status-list');
-                const loadingMsg = '<p style="color: #aaa; font-size: 0.9em;">⏳ Switching to ' + symbol + '...</p>';
-                if (statusList) statusList.innerHTML = loadingMsg;
-                if (dashboardStatusList) dashboardStatusList.innerHTML = loadingMsg;
+                // ВАЖНО: Эта функция меняет ТОЛЬКО символ для просмотра графика
+                // Она НЕ меняет PRIMARY_SYMBOL - это делается только во вкладке Symbols
+                // Используем функцию changePrimarySymbol, которая не меняет PRIMARY_SYMBOL
+                await changePrimarySymbol(symbol);
                 
-                // Получаем текущие активные символы
-                const symbolsResponse = await fetch('/api/symbols/active', {
-                    credentials: 'same-origin'
-                });
-                
-                // Проверяем Content-Type перед парсингом JSON
-                const symbolsContentType = symbolsResponse.headers.get('content-type');
-                if (!symbolsContentType || !symbolsContentType.includes('application/json')) {
-                    const text = await symbolsResponse.text();
-                    console.error('[UI] Symbols API returned non-JSON response:', text.substring(0, 200));
-                    if (symbolsResponse.status === 401 || symbolsResponse.status === 403) {
-                        throw new Error('Session expired. Please refresh the page and log in again.');
-                    } else {
-                        throw new Error(`Failed to load symbols data (HTTP ${symbolsResponse.status})`);
-                    }
-                }
-                
-                if (!symbolsResponse.ok) {
-                    try {
-                        const errorData = await symbolsResponse.json();
-                        throw new Error(errorData.error || `HTTP ${symbolsResponse.status}`);
-                    } catch (jsonError) {
-                        throw new Error(`HTTP ${symbolsResponse.status}: ${symbolsResponse.statusText}`);
-                    }
-                }
-                
-                const symbolsData = await symbolsResponse.json();
-                const activeSymbols = symbolsData.active_symbols || [];
-                
-                // Проверяем, что символ в списке активных
-                if (!activeSymbols.includes(symbol)) {
-                    alert(`Symbol ${symbol} is not in active symbols list. Please enable it first.`);
-                    await loadSymbolsStatus(); // Обновляем статус
-                    return;
-                }
-                
-                // Отправляем запрос на смену primary_symbol
-                const response = await fetch('/api/symbols/set-active', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    credentials: 'same-origin',
-                    body: JSON.stringify({
-                        symbols: activeSymbols,
-                        primary: symbol
-                    })
-                });
-                
-                // Проверяем Content-Type перед парсингом JSON
-                const contentType = response.headers.get('content-type');
-                if (!contentType || !contentType.includes('application/json')) {
-                    // Сервер вернул HTML вместо JSON (вероятно, страница логина или ошибка)
-                    const text = await response.text();
-                    console.error('[UI] Server returned non-JSON response:', text.substring(0, 200));
-                    if (response.status === 401 || response.status === 403) {
-                        throw new Error('Session expired. Please refresh the page and log in again.');
-                    } else {
-                        throw new Error(`Server error (HTTP ${response.status}). Please try again.`);
-                    }
-                }
-                
-                if (!response.ok) {
-                    try {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error || `HTTP ${response.status}`);
-                    } catch (jsonError) {
-                        // Если не удалось распарсить JSON, используем статус
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                }
-                
-                const data = await response.json();
-                console.log('[UI] Primary symbol switched:', data);
-                
-                // Обновляем PRIMARY_SYMBOL селектор (для торговли)
-                const primarySelect = document.getElementById('symbols-primary-select');
-                if (primarySelect) {
-                    primarySelect.value = symbol;
-                }
-                
-                // НЕ обновляем Active Symbol селектор (для просмотра графика)
-                // Эти два селекта полностью независимы - пользователь выбирает символ для просмотра отдельно на дашборде
-                // PRIMARY_SYMBOL устанавливается только во вкладке Symbols и не влияет на выбор символа для просмотра
-                
-                // Сбрасываем кэш последнего символа, чтобы график пересоздался
-                window.lastChartSymbol = null;
-                
-                // Обновляем статус активных символов
-                const statusSpan = document.getElementById('active-symbols-status');
-                if (statusSpan) {
-                    statusSpan.textContent = `Active: ${activeSymbols.join(', ')} | Primary: ${symbol}`;
-                }
-                
-                // Обновляем график - передаем символ явно
-                if (typeof window.loadChartLW === 'function') {
-                    console.log(`[UI] Refreshing chart for ${symbol}...`);
-                    try {
-                        // Передаем символ явно, чтобы гарантировать правильное переключение
-                        await window.loadChartLW(true, symbol); // forceRefresh = true, explicitSymbol = symbol
-                    } catch (chartError) {
-                        console.error('[UI] Error refreshing chart:', chartError);
-                        // Не прерываем процесс переключения из-за ошибки графика
-                    }
-                }
-                
-                // Обновляем историю сделок
-                if (typeof loadTrades === 'function') {
-                    console.log('[UI] Refreshing trades...');
-                    try {
-                        await loadTrades();
-                    } catch (tradesError) {
-                        console.error('[UI] Error refreshing trades:', tradesError);
-                        // Не прерываем процесс переключения из-за ошибки сделок
-                    }
-                }
-                
-                // Обновляем сигналы
-                if (typeof loadSignals === 'function') {
-                    console.log('[UI] Refreshing signals...');
-                    try {
-                        await loadSignals();
-                    } catch (signalsError) {
-                        console.error('[UI] Error refreshing signals:', signalsError);
-                        // Не прерываем процесс переключения из-за ошибки сигналов
-                    }
-                }
-                
-                // Обновляем статистику стратегий
-                if (typeof loadStrategyStats === 'function') {
-                    console.log('[UI] Refreshing strategy stats...');
-                    try {
-                        await loadStrategyStats();
-                    } catch (statsError) {
-                        console.error('[UI] Error refreshing strategy stats:', statsError);
-                        // Не прерываем процесс переключения из-за ошибки статистики
-                    }
-                }
-                
-                // Обновляем статус символов (чтобы обновилась таблица с выделением)
-                // Делаем это с небольшой задержкой, чтобы дать время другим запросам завершиться
-                // и избежать конфликтов с AbortController
-                setTimeout(async () => {
-                    try {
-                        await loadSymbolsStatus();
-                    } catch (statusError) {
-                        // AbortError - нормальная ситуация при быстром переключении, не логируем как ошибку
-                        if (statusError.name !== 'AbortError') {
-                            console.error('[UI] Error refreshing symbols status:', statusError);
-                        } else {
-                            console.log('[UI] Symbols status update was cancelled (normal when switching symbols quickly)');
-                        }
-                        // Не прерываем процесс переключения из-за ошибки статуса
-                    }
-                }, 500); // Задержка 500мс для завершения других операций
+                // Обновляем статус символов для обновления выделения в таблице
+                await loadSymbolsStatus();
+            } catch (error) {
+                console.error('[UI] Error switching display symbol:', error);
+                // Обновляем статус даже при ошибке, чтобы восстановить таблицу
+                await loadSymbolsStatus();
+            }
+        }
                 
                 console.log(`[UI] ✅ Successfully switched to ${symbol}`);
                 
