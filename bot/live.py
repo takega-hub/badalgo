@@ -5242,7 +5242,8 @@ def run_live_from_api(
                     has_open_position = position is not None and position.get("size", 0) > 0
                     
                     if not has_open_position:
-                        # Позиции нет - открываем по любому свежему сигналу (как в hybrid режиме)
+                        # Позиции нет - открываем по любому свежему сигналу
+                        # Но если нет свежих сигналов, предпочитаем сигнал от приоритетной стратегии
                         print(f"[live] 🔍 Priority mode (no position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                         if fresh_available:
                             # Если есть свежие сигналы - выбираем самый свежий по timestamp
@@ -5252,12 +5253,28 @@ def run_live_from_api(
                             ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                             print(f"[live] ✅ Priority mode (no position): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                         elif available_signals:
-                            # Если нет свежих сигналов, но есть доступные - выбираем самый свежий по timestamp
-                            available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                            sig = available_signals[-1][1]
-                            strategy_name = available_signals[-1][0]
-                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                            print(f"[live] ⚠️ Priority mode (no position, no fresh): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                            # Если нет свежих сигналов, но есть доступные - предпочитаем сигнал от приоритетной стратегии
+                            priority_sig_in_available = None
+                            priority_sig_name = None
+                            for name, s in available_signals:
+                                if name == strategy_priority:
+                                    priority_sig_in_available = s
+                                    priority_sig_name = name
+                                    break
+                            
+                            if priority_sig_in_available:
+                                # Есть сигнал от приоритетной стратегии - используем его
+                                sig = priority_sig_in_available
+                                strategy_name = priority_sig_name
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                print(f"[live] ⚠️ Priority mode (no position, no fresh): Selected {strategy_name.upper()} signal (priority strategy): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                            else:
+                                # Нет сигнала от приоритетной стратегии - выбираем самый свежий по timestamp
+                                available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                                sig = available_signals[-1][1]
+                                strategy_name = available_signals[-1][0]
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                print(f"[live] ⚠️ Priority mode (no position, no fresh): No {strategy_priority.upper()} signal, selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                         else:
                             sig = None
                             print(f"[live] ⚠️ Priority mode (no position): No signals available")
