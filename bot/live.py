@@ -2242,6 +2242,27 @@ def _check_position_strategy_alignment(
         price_move = abs(current_price - avg_price)
         price_move_atr = price_move / atr_value if atr_value > 0 else 0
         
+        # Проверяем приоритет стратегии для защиты позиции
+        # Получаем entry_reason для определения стратегии, которая открыла позицию
+        entry_reason = None
+        try:
+            from bot.web.history import get_open_trade
+            # Получаем символ из settings или из позиции
+            symbol = getattr(settings, 'symbol', None) or position.get('symbol', None)
+            if symbol and avg_price > 0:
+                open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+                if open_trade:
+                    entry_reason = open_trade.get("entry_reason", "")
+        except Exception as e:
+            print(f"[live] ⚠️ Error getting entry_reason in _check_position_strategy_alignment: {e}")
+        
+        # Определяем стратегию, которая открыла позицию
+        position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
+        
+        # Получаем приоритет стратегии из настроек
+        strategy_priority = getattr(settings, 'strategy_priority', 'hybrid')
+        is_priority_position = position_strategy_type == strategy_priority
+        
         # Анализируем текущие сигналы
         # Ищем СИЛЬНЫЕ сигналы на противоположное направление (только OPEN, не ADD)
         strong_opposite_signals = []
@@ -2251,9 +2272,19 @@ def _check_position_strategy_alignment(
             if sig.action == Action.SHORT and position_bias == Bias.LONG:
                 # Проверяем, что это действительно сильный сигнал (breakout, bias_flip)
                 if "breakout" in sig.reason or "bias_flip" in sig.reason or "trend" in sig.reason:
+                    signal_strategy_type = get_strategy_type_from_signal(sig.reason)
+                    # Если позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
+                    if is_priority_position and signal_strategy_type != strategy_priority:
+                        print(f"[live] 🛡️ PRIORITY PROTECTION in alignment check: Ignoring opposite SHORT signal from {signal_strategy_type.upper()} (position opened by {strategy_priority.upper()})")
+                        continue  # Пропускаем этот сигнал
                     strong_opposite_signals.append(("SHORT", sig.reason))
             elif sig.action == Action.LONG and position_bias == Bias.SHORT:
                 if "breakout" in sig.reason or "bias_flip" in sig.reason or "trend" in sig.reason:
+                    signal_strategy_type = get_strategy_type_from_signal(sig.reason)
+                    # Если позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
+                    if is_priority_position and signal_strategy_type != strategy_priority:
+                        print(f"[live] 🛡️ PRIORITY PROTECTION in alignment check: Ignoring opposite LONG signal from {signal_strategy_type.upper()} (position opened by {strategy_priority.upper()})")
+                        continue  # Пропускаем этот сигнал
                     strong_opposite_signals.append(("LONG", sig.reason))
         
         # Принимаем решение о закрытии ТОЛЬКО при экстремальных условиях
@@ -3647,6 +3678,13 @@ def run_live_from_api(
                 except ImportError:
                     pass
                 
+                # Обновляем статус перед вычислением индикаторов (может занимать время)
+                try:
+                    from bot.multi_symbol_manager import update_worker_status
+                    update_worker_status(symbol, current_status="Running", last_action="Computing indicators...", error=None)
+                except ImportError:
+                    pass
+                
                 df_ind = prepare_with_indicators(
                     df_raw,
                     adx_length=current_settings.strategy.adx_length,
@@ -3661,7 +3699,8 @@ def run_live_from_api(
                     ema_slow_length=current_settings.strategy.ema_slow_length,
                     ema_timeframe=current_settings.strategy.momentum_ema_timeframe,
                 )
-                # Обновляем статус перед обогащением для стратегии
+                
+                # Обновляем статус после вычисления индикаторов, перед обогащением
                 try:
                     from bot.multi_symbol_manager import update_worker_status
                     update_worker_status(symbol, current_status="Running", last_action="Enriching data for strategies...", error=None)
@@ -3949,6 +3988,12 @@ def run_live_from_api(
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
                         _log(f"🔍 SMC: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        # Промежуточное обновление статуса во время генерации
+                        try:
+                            from bot.multi_symbol_manager import update_worker_status
+                            update_worker_status(symbol, current_status="Running", last_action="Detecting order blocks...", error=None)
+                        except ImportError:
+                            pass
                         smc_signals = build_smc_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="SMC signals generated")
@@ -3995,6 +4040,12 @@ def run_live_from_api(
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
                         _log(f"🔍 ICT: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        # Промежуточное обновление статуса во время генерации
+                        try:
+                            from bot.multi_symbol_manager import update_worker_status
+                            update_worker_status(symbol, current_status="Running", last_action="Finding FVG zones...", error=None)
+                        except ImportError:
+                            pass
                         ict_signals = build_ict_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="ICT signals generated")
@@ -4047,6 +4098,12 @@ def run_live_from_api(
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
                         _log(f"🔍 Liquidation Hunter: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        # Промежуточное обновление статуса во время генерации
+                        try:
+                            from bot.multi_symbol_manager import update_worker_status
+                            update_worker_status(symbol, current_status="Running", last_action="Analyzing liquidation data...", error=None)
+                        except ImportError:
+                            pass
                         liquidation_hunter_signals = build_liquidation_hunter_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="Liquidation Hunter signals generated")
@@ -4099,6 +4156,12 @@ def run_live_from_api(
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
                         _log(f"🔍 Z-Score: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        # Промежуточное обновление статуса во время генерации (Z-Score может занимать много времени)
+                        try:
+                            from bot.multi_symbol_manager import update_worker_status
+                            update_worker_status(symbol, current_status="Running", last_action="Computing Z-Score values...", error=None)
+                        except ImportError:
+                            pass
                         zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="Z-Score signals generated")
@@ -4151,6 +4214,12 @@ def run_live_from_api(
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
                         _log(f"🔍 VBO: Building signals with {len(df_ready)} candles for {symbol}", symbol)
+                        # Промежуточное обновление статуса во время генерации
+                        try:
+                            from bot.multi_symbol_manager import update_worker_status
+                            update_worker_status(symbol, current_status="Running", last_action="Calculating volatility breakouts...", error=None)
+                        except ImportError:
+                            pass
                         vbo_signals = build_vbo_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="VBO signals generated")
@@ -5165,61 +5234,134 @@ def run_live_from_api(
                         print(f"[live] ⚠️ Hybrid LATEST: No fresh signals, using latest from {strategy_name.upper()}: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                 else:
                     # Режим приоритета конкретной стратегии
-                    # Если установлен приоритет конкретной стратегии, используем ТОЛЬКО сигналы от этой стратегии
-                    # Сигналы от других стратегий, которые противоречат приоритетной, игнорируются
-                    priority_sig = strategy_signals.get(strategy_priority)
+                    # ПРИОРИТЕТ - это защита открытой позиции, а не ограничение на выбор сигналов
+                    # Если позиции нет - открываем по любому свежему сигналу
+                    # Если позиция есть - приоритет защищает её от противоположных сигналов других стратегий
                     
-                    if priority_sig:
-                        # Для приоритетных сигналов используем СТРОГУЮ проверку: только возраст от текущего времени <= 15 минут
-                        # Не используем is_signal_fresh(), так как она может вернуть True для старых сигналов,
-                        # если они совпадают с последними свечами
-                        priority_age_ok = True
-                        age_from_now_minutes = None
-                        try:
-                            if isinstance(priority_sig.timestamp, pd.Timestamp):
-                                signal_ts = priority_sig.timestamp
-                                if signal_ts.tzinfo is None:
-                                    signal_ts = signal_ts.tz_localize('UTC')
-                                else:
-                                    signal_ts = signal_ts.tz_convert('UTC')
-                                
-                                current_time_utc = datetime.now(timezone.utc)
-                                age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
-                                
-                                # Для приоритетной стратегии используем СТРОГИЙ лимит: 15 минут от текущего времени
-                                # Это гарантирует, что мы используем только действительно свежие сигналы
-                                if age_from_now_minutes > 15:
-                                    priority_age_ok = False
-                                    print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old (age: {age_from_now_minutes:.1f} min > 15 min), waiting for fresh signal")
-                        except Exception as e:
-                            print(f"[live] ⚠️ Error checking priority signal age: {e}")
-                            # В случае ошибки считаем сигнал не свежим
-                            priority_age_ok = False
-                            age_from_now_minutes = None
-                        
-                        if priority_age_ok:
-                            sig = priority_sig
-                            age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes is not None else ""
-                            print(f"[live] ✅ Priority {strategy_priority.upper()} (FRESH{age_str}): {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
-                            
-                            # Проверяем, есть ли противоречащие сигналы от других стратегий
-                            conflicting_signals = [(name, s) for name, s in available_signals 
-                                                  if s and s != priority_sig and s.action != priority_sig.action]
-                            if conflicting_signals:
-                                conflicting_names = [name for name, _ in conflicting_signals]
-                                print(f"[live] ⚠️ Ignoring {len(conflicting_signals)} conflicting signal(s) from: {', '.join(conflicting_names)} (priority: {strategy_priority})")
+                    # Проверяем, есть ли открытая позиция
+                    has_open_position = position is not None and position.get("size", 0) > 0
+                    
+                    if not has_open_position:
+                        # Позиции нет - открываем по любому свежему сигналу (как в hybrid режиме)
+                        print(f"[live] 🔍 Priority mode (no position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
+                        if fresh_available:
+                            # Если есть свежие сигналы - выбираем самый свежий по timestamp
+                            fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                            sig = fresh_available[-1][1]
+                            strategy_name = fresh_available[-1][0]
+                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                            print(f"[live] ✅ Priority mode (no position): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                        elif available_signals:
+                            # Если нет свежих сигналов, но есть доступные - выбираем самый свежий по timestamp
+                            available_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                            sig = available_signals[-1][1]
+                            strategy_name = available_signals[-1][0]
+                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                            print(f"[live] ⚠️ Priority mode (no position, no fresh): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                         else:
-                            # Сигнал от приоритетной стратегии слишком старый - не используем, но продолжаем работу
                             sig = None
-                            print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old, waiting for fresh signal from priority strategy")
-                            # Обновляем статус - воркер все еще работает, просто ждет свежий сигнал
-                            update_worker_status(symbol, current_status="Running", last_action=f"Waiting for fresh {strategy_priority.upper()} signal...")
+                            print(f"[live] ⚠️ Priority mode (no position): No signals available")
                     else:
-                        # Нет сигнала от приоритетной стратегии - не открываем позицию
-                        sig = None
-                        print(f"[live] ⚠️ No signal from priority strategy ({strategy_priority.upper()}), waiting for priority signal")
-                        # Обновляем статус - воркер все еще работает, просто ждет сигнал
-                        update_worker_status(symbol, current_status="Running", last_action=f"Waiting for {strategy_priority.upper()} signal...")
+                        # Позиция есть - приоритет защищает её
+                        # Получаем entry_reason для определения стратегии, которая открыла позицию
+                        entry_reason = None
+                        try:
+                            from bot.web.history import get_open_trade
+                            avg_price = position.get("avg_price", 0)
+                            if avg_price > 0:
+                                open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+                                if open_trade:
+                                    entry_reason = open_trade.get("entry_reason", "")
+                        except Exception as e:
+                            print(f"[live] ⚠️ Error getting entry_reason: {e}")
+                        
+                        # Определяем стратегию, которая открыла позицию
+                        position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
+                        is_priority_position = position_strategy_type == strategy_priority
+                        
+                        if is_priority_position:
+                            # Позиция открыта по приоритетной стратегии - защищаем её
+                            # Игнорируем противоположные сигналы от других стратегий
+                            # Разрешаем только сигналы в том же направлении (для усиления) или свежий сигнал от приоритетной стратегии (для пересмотра)
+                            priority_sig = strategy_signals.get(strategy_priority)
+                            
+                            # Проверяем свежесть приоритетного сигнала
+                            priority_sig_fresh = False
+                            if priority_sig:
+                                try:
+                                    if isinstance(priority_sig.timestamp, pd.Timestamp):
+                                        signal_ts = priority_sig.timestamp
+                                        if signal_ts.tzinfo is None:
+                                            signal_ts = signal_ts.tz_localize('UTC')
+                                        else:
+                                            signal_ts = signal_ts.tz_convert('UTC')
+                                        current_time_utc = datetime.now(timezone.utc)
+                                        age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                                        priority_sig_fresh = age_from_now_minutes <= 15
+                                except Exception:
+                                    pass
+                            
+                            # Если есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
+                            if priority_sig and priority_sig_fresh:
+                                sig = priority_sig
+                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if 'age_from_now_minutes' in locals() else ""
+                                print(f"[live] ✅ Priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                            else:
+                                # Нет свежего сигнала от приоритетной стратегии
+                                # Ищем сигналы в том же направлении для усиления позиции
+                                same_direction_signals = [(name, s) for name, s in fresh_available 
+                                                         if s.action.value == current_position_bias.value]
+                                if same_direction_signals:
+                                    # Есть сигналы в том же направлении - используем самый свежий для усиления
+                                    same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                                    sig = same_direction_signals[-1][1]
+                                    strategy_name = same_direction_signals[-1][0]
+                                    print(f"[live] ✅ Priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                                else:
+                                    # Нет сигналов для усиления - не обрабатываем противоположные сигналы
+                                    sig = None
+                                    print(f"[live] 🛡️ Priority position: Protected from opposite signals. Waiting for same direction or fresh priority signal.")
+                        else:
+                            # Позиция открыта НЕ по приоритетной стратегии
+                            # Новый свежий сигнал от приоритетной стратегии может закрыть/развернуть позицию
+                            priority_sig = strategy_signals.get(strategy_priority)
+                            
+                            # Проверяем свежесть приоритетного сигнала
+                            priority_sig_fresh = False
+                            if priority_sig:
+                                try:
+                                    if isinstance(priority_sig.timestamp, pd.Timestamp):
+                                        signal_ts = priority_sig.timestamp
+                                        if signal_ts.tzinfo is None:
+                                            signal_ts = signal_ts.tz_localize('UTC')
+                                        else:
+                                            signal_ts = signal_ts.tz_convert('UTC')
+                                        current_time_utc = datetime.now(timezone.utc)
+                                        age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                                        priority_sig_fresh = age_from_now_minutes <= 15
+                                except Exception:
+                                    pass
+                            
+                            if priority_sig and priority_sig_fresh:
+                                # Есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
+                                sig = priority_sig
+                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if 'age_from_now_minutes' in locals() else ""
+                                print(f"[live] ✅ Non-priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                            else:
+                                # Нет свежего сигнала от приоритетной стратегии
+                                # Ищем сигналы в том же направлении для усиления позиции
+                                same_direction_signals = [(name, s) for name, s in fresh_available 
+                                                         if s.action.value == current_position_bias.value]
+                                if same_direction_signals:
+                                    # Есть сигналы в том же направлении - используем самый свежий для усиления
+                                    same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                                    sig = same_direction_signals[-1][1]
+                                    strategy_name = same_direction_signals[-1][0]
+                                    print(f"[live] ✅ Non-priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                                else:
+                                    # Нет сигналов для усиления - не обрабатываем противоположные сигналы
+                                    sig = None
+                                    print(f"[live] ⏸️ Non-priority position: No same direction signals. Waiting for fresh priority signal or same direction signal.")
 
             # 4. Проверяем подтверждение (agreement) для добавления к позиции
             if sig and sig.action != Action.HOLD:
@@ -5676,8 +5818,37 @@ def run_live_from_api(
             if sig.action == Action.LONG:
                 print(f"[live] 🔍 Processing LONG signal: position exists={position is not None}, position_bias={current_position_bias if position else 'None'}")
                 
-                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть SHORT позиция и приходит LONG сигнал - закрываем SHORT и открываем LONG
+                # Проверяем приоритет стратегии перед закрытием позиции
+                signal_strategy_type = get_strategy_type_from_signal(sig.reason)
+                can_close_position = True
+                
                 if position and current_position_bias == Bias.SHORT:
+                    # Есть SHORT позиция и приходит LONG сигнал
+                    # Проверяем, защищена ли позиция приоритетом
+                    entry_reason = None
+                    try:
+                        from bot.web.history import get_open_trade
+                        avg_price = position.get("avg_price", 0)
+                        if avg_price > 0:
+                            open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+                            if open_trade:
+                                entry_reason = open_trade.get("entry_reason", "")
+                    except Exception as e:
+                        print(f"[live] ⚠️ Error getting entry_reason: {e}")
+                    
+                    position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
+                    is_priority_position = position_strategy_type == strategy_priority
+                    
+                    if is_priority_position and signal_strategy_type != strategy_priority:
+                        # Позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
+                        can_close_position = False
+                        print(f"[live] 🛡️ PRIORITY PROTECTION: SHORT position opened by {strategy_priority.upper()} strategy, ignoring opposite LONG signal from {signal_strategy_type.upper()}")
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть SHORT позиция и приходит LONG сигнал - закрываем SHORT и открываем LONG
+                if position and current_position_bias == Bias.SHORT and can_close_position:
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
                     _log(f"🔄 REVERSAL: Closing SHORT position to open LONG (signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f})", symbol)
@@ -6344,8 +6515,37 @@ def run_live_from_api(
             elif sig.action == Action.SHORT:
                 print(f"[live] 🔍 Processing SHORT signal: position exists={position is not None}, position_bias={current_position_bias if position else 'None'}")
                 
-                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть LONG позиция и приходит SHORT сигнал - закрываем LONG и открываем SHORT
+                # Проверяем приоритет стратегии перед закрытием позиции
+                signal_strategy_type = get_strategy_type_from_signal(sig.reason)
+                can_close_position = True
+                
                 if position and current_position_bias == Bias.LONG:
+                    # Есть LONG позиция и приходит SHORT сигнал
+                    # Проверяем, защищена ли позиция приоритетом
+                    entry_reason = None
+                    try:
+                        from bot.web.history import get_open_trade
+                        avg_price = position.get("avg_price", 0)
+                        if avg_price > 0:
+                            open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+                            if open_trade:
+                                entry_reason = open_trade.get("entry_reason", "")
+                    except Exception as e:
+                        print(f"[live] ⚠️ Error getting entry_reason: {e}")
+                    
+                    position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
+                    is_priority_position = position_strategy_type == strategy_priority
+                    
+                    if is_priority_position and signal_strategy_type != strategy_priority:
+                        # Позиция открыта по приоритетной стратегии, а сигнал от другой стратегии - защищаем позицию
+                        can_close_position = False
+                        print(f"[live] 🛡️ PRIORITY PROTECTION: LONG position opened by {strategy_priority.upper()} strategy, ignoring opposite SHORT signal from {signal_strategy_type.upper()}")
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: Если есть LONG позиция и приходит SHORT сигнал - закрываем LONG и открываем SHORT
+                if position and current_position_bias == Bias.LONG and can_close_position:
                     strategy_type = get_strategy_type_from_signal(sig.reason)
                     ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
                     _log(f"🔄 REVERSAL: Closing LONG position to open SHORT (signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f})", symbol)
