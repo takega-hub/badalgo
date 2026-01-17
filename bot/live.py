@@ -1123,6 +1123,7 @@ def _ensure_tp_sl_set(
                     # ВАЖНО: Устанавливаем флаг, что стратегические TP/SL успешно применены
                     # Это предотвратит перезапись base_tp/base_sl в блоке ниже
                     strategy_tp_sl_applied = True
+                    print(f"[live] ✅ Flag set: strategy_tp_sl_applied={strategy_tp_sl_applied} - will skip default TP/SL calculation")
                 else:
                     # Если _calculate_tp_sl_for_signal не вернул значения, используем общую логику
                     print(f"[live] ⚠️ _calculate_tp_sl_for_signal returned None, falling back to default TP/SL")
@@ -1137,6 +1138,7 @@ def _ensure_tp_sl_set(
         # 2. Или стратегические TP/SL не были успешно рассчитаны (strategy_tp_sl_applied = False)
         # Если стратегические TP/SL успешно применены (strategy_tp_sl_applied = True),
         # этот блок НЕ выполняется, и base_tp/base_sl остаются со стратегическими значениями
+        print(f"[live] 🔍 Checking strategy_tp_sl_applied: {strategy_tp_sl_applied}")
         if not strategy_tp_sl_applied:
             print(f"[live] 🔄 Using default TP/SL calculation (strategy not defined or strategy TP/SL calculation failed)")
             # Определяем, какая стратегия используется для расчета TP/SL
@@ -1144,19 +1146,12 @@ def _ensure_tp_sl_set(
             # Если ML стратегия включена и имеет приоритет, используем ML TP/SL
             # Иначе используем TREND/FLAT TP/SL
             use_ml_tp_sl = False
-            if settings.enable_ml_strategy and settings.ml_model_path:
-                # Проверяем приоритет стратегий
-                strategy_priority = getattr(settings, 'strategy_priority', 'trend')
-                if strategy_priority == "ml":
-                    use_ml_tp_sl = True
-                elif strategy_priority == "hybrid" and (settings.enable_trend_strategy or settings.enable_flat_strategy):
-                    # В гибридном режиме используем ML TP/SL, если ML стратегия включена
-                    use_ml_tp_sl = True
-                elif not (settings.enable_trend_strategy or settings.enable_flat_strategy):
-                    # Если только ML стратегия включена, используем ML TP/SL
-                    use_ml_tp_sl = True
-            
-        if not use_strategy_tp_sl and use_ml_tp_sl:
+        else:
+            print(f"[live] ✅ Skipping default TP/SL calculation - strategy-specific TP/SL already applied")
+            use_ml_tp_sl = False  # Не используем ML TP/SL, так как стратегические уже применены
+        
+        # ВАЖНО: Блок ML/TREND/FLAT TP/SL выполняется ТОЛЬКО если стратегические TP/SL НЕ были применены
+        if not strategy_tp_sl_applied and not use_strategy_tp_sl and use_ml_tp_sl:
             # ML стратегия: используем специальные TP/SL для прибыли от маржи
             # ml_target_profit_pct_margin и ml_max_loss_pct_margin уже в процентах (например, 25.0 для 25%)
             # Нужно перевести в доли от цены: / leverage / 100
@@ -1221,8 +1216,9 @@ def _ensure_tp_sl_set(
             # print(f"[live]   → base_tp=${base_tp:.2f}, base_sl=${base_sl:.2f} (entry: ${avg_price:.2f})")
             
             strategy_name = "ML"
-        else:
+        elif not strategy_tp_sl_applied:
             # Обычные стратегии: используем стандартные TP/SL
+            # ВАЖНО: Этот блок выполняется ТОЛЬКО если стратегические TP/SL НЕ были применены
             # ВАЖНО: Проценты интерпретируются как проценты от МАРЖИ с учетом плеча, а не от цены входа!
             # Формула: TP = Entry * (1 + take_profit_pct / Leverage)
             # Например: Entry=$3128.84, Leverage=10x, TP=30% от маржи
