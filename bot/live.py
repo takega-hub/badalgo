@@ -4589,17 +4589,17 @@ def run_live_from_api(
             if main_sig:
                 ts_str = main_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(main_sig.timestamp, 'strftime') else str(main_sig.timestamp)
                 is_fresh = is_signal_fresh(main_sig, df_ready)
-                freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
+                freshness_marker = "FRESH" if is_fresh else "NOT FRESH (will be filtered)"
                 print(f"[live]   🎯 Latest TREND/FLAT signal ({freshness_marker}): {main_sig.action.value} @ ${main_sig.price:.2f} ({main_sig.reason}) [{ts_str}]")
             if ml_sig:
                 ts_str = ml_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ml_sig.timestamp, 'strftime') else str(ml_sig.timestamp)
                 is_fresh = is_signal_fresh(ml_sig, df_ready)
-                freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
+                freshness_marker = "FRESH" if is_fresh else "NOT FRESH (will be filtered)"
                 print(f"[live]   🎯 Latest ML signal ({freshness_marker}): {ml_sig.action.value} @ ${ml_sig.price:.2f} ({ml_sig.reason}) [{ts_str}]")
             if smc_sig:
                 ts_str = smc_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(smc_sig.timestamp, 'strftime') else str(smc_sig.timestamp)
                 is_fresh = is_signal_fresh(smc_sig, df_ready)
-                freshness_marker = "FRESH" if is_fresh else "FALLBACK (not fresh)"
+                freshness_marker = "FRESH" if is_fresh else "NOT FRESH (will be filtered)"
                 print(f"[live]   🎯 Latest SMC signal ({freshness_marker}): {smc_sig.action.value} @ ${smc_sig.price:.2f} ({smc_sig.reason}) [{ts_str}]")
             
             # Функция для сохранения latest сигнала в историю (строго один сигнал от каждой стратегии)
@@ -5135,6 +5135,42 @@ def run_live_from_api(
                 import traceback
                 traceback.print_exc()
             
+            # Функция для обновления timestamp в объекте сигнала, если он соответствует последней свече
+            def update_signal_object_timestamp_if_fresh(sig):
+                """Обновляет timestamp в объекте сигнала на текущее время, если он соответствует последней свече."""
+                if sig is None or df_ready.empty:
+                    return sig
+                
+                try:
+                    signal_ts = sig.timestamp
+                    if isinstance(signal_ts, pd.Timestamp):
+                        if signal_ts.tzinfo is None:
+                            signal_ts = signal_ts.tz_localize('UTC')
+                        else:
+                            signal_ts = signal_ts.tz_convert('UTC')
+                        signal_ts_py = signal_ts.to_pydatetime()
+                    else:
+                        signal_ts_py = signal_ts
+                    
+                    last_candle_ts = df_ready.index[-1]
+                    if isinstance(last_candle_ts, pd.Timestamp):
+                        if last_candle_ts.tzinfo is None:
+                            last_candle_ts = last_candle_ts.tz_localize('UTC')
+                        else:
+                            last_candle_ts = last_candle_ts.tz_convert('UTC')
+                        last_candle_time = last_candle_ts.to_pydatetime()
+                        
+                        # Проверяем, соответствует ли timestamp сигнала последней свече (в пределах 1 минуты)
+                        time_diff_seconds = abs((signal_ts_py - last_candle_time).total_seconds())
+                        if time_diff_seconds <= 60:  # 1 минута
+                            # Обновляем timestamp в объекте сигнала на текущее время
+                            updated_ts = datetime.now(timezone.utc)
+                            sig.timestamp = pd.Timestamp(updated_ts, tz='UTC')
+                except Exception as e:
+                    _log(f"⚠️ Error updating signal object timestamp: {e}", symbol)
+                
+                return sig
+            
             # Функция для получения последнего свежего сигнала из списка
             def get_latest_fresh_signal(signal_list, df_ready):
                 """Получает последний свежий сигнал из списка."""
@@ -5143,10 +5179,14 @@ def run_live_from_api(
                 fresh_signals = [s for s in signal_list if is_signal_fresh(s, df_ready)]
                 if fresh_signals:
                     fresh_signals.sort(key=get_timestamp_for_sort)
-                    return fresh_signals[-1]
+                    sig = fresh_signals[-1]
+                    # Обновляем timestamp в объекте сигнала, если он соответствует последней свече
+                    return update_signal_object_timestamp_if_fresh(sig)
                 # Если нет свежих, возвращаем последний из всех
                 signal_list.sort(key=get_timestamp_for_sort)
-                return signal_list[-1] if signal_list else None
+                sig = signal_list[-1] if signal_list else None
+                # Обновляем timestamp в объекте сигнала, если он соответствует последней свече
+                return update_signal_object_timestamp_if_fresh(sig) if sig else None
             
             # Получаем последние сигналы от каждой стратегии
             trend_sig = get_latest_fresh_signal(trend_signals_only, df_ready)
