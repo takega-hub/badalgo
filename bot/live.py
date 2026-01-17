@@ -812,18 +812,19 @@ def _calculate_tp_sl_for_signal(
         elif strategy_type == "zscore":
             # Для ZSCORE стратегии (Mean Reversion) используем оптимизированные TP/SL
             # ZSCORE ловит возврат к среднему, поэтому нужны быстрые тейки
-            # Результаты показывают: SOLUSDT работает хорошо (65.2% WR, +3.34), но BTCUSDT/ETHUSDT убыточные
-            # Увеличиваем TP/SL для лучшего RR и более широких уровней для волатильных пар
+            # Результаты показывают: SOLUSDT работает хорошо (65.2% WR, +3.34), но BTCUSDT убыточный (64.3% WR, -1.77)
+            # Проблема: при высоком WR отрицательный PnL означает плохой RR - средний выигрыш меньше среднего проигрыша
+            # Увеличиваем TP для лучшего RR, особенно для волатильных пар (BTCUSDT)
             
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
             
             # Для mean reversion стратегий используем более широкие уровни с лучшим RR
-            # TP: 2.5% от цены (25% от маржи при 10x) - достаточно для возврата к среднему
-            # SL: 0.9% от цены (9% от маржи при 10x) - узкий для быстрого выхода
-            # RR: ~2.78:1 - улучшенное соотношение для mean reversion
+            # TP: 3.0% от цены (30% от маржи при 10x) - увеличен для лучшего RR
+            # SL: 1.0% от цены (10% от маржи при 10x) - увеличен для снижения преждевременных выходов
+            # RR: ~3.0:1 - улучшенное соотношение для mean reversion
             
-            tp_pct_from_price = 0.025  # 2.5% от цены = 25% от маржи при 10x
-            sl_pct_from_price = 0.009   # 0.9% от цены = 9% от маржи при 10x
+            tp_pct_from_price = 0.030  # 3.0% от цены = 30% от маржи при 10x (увеличено с 2.5%)
+            sl_pct_from_price = 0.010   # 1.0% от цены = 10% от маржи при 10x (увеличено с 0.9%)
             
             # Проверяем максимальные границы из настроек
             max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
@@ -4920,6 +4921,12 @@ def run_live_from_api(
                 "vbo": vbo_sig_latest,
             }
             
+            # Логируем все доступные сигналы для отладки
+            if zscore_sig_latest:
+                is_fresh_zscore = is_signal_fresh(zscore_sig_latest, df_ready)
+                ts_str_zscore = zscore_sig_latest.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(zscore_sig_latest.timestamp, 'strftime') else str(zscore_sig_latest.timestamp)
+                _log(f"🔍 ZSCORE signal available: {zscore_sig_latest.action.value} @ ${zscore_sig_latest.price:.2f} ({zscore_sig_latest.reason}) [{ts_str_zscore}] fresh={is_fresh_zscore}", symbol)
+            
             # Для обратной совместимости сохраняем main_sig и ml_sig
             main_sig = trend_sig if trend_sig else flat_sig
             ml_sig = ml_sig_latest
@@ -6344,6 +6351,8 @@ def run_live_from_api(
                     # Позиции нет → открываем SHORT
                     
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем SHORT, если на PRIMARY_SYMBOL есть LONG позиция
+                    _log(f"🔍 Checking PRIMARY_SYMBOL position before opening SHORT for {symbol}...", symbol)
+                    _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) from {strategy_name}", symbol)
                     should_block, block_reason = _check_primary_symbol_position(
                         client=client,
                         current_symbol=symbol,
