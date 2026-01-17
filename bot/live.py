@@ -1118,8 +1118,10 @@ def _ensure_tp_sl_set(
                         strategy_name = "UNKNOWN"
                     
                     print(f"[live] 📊 {strategy_name} TP/SL from entry_reason: TP=${base_tp:.2f}, SL=${base_sl:.2f} (entry: ${avg_price:.2f})")
+                    print(f"[live] ✅ Strategy-specific TP/SL calculated and set to base_tp/base_sl")
                 else:
                     # Если _calculate_tp_sl_for_signal не вернул значения, используем общую логику
+                    print(f"[live] ⚠️ _calculate_tp_sl_for_signal returned None, falling back to default TP/SL")
                     use_strategy_tp_sl = False
             except Exception as e:
                 print(f"[live] ⚠️ Error calculating strategy-specific TP/SL: {e}")
@@ -1343,6 +1345,7 @@ def _ensure_tp_sl_set(
         # Инициализируем целевые TP/SL базовыми значениями
         target_tp = base_tp
         target_sl = base_sl
+        print(f"[live] 🔧 Initialized target_tp=${target_tp:.2f}, target_sl=${target_sl:.2f} from base_tp/base_sl (entry: ${avg_price:.2f})")
         
         # 1. БЕЗУБЫТОК: Перемещаем SL в безубыток при достижении определенной прибыли
         # ВАЖНО: Безубыток должен быть лучше текущего SL, но не меньше 7% от маржи
@@ -1481,6 +1484,10 @@ def _ensure_tp_sl_set(
         tp_needs_update = not tp_set
         sl_needs_update = not sl_set
         
+        print(f"[live] 🔍 TP/SL update check: tp_set={tp_set}, sl_set={sl_set}, tp_needs_update={tp_needs_update}, sl_needs_update={sl_needs_update}")
+        print(f"[live]   Current TP: {current_tp if tp_set else 'NOT SET'}, Target TP: ${target_tp:.2f}")
+        print(f"[live]   Current SL: {current_sl if sl_set else 'NOT SET'}, Target SL: ${target_sl:.2f}")
+        
         # Если TP/SL установлены, проверяем, соответствуют ли они целевым значениям
         # (допускаем погрешность в 0.2% для избежания частых обновлений и ошибок "not modified")
         if tp_set:
@@ -1489,9 +1496,12 @@ def _ensure_tp_sl_set(
                 tp_diff_pct = abs((current_tp_val - target_tp) / avg_price) * 100
                 if tp_diff_pct > 0.2:  # Если разница больше 0.2%
                     tp_needs_update = True
-                    print(f"[live] TP needs update: current={current_tp_val:.2f}, target={target_tp:.2f} (diff: {tp_diff_pct:.2f}%)")
+                    print(f"[live] ✅ TP needs update: current={current_tp_val:.2f}, target={target_tp:.2f} (diff: {tp_diff_pct:.2f}%)")
+                else:
+                    print(f"[live] ℹ️  TP is close enough: current={current_tp_val:.2f}, target={target_tp:.2f} (diff: {tp_diff_pct:.2f}% <= 0.2%)")
             except (ValueError, TypeError):
                 tp_needs_update = True
+                print(f"[live] ⚠️  TP value error, setting tp_needs_update=True")
         
         if sl_set:
             try:
@@ -1499,9 +1509,12 @@ def _ensure_tp_sl_set(
                 sl_diff_pct = abs((current_sl_val - target_sl) / avg_price) * 100
                 if sl_diff_pct > 0.2:  # Если разница больше 0.2%
                     sl_needs_update = True
-                    print(f"[live] SL needs update: current={current_sl_val:.2f}, target={target_sl:.2f} (diff: {sl_diff_pct:.2f}%)")
+                    print(f"[live] ✅ SL needs update: current={current_sl_val:.2f}, target={target_sl:.2f} (diff: {sl_diff_pct:.2f}%)")
+                else:
+                    print(f"[live] ℹ️  SL is close enough: current={current_sl_val:.2f}, target={target_sl:.2f} (diff: {sl_diff_pct:.2f}% <= 0.2%)")
             except (ValueError, TypeError):
                 sl_needs_update = True
+                print(f"[live] ⚠️  SL value error, setting sl_needs_update=True")
         
         # ФИНАЛЬНАЯ ВАЛИДАЦИЯ: Проверяем target_sl и target_tp перед отправкой в API
         # Это критически важно для предотвращения ошибок API
