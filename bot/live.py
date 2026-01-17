@@ -623,12 +623,12 @@ def _calculate_tp_sl_for_signal(
                     stop_loss = nearest_resistance if nearest_resistance and nearest_resistance > entry_price else entry_price * (1 + sl_pct)
             else:
                 # Fallback на фиксированные проценты
-            if sig.action == Action.LONG:
-                take_profit = entry_price * (1 + tp_pct)
-                stop_loss = entry_price * (1 - sl_pct)
-            else:  # SHORT
-                take_profit = entry_price * (1 - tp_pct)
-                stop_loss = entry_price * (1 + sl_pct)
+                if sig.action == Action.LONG:
+                    take_profit = entry_price * (1 + tp_pct)
+                    stop_loss = entry_price * (1 - sl_pct)
+                else:  # SHORT
+                    take_profit = entry_price * (1 - tp_pct)
+                    stop_loss = entry_price * (1 + sl_pct)
             
             # ФИНАЛЬНАЯ ПРОВЕРКА: Убеждаемся, что SL находится в диапазоне 7-10% от маржи
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
