@@ -352,34 +352,45 @@ def _check_primary_symbol_position(
         primary_symbol = getattr(settings, 'primary_symbol', None) or getattr(settings, 'symbol', None)
         if not primary_symbol:
             # Если PRIMARY_SYMBOL не задан, проверку не делаем
+            print(f"[live] [{current_symbol}] ⚠️ PRIMARY_SYMBOL not set in settings, skipping check")
             return False, None
+        
+        print(f"[live] [{current_symbol}] 🔍 PRIMARY_SYMBOL check: primary_symbol={primary_symbol}, current_symbol={current_symbol}, target_action={target_action.value}")
         
         # Если текущий символ - это PRIMARY_SYMBOL, проверку не делаем
         if current_symbol.upper() == primary_symbol.upper():
+            print(f"[live] [{current_symbol}] ℹ️  Current symbol is PRIMARY_SYMBOL, skipping check")
             return False, None
         
         # Получаем позицию на PRIMARY_SYMBOL
         try:
             pos_resp = client.get_position_info(symbol=primary_symbol)
-            if pos_resp.get("retCode") != 0:
-                # Ошибка получения позиции - не блокируем
+            ret_code = pos_resp.get("retCode")
+            if ret_code != 0:
+                # Ошибка получения позиции - не блокируем, но логируем
+                ret_msg = pos_resp.get("retMsg", "Unknown error")
+                print(f"[live] [{current_symbol}] ⚠️ Error getting PRIMARY_SYMBOL ({primary_symbol}) position: retCode={ret_code}, retMsg={ret_msg}, skipping check")
                 return False, None
             
             pos_list = pos_resp.get("result", {}).get("list", [])
             primary_position = None
             primary_bias = None
             
+            print(f"[live] [{current_symbol}] 🔍 PRIMARY_SYMBOL position response: retCode={pos_resp.get('retCode')}, positions found: {len(pos_list)}")
+            
             for pos_item in pos_list:
                 size = float(pos_item.get("size", 0))
+                side = pos_item.get("side", "").upper()
+                print(f"[live] [{current_symbol}]   Position item: symbol={pos_item.get('symbol')}, side={side}, size={size}")
                 if size > 0:
                     primary_position = pos_item
-                    side = pos_item.get("side", "").upper()
                     primary_bias = Bias.LONG if side == "BUY" else Bias.SHORT
+                    print(f"[live] [{current_symbol}] ✅ Found open position on PRIMARY_SYMBOL: {primary_bias.value} (size={size})")
                     break
             
             # Если на PRIMARY_SYMBOL нет позиции - проверку не делаем
             if not primary_position:
-                print(f"[live] [{current_symbol}] ℹ️  No position on PRIMARY_SYMBOL ({primary_symbol}), skipping check")
+                print(f"[live] [{current_symbol}] ℹ️  No open position on PRIMARY_SYMBOL ({primary_symbol}), skipping check")
                 return False, None
             
             # Преобразуем target_action (Action) в Bias для сравнения
@@ -6714,12 +6725,14 @@ def run_live_from_api(
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем SHORT, если на PRIMARY_SYMBOL есть LONG позиция
                     _log(f"🔍 Checking PRIMARY_SYMBOL position before opening SHORT for {symbol}...", symbol)
                     _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) from {strategy_name}", symbol)
+                    _log(f"   PRIMARY_SYMBOL from settings: {getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)}", symbol)
                     should_block, block_reason = _check_primary_symbol_position(
                         client=client,
                         current_symbol=symbol,
                         settings=current_settings,
                         target_action=Action.SHORT,
                     )
+                    _log(f"   PRIMARY_SYMBOL check result: should_block={should_block}, reason={block_reason}", symbol)
                     if should_block:
                         _log(f"⛔ BLOCKED: {block_reason}", symbol)
                         _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - waiting for PRIMARY_SYMBOL position to close or reverse", symbol)
@@ -6965,10 +6978,15 @@ def run_live_from_api(
                             else:
                                 ts_log = datetime.now(timezone.utc)
                             
+                            # ВАЛИДАЦИЯ: Убеждаемся, что side соответствует sig.action
+                            expected_side = "short" if sig.action == Action.SHORT else "long"
+                            if expected_side != "short":
+                                _log(f"⚠️ WARNING: sig.action={sig.action.value} but trying to save SHORT position! Using expected_side={expected_side}", symbol)
+                            
                             add_trade(
                                 entry_time=ts_log,
                                 exit_time=None,  # Позиция еще открыта
-                                side="short",  # ВАЖНО: SHORT позиция
+                                side=expected_side,  # ВАЖНО: Используем валидированный side
                                 entry_price=sig.price,
                                 exit_price=0.0,
                                 size_usd=desired_usd,
@@ -6980,7 +6998,7 @@ def run_live_from_api(
                                 order_id=order_id,
                                 order_link_id=order_link_id_result,
                             )
-                            _log(f"💾 Saved SHORT position to history: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                            _log(f"💾 Saved {expected_side.upper()} position to history: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
                         except Exception as e:
                             _log(f"⚠️ Error saving SHORT position to history: {e}", symbol)
                     elif resp.get("retCode") == 110072:
@@ -7242,10 +7260,15 @@ def run_live_from_api(
                                 order_id = result.get("orderId", "") if result else ""
                                 order_link_id_result = result.get("orderLinkId", unique_order_link_id) if result else unique_order_link_id
                                 
+                                # ВАЛИДАЦИЯ: Убеждаемся, что side соответствует sig.action
+                                expected_side = "short" if sig.action == Action.SHORT else "long"
+                                if expected_side != "short":
+                                    print(f"[live] ⚠️ WARNING: sig.action={sig.action.value} but trying to save SHORT position (reversal)! Using expected_side={expected_side}")
+                                
                                 add_trade(
                                     entry_time=ts_log,
                                     exit_time=None,  # Позиция еще открыта
-                                    side="short",  # ВАЖНО: SHORT позиция
+                                    side=expected_side,  # ВАЖНО: Используем валидированный side
                                     entry_price=sig.price,
                                     exit_price=0.0,
                                     size_usd=desired_usd,
@@ -7257,7 +7280,7 @@ def run_live_from_api(
                                     order_id=order_id,
                                     order_link_id=order_link_id_result,
                                 )
-                                print(f"[live] 💾 Saved open SHORT trade to history (reversal): {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
+                                print(f"[live] 💾 Saved open {expected_side.upper()} trade to history (reversal): {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
                             except Exception as e:
                                 print(f"[live] ⚠️ Failed to save SHORT signal/trade to history (reversal): {e}")
                                 import traceback
@@ -7521,10 +7544,15 @@ def run_live_from_api(
                                     ts_log = ts_log.tz_convert('UTC')
                                 ts_log = ts_log.to_pydatetime()
                             
+                            # ВАЛИДАЦИЯ: Убеждаемся, что side соответствует sig.action
+                            expected_side = "short" if sig.action == Action.SHORT else "long"
+                            if expected_side != "short":
+                                print(f"[live] ⚠️ WARNING: sig.action={sig.action.value} but trying to save SHORT position! Using expected_side={expected_side}")
+                            
                             add_trade(
                                 entry_time=ts_log,
                                 exit_time=None,  # Позиция еще открыта
-                                side="short",
+                                side=expected_side,  # ВАЖНО: Используем валидированный side
                                 entry_price=sig.price,
                                 exit_price=0.0,
                                 size_usd=desired_usd,
@@ -7536,7 +7564,7 @@ def run_live_from_api(
                                 order_id=order_id,
                                 order_link_id=order_link_id,
                             )
-                            print(f"[live] 💾 Saved open SHORT trade to history: {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
+                            print(f"[live] 💾 Saved open {expected_side.upper()} trade to history: {strategy_type.upper()} @ ${sig.price:.2f} ({sig.reason})")
                         except Exception as e:
                             print(f"[live] ⚠️ Failed to save open SHORT trade to history: {e}")
                             import traceback
