@@ -1042,6 +1042,7 @@ def _ensure_tp_sl_set(
         # Создаем фиктивный Signal для использования _calculate_tp_sl_for_signal
         fake_signal = None
         use_strategy_tp_sl = False
+        strategy_tp_sl_applied = False  # Флаг успешного применения стратегических TP/SL
         
         if entry_reason:
             try:
@@ -1119,6 +1120,9 @@ def _ensure_tp_sl_set(
                     
                     print(f"[live] 📊 {strategy_name} TP/SL from entry_reason: TP=${base_tp:.2f}, SL=${base_sl:.2f} (entry: ${avg_price:.2f})")
                     print(f"[live] ✅ Strategy-specific TP/SL calculated and set to base_tp/base_sl")
+                    # ВАЖНО: Устанавливаем флаг, что стратегические TP/SL успешно применены
+                    # Это предотвратит перезапись base_tp/base_sl в блоке ниже
+                    strategy_tp_sl_applied = True
                 else:
                     # Если _calculate_tp_sl_for_signal не вернул значения, используем общую логику
                     print(f"[live] ⚠️ _calculate_tp_sl_for_signal returned None, falling back to default TP/SL")
@@ -1128,7 +1132,13 @@ def _ensure_tp_sl_set(
                 use_strategy_tp_sl = False
         
         # Если не используем стратегические TP/SL, применяем общую логику
-        if not use_strategy_tp_sl:
+        # ВАЖНО: Этот блок выполняется ТОЛЬКО если:
+        # 1. Стратегия не определена (entry_reason отсутствует или не удалось создать Signal)
+        # 2. Или стратегические TP/SL не были успешно рассчитаны (strategy_tp_sl_applied = False)
+        # Если стратегические TP/SL успешно применены (strategy_tp_sl_applied = True),
+        # этот блок НЕ выполняется, и base_tp/base_sl остаются со стратегическими значениями
+        if not strategy_tp_sl_applied:
+            print(f"[live] 🔄 Using default TP/SL calculation (strategy not defined or strategy TP/SL calculation failed)")
             # Определяем, какая стратегия используется для расчета TP/SL
             # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
             # Если ML стратегия включена и имеет приоритет, используем ML TP/SL
