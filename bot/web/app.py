@@ -902,6 +902,15 @@ def api_status():
                                         
                                         entry_reason = last_open_trade.get("entry_reason", "")
                                         strategy_type = last_open_trade.get("strategy_type", "unknown")
+                                        
+                                        # Если strategy_type не определен, пытаемся определить из entry_reason
+                                        if strategy_type == "unknown" and entry_reason:
+                                            try:
+                                                from bot.live import get_strategy_type_from_signal
+                                                strategy_type = get_strategy_type_from_signal(entry_reason)
+                                            except Exception as e:
+                                                print(f"[web] Error determining strategy_type from entry_reason: {e}")
+                                        
                                         trade_id = last_open_trade.get("order_id") or last_open_trade.get("order_link_id") or last_open_trade.get("id", "")
                                         
                                         if symbols_status[symbol].get("position"):
@@ -1071,6 +1080,15 @@ def api_status():
                         
                         entry_reason = last_open_trade.get("entry_reason", "")
                         strategy_type = last_open_trade.get("strategy_type", "unknown")
+                        
+                        # Если strategy_type не определен, пытаемся определить из entry_reason
+                        if strategy_type == "unknown" and entry_reason:
+                            try:
+                                from bot.live import get_strategy_type_from_signal
+                                strategy_type = get_strategy_type_from_signal(entry_reason)
+                            except Exception as e:
+                                print(f"[web] Error determining strategy_type from entry_reason: {e}")
+                        
                         trade_id = last_open_trade.get("order_id") or last_open_trade.get("order_link_id") or last_open_trade.get("id", "")
                         
                         if response_data.get("position"):

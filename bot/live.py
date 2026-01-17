@@ -6358,6 +6358,45 @@ def run_live_from_api(
                         position_max_price.pop(symbol, None)
                         position_partial_closed.pop(symbol, None)
 
+                        # КРИТИЧЕСКИ ВАЖНО: Сохраняем LONG позицию в историю
+                        try:
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            elif isinstance(ts_log, datetime):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.replace(tzinfo=timezone.utc)
+                            else:
+                                ts_log = datetime.now(timezone.utc)
+                            
+                            # ВАЛИДАЦИЯ: Убеждаемся, что side соответствует sig.action
+                            expected_side = "long" if sig.action == Action.LONG else "short"
+                            if expected_side != "long":
+                                _log(f"⚠️ WARNING: sig.action={sig.action.value} but trying to save LONG position! Using expected_side={expected_side}", symbol)
+                            
+                            add_trade(
+                                entry_time=ts_log,
+                                exit_time=None,  # Позиция еще открыта
+                                side=expected_side,  # ВАЖНО: Используем валидированный side
+                                entry_price=sig.price,
+                                exit_price=0.0,
+                                size_usd=desired_usd,
+                                pnl=0.0,
+                                entry_reason=sig.reason,
+                                exit_reason="",
+                                strategy_type=strategy_type,
+                                symbol=symbol,
+                                order_id=order_id,
+                                order_link_id=order_link_id_result,
+                            )
+                            _log(f"💾 Saved {expected_side.upper()} position to history: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
+                        except Exception as e:
+                            _log(f"⚠️ Error saving LONG position to history: {e}", symbol)
+
                         # Если открываем новую позицию по PRIMARY_SYMBOL в SHORT,
                         # закрываем все противонаправленные (LONG) позиции по другим активным символам
                         primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
@@ -6635,6 +6674,33 @@ def run_live_from_api(
                                 print(f"[live] 💾 Saved LONG signal to history (reversal): {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
                             except Exception as e:
                                 print(f"[live] ⚠️ Failed to save LONG signal to history (reversal): {e}")
+                                import traceback
+                                traceback.print_exc()
+                            
+                            # КРИТИЧЕСКИ ВАЖНО: Сохраняем LONG позицию в историю при реверсе
+                            try:
+                                result = resp.get("result", {})
+                                order_id = result.get("orderId", "") if result else ""
+                                order_link_id_result = result.get("orderLinkId", unique_order_link_id_reverse) if result else unique_order_link_id_reverse
+                                
+                                add_trade(
+                                    entry_time=ts_log,
+                                    exit_time=None,  # Позиция еще открыта
+                                    side="long",  # ВАЖНО: LONG позиция при реверсе
+                                    entry_price=sig.price,
+                                    exit_price=0.0,
+                                    size_usd=desired_usd,
+                                    pnl=0.0,
+                                    entry_reason=sig.reason,
+                                    exit_reason="",
+                                    strategy_type=strategy_type,
+                                    symbol=symbol,
+                                    order_id=order_id,
+                                    order_link_id=order_link_id_result,
+                                )
+                                print(f"[live] 💾 Saved LONG position to history (reversal): {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Error saving LONG position to history (reversal): {e}")
                                 import traceback
                                 traceback.print_exc()
                             
