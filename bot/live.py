@@ -709,6 +709,105 @@ def _calculate_tp_sl_for_signal(
             print(f"[live]   → TP: {tp_pct_from_price*100:.2f}% from price ({tp_pct_from_price*leverage*100:.1f}% from margin), SL: {sl_pct_from_price*100:.2f}% from price ({sl_pct_from_price*leverage*100:.1f}% from margin)")
             
             return take_profit, stop_loss
+        
+        elif strategy_type == "vbo":
+            # Для VBO стратегии (Volatility Breakout) используем более широкие TP/SL
+            # VBO ловит пробои волатильности, которые могут развиваться дальше
+            # Рекомендуемые параметры: TP 3-4% от цены, SL 1-1.5% от цены (RR ~2.5-3:1)
+            
+            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            
+            # Для VBO используем более широкие уровни для улавливания движения
+            # TP: 3.5% от цены (35% от маржи при 10x)
+            # SL: 1.2% от цены (12% от маржи при 10x)
+            # RR: ~2.9:1
+            # ВАЖНО: SL должен быть в диапазоне 7-10% от маржи, но для VBO можно немного больше (до 12%)
+            
+            tp_pct_from_price = 0.035  # 3.5% от цены = 35% от маржи при 10x
+            sl_pct_from_price = 0.012   # 1.2% от цены = 12% от маржи при 10x (немного больше для пробоев)
+            
+            # Проверяем максимальные границы из настроек
+            max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
+            max_sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
+            
+            # Нормализуем проценты
+            if max_tp_pct_margin > 1.0:
+                max_tp_pct_margin = max_tp_pct_margin / 100.0
+            if max_sl_pct_margin > 1.0:
+                max_sl_pct_margin = max_sl_pct_margin / 100.0
+            
+            max_tp_pct = max_tp_pct_margin / leverage
+            max_sl_pct = max_sl_pct_margin / leverage
+            
+            # Ограничиваем нашими значениями, но не превышаем максимумы
+            tp_pct_from_price = min(tp_pct_from_price, max_tp_pct)
+            # Для SL: минимум 7% от маржи, максимум 12% от маржи (или max_sl_pct_margin, если меньше)
+            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+            max_sl_pct_from_margin = min(0.12, max_sl_pct_margin)  # Максимум 12% от маржи или настройка
+            min_sl_pct_from_price = min_sl_pct_from_margin / leverage
+            max_sl_pct_from_price = max_sl_pct_from_margin / leverage
+            
+            # Убеждаемся, что SL в допустимом диапазоне
+            sl_pct_from_price = max(min_sl_pct_from_price, min(sl_pct_from_price, max_sl_pct_from_price))
+            
+            # Используем уровни поддержки/сопротивления, если они находятся в пределах наших параметров
+            if use_sr_levels:
+                if sig.action == Action.LONG:
+                    # Для LONG: TP на сопротивление, SL на поддержку
+                    if nearest_resistance and nearest_resistance > entry_price:
+                        resistance_tp_pct = (nearest_resistance - entry_price) / entry_price
+                        if resistance_tp_pct <= tp_pct_from_price and resistance_tp_pct >= tp_pct_from_price * 0.5:  # Не слишком близко
+                            take_profit = nearest_resistance
+                        else:
+                            take_profit = entry_price * (1 + tp_pct_from_price)
+                    else:
+                        take_profit = entry_price * (1 + tp_pct_from_price)
+                    
+                    if nearest_support and nearest_support < entry_price:
+                        support_sl_pct = (entry_price - nearest_support) / entry_price
+                        if support_sl_pct <= sl_pct_from_price and support_sl_pct >= min_sl_pct_from_price:
+                            stop_loss = nearest_support
+                        else:
+                            stop_loss = entry_price * (1 - sl_pct_from_price)
+                    else:
+                        stop_loss = entry_price * (1 - sl_pct_from_price)
+                else:  # SHORT
+                    # Для SHORT: TP на поддержку, SL на сопротивление
+                    if nearest_support and nearest_support < entry_price:
+                        support_tp_pct = (entry_price - nearest_support) / entry_price
+                        if support_tp_pct <= tp_pct_from_price and support_tp_pct >= tp_pct_from_price * 0.5:  # Не слишком близко
+                            take_profit = nearest_support
+                        else:
+                            take_profit = entry_price * (1 - tp_pct_from_price)
+                    else:
+                        take_profit = entry_price * (1 - tp_pct_from_price)
+                    
+                    if nearest_resistance and nearest_resistance > entry_price:
+                        resistance_sl_pct = (nearest_resistance - entry_price) / entry_price
+                        if resistance_sl_pct <= sl_pct_from_price and resistance_sl_pct >= min_sl_pct_from_price:
+                            stop_loss = nearest_resistance
+                        else:
+                            stop_loss = entry_price * (1 + sl_pct_from_price)
+                    else:
+                        stop_loss = entry_price * (1 + sl_pct_from_price)
+            else:
+                # Fallback на фиксированные проценты
+                if sig.action == Action.LONG:
+                    take_profit = entry_price * (1 + tp_pct_from_price)
+                    stop_loss = entry_price * (1 - sl_pct_from_price)
+                else:  # SHORT
+                    take_profit = entry_price * (1 - tp_pct_from_price)
+                    stop_loss = entry_price * (1 + sl_pct_from_price)
+            
+            # Логируем расчет
+            risk = abs(entry_price - stop_loss)
+            reward = abs(take_profit - entry_price)
+            rr_ratio = reward / risk if risk > 0 else 0
+            
+            print(f"[live] 📊 VBO TP/SL: TP=${take_profit:.2f} (+{((take_profit - entry_price) / entry_price * 100):.2f}%), SL=${stop_loss:.2f} ({((stop_loss - entry_price) / entry_price * 100):.2f}%), RR={rr_ratio:.2f}:1")
+            print(f"[live]   → TP: {tp_pct_from_price*100:.2f}% from price ({tp_pct_from_price*leverage*100:.1f}% from margin), SL: {sl_pct_from_price*100:.2f}% from price ({sl_pct_from_price*leverage*100:.1f}% from margin)")
+            
+            return take_profit, stop_loss
             
         else:
             # Для TREND/FLAT стратегий используем настройки как МАКСИМАЛЬНЫЕ границы
@@ -3722,8 +3821,15 @@ def run_live_from_api(
                 try:
                     # SMC требует много истории (минимум 1000 свечей для надежности)
                     if len(df_ready) >= 200:
+                        # Обновляем статус перед долгой операцией
+                        update_worker_status(symbol, current_status="Running", last_action="Generating SMC signals...")
+                        if stop_event.is_set():
+                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                            break
                         _log(f"🔍 SMC: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         smc_signals = build_smc_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        # Обновляем статус после генерации
+                        update_worker_status(symbol, current_status="Running", last_action="SMC signals generated")
                         smc_generated = [s for s in smc_signals if s.action in (Action.LONG, Action.SHORT)]
                         _log(f"📊 SMC strategy: generated {len(smc_signals)} total, {len(smc_generated)} actionable (LONG/SHORT)", symbol)
                         
@@ -3761,8 +3867,15 @@ def run_live_from_api(
             if symbol_strategy_settings.enable_ict_strategy:
                 try:
                     if len(df_ready) >= 200:
+                        # Обновляем статус перед долгой операцией
+                        update_worker_status(symbol, current_status="Running", last_action="Generating ICT signals...")
+                        if stop_event.is_set():
+                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                            break
                         _log(f"🔍 ICT: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         ict_signals = build_ict_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        # Обновляем статус после генерации
+                        update_worker_status(symbol, current_status="Running", last_action="ICT signals generated")
                         ict_generated = [s for s in ict_signals if s.action in (Action.LONG, Action.SHORT)]
                         _log(f"📊 ICT strategy: generated {len(ict_signals)} total, {len(ict_generated)} actionable (LONG/SHORT)", symbol)
                         
@@ -3806,8 +3919,15 @@ def run_live_from_api(
             if symbol_strategy_settings.enable_liquidation_hunter_strategy:
                 try:
                     if len(df_ready) >= 200:
+                        # Обновляем статус перед долгой операцией
+                        update_worker_status(symbol, current_status="Running", last_action="Generating Liquidation Hunter signals...")
+                        if stop_event.is_set():
+                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                            break
                         _log(f"🔍 Liquidation Hunter: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         liquidation_hunter_signals = build_liquidation_hunter_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        # Обновляем статус после генерации
+                        update_worker_status(symbol, current_status="Running", last_action="Liquidation Hunter signals generated")
                         liquidation_hunter_generated = [s for s in liquidation_hunter_signals if s.action in (Action.LONG, Action.SHORT)]
                         _log(f"📊 LIQUIDATION_HUNTER strategy: generated {len(liquidation_hunter_signals)} total, {len(liquidation_hunter_generated)} actionable (LONG/SHORT)", symbol)
                         
@@ -3851,8 +3971,15 @@ def run_live_from_api(
             if symbol_strategy_settings.enable_zscore_strategy:
                 try:
                     if len(df_ready) >= 20:
+                        # Обновляем статус перед долгой операцией
+                        update_worker_status(symbol, current_status="Running", last_action="Generating Z-Score signals...")
+                        if stop_event.is_set():
+                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                            break
                         _log(f"🔍 Z-Score: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        # Обновляем статус после генерации
+                        update_worker_status(symbol, current_status="Running", last_action="Z-Score signals generated")
                         zscore_generated = [s for s in zscore_signals if s.action in (Action.LONG, Action.SHORT)]
                         _log(f"📊 ZSCORE strategy: generated {len(zscore_signals)} total, {len(zscore_generated)} actionable (LONG/SHORT)", symbol)
                         
@@ -3896,8 +4023,15 @@ def run_live_from_api(
             if symbol_strategy_settings.enable_vbo_strategy:
                 try:
                     if len(df_ready) >= 50:
+                        # Обновляем статус перед долгой операцией
+                        update_worker_status(symbol, current_status="Running", last_action="Generating VBO signals...")
+                        if stop_event.is_set():
+                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                            break
                         _log(f"🔍 VBO: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         vbo_signals = build_vbo_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        # Обновляем статус после генерации
+                        update_worker_status(symbol, current_status="Running", last_action="VBO signals generated")
                         vbo_generated = [s for s in vbo_signals if s.action in (Action.LONG, Action.SHORT)]
                         _log(f"📊 VBO strategy: generated {len(vbo_signals)} total, {len(vbo_generated)} actionable (LONG/SHORT)", symbol)
                         
@@ -3940,6 +4074,11 @@ def run_live_from_api(
             # ML стратегия
             if symbol_strategy_settings.enable_ml_strategy and current_settings.ml_model_path:
                 try:
+                    # Обновляем статус перед долгой операцией (ML может занимать много времени)
+                    update_worker_status(symbol, current_status="Running", last_action="Generating ML signals...")
+                    if stop_event.is_set():
+                        _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                        break
                     # Логируем, какая модель используется для этого символа
                     _log(f"🤖 Using ML model: {current_settings.ml_model_path}", symbol)
                     ml_signals = build_ml_signals(
@@ -3949,6 +4088,8 @@ def run_live_from_api(
                         current_settings.ml_min_signal_strength,
                         current_settings.ml_stability_filter,
                     )
+                    # Обновляем статус после генерации
+                    update_worker_status(symbol, current_status="Running", last_action="ML signals generated")
                     ml_generated = [s for s in ml_signals if s.action in (Action.LONG, Action.SHORT)]
                     _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
                     
@@ -4913,10 +5054,14 @@ def run_live_from_api(
                             # Сигнал от приоритетной стратегии слишком старый - не используем
                             sig = None
                             print(f"[live] ⚠️ Priority {strategy_priority.upper()} signal too old, waiting for fresh signal from priority strategy")
+                            # Обновляем статус - воркер все еще работает, просто ждет свежий сигнал
+                            update_worker_status(symbol, current_status="Running", last_action=f"Waiting for fresh {strategy_priority.upper()} signal...")
                     else:
                         # Нет сигнала от приоритетной стратегии - не открываем позицию
                         sig = None
                         print(f"[live] ⚠️ No signal from priority strategy ({strategy_priority.upper()}), waiting for priority signal")
+                        # Обновляем статус - воркер все еще работает, просто ждет сигнал
+                        update_worker_status(symbol, current_status="Running", last_action=f"Waiting for {strategy_priority.upper()} signal...")
 
             # 4. Проверяем подтверждение (agreement) для добавления к позиции
             if sig and sig.action != Action.HOLD:
