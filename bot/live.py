@@ -459,6 +459,10 @@ def _calculate_tp_sl_for_signal(
         elif sig.reason.startswith("smc_"):
             strategy_type = "smc"
         
+        # Логируем определение стратегии для отладки
+        if strategy_type:
+            print(f"[live] 🔍 TP/SL calculation: detected strategy_type='{strategy_type}' from signal reason='{sig.reason}'")
+        
         # Пытаемся использовать уровни поддержки/сопротивления, если доступны
         use_sr_levels = False
         nearest_resistance = None
@@ -1022,24 +1026,125 @@ def _ensure_tp_sl_set(
             except (ValueError, TypeError):
                 pass
         
-        # Определяем, какая стратегия используется для расчета TP/SL
-        # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
-        # Если ML стратегия включена и имеет приоритет, используем ML TP/SL
-        # Иначе используем TREND/FLAT TP/SL
-        use_ml_tp_sl = False
-        if settings.enable_ml_strategy and settings.ml_model_path:
-            # Проверяем приоритет стратегий
-            strategy_priority = getattr(settings, 'strategy_priority', 'trend')
-            if strategy_priority == "ml":
-                use_ml_tp_sl = True
-            elif strategy_priority == "hybrid" and (settings.enable_trend_strategy or settings.enable_flat_strategy):
-                # В гибридном режиме используем ML TP/SL, если ML стратегия включена
-                use_ml_tp_sl = True
-            elif not (settings.enable_trend_strategy or settings.enable_flat_strategy):
-                # Если только ML стратегия включена, используем ML TP/SL
-                use_ml_tp_sl = True
+        # Получаем entry_reason из истории для определения стратегии, которая открыла позицию
+        entry_reason = None
+        try:
+            from bot.web.history import get_open_trade
+            open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+            if open_trade:
+                entry_reason = open_trade.get("entry_reason", "")
+                if entry_reason:
+                    print(f"[live] 📊 Found entry_reason from history: '{entry_reason}' for position @ ${avg_price:.2f}")
+        except Exception as e:
+            print(f"[live] ⚠️ Error getting entry_reason from history: {e}")
         
-        if use_ml_tp_sl:
+        # Определяем стратегию на основе entry_reason, если доступен, иначе используем настройки
+        # Создаем фиктивный Signal для использования _calculate_tp_sl_for_signal
+        fake_signal = None
+        use_strategy_tp_sl = False
+        
+        if entry_reason:
+            try:
+                # Определяем action на основе position_bias
+                from bot.strategy import Signal, Action
+                import pandas as pd
+                
+                fake_action = Action.LONG if position_bias == Bias.LONG else Action.SHORT
+                fake_timestamp = pd.Timestamp.now()
+                fake_signal = Signal(
+                    timestamp=fake_timestamp,
+                    action=fake_action,
+                    reason=entry_reason,
+                    price=avg_price,
+                )
+                use_strategy_tp_sl = True
+                print(f"[live] 📊 Using strategy-specific TP/SL based on entry_reason: '{entry_reason}'")
+            except Exception as e:
+                print(f"[live] ⚠️ Error creating fake signal from entry_reason: {e}")
+        
+        # Если entry_reason не найден или не удалось создать Signal, используем общую логику
+        if not use_strategy_tp_sl:
+            # Определяем, какая стратегия используется для расчета TP/SL
+            # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
+            # Если ML стратегия включена и имеет приоритет, используем ML TP/SL
+            # Иначе используем TREND/FLAT TP/SL
+            use_ml_tp_sl = False
+            if settings.enable_ml_strategy and settings.ml_model_path:
+                # Проверяем приоритет стратегий
+                strategy_priority = getattr(settings, 'strategy_priority', 'trend')
+                if strategy_priority == "ml":
+                    use_ml_tp_sl = True
+                elif strategy_priority == "hybrid" and (settings.enable_trend_strategy or settings.enable_flat_strategy):
+                    # В гибридном режиме используем ML TP/SL, если ML стратегия включена
+                    use_ml_tp_sl = True
+                elif not (settings.enable_trend_strategy or settings.enable_flat_strategy):
+                    # Если только ML стратегия включена, используем ML TP/SL
+                    use_ml_tp_sl = True
+        
+        # Используем стратегические TP/SL, если entry_reason найден
+        if use_strategy_tp_sl and fake_signal:
+            try:
+                # Используем _calculate_tp_sl_for_signal для расчета TP/SL на основе стратегии
+                # df_data можно передать как None, так как для существующих позиций уровни S/R не так важны
+                calculated_tp, calculated_sl = _calculate_tp_sl_for_signal(
+                    sig=fake_signal,
+                    settings=settings,
+                    entry_price=avg_price,
+                    df_data=None,  # Можно передать df_data, если доступен
+                )
+                
+                if calculated_tp and calculated_sl:
+                    base_tp = calculated_tp
+                    base_sl = calculated_sl
+                    
+                    # Определяем название стратегии из entry_reason
+                    if entry_reason.startswith("ml_"):
+                        strategy_name = "ML"
+                    elif entry_reason.startswith("liquidation_hunter_"):
+                        strategy_name = "LIQUIDATION_HUNTER"
+                    elif entry_reason.startswith("zscore_"):
+                        strategy_name = "ZSCORE"
+                    elif entry_reason.startswith("vbo_"):
+                        strategy_name = "VBO"
+                    elif entry_reason.startswith("ict_"):
+                        strategy_name = "ICT"
+                    elif entry_reason.startswith("smc_"):
+                        strategy_name = "SMC"
+                    elif entry_reason.startswith("trend_"):
+                        strategy_name = "TREND"
+                    elif entry_reason.startswith("range_"):
+                        strategy_name = "FLAT"
+                    else:
+                        strategy_name = "UNKNOWN"
+                    
+                    print(f"[live] 📊 {strategy_name} TP/SL from entry_reason: TP=${base_tp:.2f}, SL=${base_sl:.2f} (entry: ${avg_price:.2f})")
+                else:
+                    # Если _calculate_tp_sl_for_signal не вернул значения, используем общую логику
+                    use_strategy_tp_sl = False
+            except Exception as e:
+                print(f"[live] ⚠️ Error calculating strategy-specific TP/SL: {e}")
+                use_strategy_tp_sl = False
+        
+        # Если не используем стратегические TP/SL, применяем общую логику
+        if not use_strategy_tp_sl:
+            # Определяем, какая стратегия используется для расчета TP/SL
+            # Используем приоритет стратегий из настроек для определения, какие TP/SL применять
+            # Если ML стратегия включена и имеет приоритет, используем ML TP/SL
+            # Иначе используем TREND/FLAT TP/SL
+            use_ml_tp_sl = False
+            if settings.enable_ml_strategy and settings.ml_model_path:
+                # Проверяем приоритет стратегий
+                strategy_priority = getattr(settings, 'strategy_priority', 'trend')
+                if strategy_priority == "ml":
+                    use_ml_tp_sl = True
+                elif strategy_priority == "hybrid" and (settings.enable_trend_strategy or settings.enable_flat_strategy):
+                    # В гибридном режиме используем ML TP/SL, если ML стратегия включена
+                    use_ml_tp_sl = True
+                elif not (settings.enable_trend_strategy or settings.enable_flat_strategy):
+                    # Если только ML стратегия включена, используем ML TP/SL
+                    use_ml_tp_sl = True
+            
+        if not use_strategy_tp_sl and use_ml_tp_sl:
             # ML стратегия: используем специальные TP/SL для прибыли от маржи
             # ml_target_profit_pct_margin и ml_max_loss_pct_margin уже в процентах (например, 25.0 для 25%)
             # Нужно перевести в доли от цены: / leverage / 100

@@ -543,6 +543,55 @@ def add_trade(
     _save_history(history)
 
 
+def get_open_trade(symbol: str, entry_price: Optional[float] = None, price_tolerance_pct: float = 0.05) -> Optional[Dict[str, Any]]:
+    """
+    Получить открытую сделку (exit_time == None) для указанного символа.
+    
+    Args:
+        symbol: Торговая пара (BTCUSDT, ETHUSDT, SOLUSDT)
+        entry_price: Цена входа для проверки совпадения (опционально)
+        price_tolerance_pct: Допустимое отклонение цены входа в процентах (по умолчанию 5%)
+    
+    Returns:
+        Словарь с данными открытой сделки или None, если не найдена
+    """
+    try:
+        history = _load_history()
+        trades = history.get("trades", [])
+        
+        # Фильтруем по символу и ищем открытые сделки (exit_time == None или пустая строка)
+        open_trades = [
+            t for t in trades
+            if t.get("symbol", "").upper() == symbol.upper()
+            and (not t.get("exit_time") or t.get("exit_time") == "" or t.get("exit_time") is None)
+        ]
+        
+        if not open_trades:
+            return None
+        
+        # Если указана цена входа, ищем наиболее подходящую сделку
+        if entry_price is not None:
+            best_match = None
+            min_diff = float('inf')
+            
+            for trade in open_trades:
+                trade_entry_price = float(trade.get("entry_price", 0))
+                if trade_entry_price > 0:
+                    diff_pct = abs(trade_entry_price - entry_price) / trade_entry_price
+                    if diff_pct <= price_tolerance_pct and diff_pct < min_diff:
+                        min_diff = diff_pct
+                        best_match = trade
+            
+            return best_match if best_match else (open_trades[0] if open_trades else None)
+        
+        # Если цена не указана, возвращаем последнюю открытую сделку
+        return open_trades[-1] if open_trades else None
+    
+    except Exception as e:
+        print(f"[history] Error getting open trade: {e}")
+        return None
+
+
 def get_trades(limit: int = 50, strategy_filter: Optional[str] = None, symbol_filter: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Получить последние сделки, отсортированные от новых к старым (по времени выхода).

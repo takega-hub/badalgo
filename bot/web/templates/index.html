@@ -1172,8 +1172,15 @@
         <div id="signals" class="tab-content">
             <div class="card">
                 <h2>Signal History</h2>
-                <div style="margin-bottom: 10px;">
-                    <button onclick="clearSignals()" style="background: #ff4444; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Clear All Signals</button>
+                <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <label style="color: #aaa; margin-right: 5px;">Filter by symbol:</label>
+                    <select id="signal-symbol-filter" style="padding: 6px 12px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; cursor: pointer;" onchange="loadSignals()" title="Фильтр по торговой паре (для сортировки). 'All Symbols' показывает сигналы всех пар.">
+                        <option value="ALL" selected>All Symbols</option>
+                        <option value="BTCUSDT">BTCUSDT</option>
+                        <option value="ETHUSDT">ETHUSDT</option>
+                        <option value="SOLUSDT">SOLUSDT</option>
+                    </select>
+                    <button onclick="clearSignals()" style="background: #ff4444; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-left: auto;">Clear All Signals</button>
                 </div>
                 <div class="table-wrapper">
                     <div id="signals-table">
@@ -3144,11 +3151,13 @@
         
         async function loadSignals() {
             try {
-                // Получаем текущий символ из переключателя символов в верхней части
-                const symbolSelect = document.getElementById('primary-symbol-select');
-                const selectedSymbol = symbolSelect ? symbolSelect.value : (typeof currentSymbol !== 'undefined' && currentSymbol ? currentSymbol : 'BTCUSDT');
+                // Получаем символ из фильтра (если есть) или используем "ALL" для показа всех сигналов
+                const signalSymbolFilter = document.getElementById('signal-symbol-filter');
+                const selectedSymbol = signalSymbolFilter && signalSymbolFilter.value !== 'ALL' 
+                    ? signalSymbolFilter.value 
+                    : 'ALL'; // По умолчанию показываем все сигналы
                 
-                // Формируем URL с параметром symbol
+                // Формируем URL с параметром symbol (или без него, если "ALL")
                 const url = `/api/signals?symbol=${encodeURIComponent(selectedSymbol)}`;
                 
                 const response = await fetch(url);

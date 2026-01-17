@@ -2521,16 +2521,18 @@ def api_ml_model_retrain_all():
 @login_required
 def api_signals():
     """Получить историю сигналов."""
-    # Получаем символ из query параметра или используем primary_symbol
+    # Получаем символ из query параметра, если указан "ALL" или не указан - показываем все сигналы
     symbol_filter = request.args.get("symbol", None)
-    if not symbol_filter and settings:
-        symbol_filter = settings.primary_symbol if settings.primary_symbol else settings.symbol
+    
+    # Если symbol_filter пустой, "ALL" или None - не фильтруем по символу
+    if not symbol_filter or symbol_filter.upper() == "ALL":
+        symbol_filter = None
     
     signals = get_signals(limit=100, symbol_filter=symbol_filter)
     return jsonify({
         "signals": signals,
         "total": len(signals),
-        "symbol": symbol_filter or (settings.primary_symbol if settings else "ALL"),
+        "symbol": symbol_filter or "ALL",
     })
 
 
