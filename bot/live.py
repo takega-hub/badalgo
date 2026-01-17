@@ -5455,7 +5455,10 @@ def run_live_from_api(
                         bot_state["last_action"] = "Waiting for fresh signal..."
                         bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
                     update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal...")
-                    if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                    # Используем короткую задержку (5 секунд) вместо полного live_poll_seconds,
+                    # чтобы воркер не считался "мертвым" во время ожидания свежего сигнала
+                    # и продолжал обновлять статус
+                    if _wait_with_stop_check(stop_event, 5.0, symbol):
                         break
                     continue
             
