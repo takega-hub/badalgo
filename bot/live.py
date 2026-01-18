@@ -4692,7 +4692,17 @@ def run_live_from_api(
                     # Отмечаем, что мы сохранили latest сигнал от этой стратегии
                     seen_signal_keys_cycle.add(strategy_key)
                     
-                    _log(f"💾 Saved latest {strategy_type_name} signal to history: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_log.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts_log, 'strftime') else ts_log}]", symbol)
+                    # Проверяем, является ли сигнал свежим после сохранения
+                    is_fresh_after_save = False
+                    try:
+                        current_time_utc = datetime.now(timezone.utc)
+                        age_from_now_minutes = abs((current_time_utc - ts_log).total_seconds()) / 60
+                        is_fresh_after_save = age_from_now_minutes <= 15
+                    except:
+                        pass
+                    
+                    freshness_marker = "⚡ FRESH" if is_fresh_after_save else "⏳ NOT FRESH"
+                    _log(f"💾 Saved latest {strategy_type_name} signal to history: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_log.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts_log, 'strftime') else ts_log}] {freshness_marker}", symbol)
                 except Exception as e:
                     print(f"[live] ⚠️ Warning: Failed to save latest {strategy_type_name} signal to history: {e}")
                     import traceback
@@ -5305,6 +5315,8 @@ def run_live_from_api(
             # ВАЖНО: Проверяем наличие свежих сигналов сразу после их сохранения в историю
             # Это позволяет обрабатывать свежие сигналы немедленно, как только они попадают в таблицу
             fresh_signals_available = False
+            
+            # Сначала проверяем свежесть сигналов из объектов (уже обновленных через update_signal_object_timestamp_if_fresh)
             if available_signals:
                 # Проверяем, есть ли свежие сигналы (в пределах 15 минут)
                 for name, s in available_signals:
@@ -5325,9 +5337,62 @@ def run_live_from_api(
                         except Exception:
                             pass
             
+            # ДОПОЛНИТЕЛЬНО: Проверяем свежесть сигналов из истории (с обновленными timestamp)
+            # Это гарантирует, что сигналы, только что сохраненные в историю, будут обнаружены немедленно
+            if not fresh_signals_available:
+                try:
+                    from bot.web.history import get_signals
+                    # Получаем последние сигналы из истории для текущего символа
+                    recent_signals = get_signals(limit=10, symbol_filter=symbol)
+                    current_time_utc = datetime.now(timezone.utc)
+                    
+                    for hist_signal in recent_signals:
+                        try:
+                            # Получаем timestamp из истории
+                            hist_timestamp_str = hist_signal.get("timestamp", "")
+                            if not hist_timestamp_str:
+                                continue
+                            
+                            # Парсим timestamp
+                            if isinstance(hist_timestamp_str, str):
+                                # Пробуем разные форматы
+                                try:
+                                    hist_ts = pd.Timestamp(hist_timestamp_str)
+                                except:
+                                    continue
+                            else:
+                                hist_ts = pd.Timestamp(hist_timestamp_str)
+                            
+                            # Нормализуем timezone
+                            if hist_ts.tzinfo is None:
+                                hist_ts = hist_ts.tz_localize('UTC')
+                            else:
+                                hist_ts = hist_ts.tz_convert('UTC')
+                            
+                            hist_ts_py = hist_ts.to_pydatetime()
+                            
+                            # Проверяем возраст сигнала (должен быть не старше 15 минут)
+                            age_from_now_minutes = abs((current_time_utc - hist_ts_py).total_seconds()) / 60
+                            
+                            if age_from_now_minutes <= 15:
+                                # Сигнал свежий - проверяем, что он actionable (не HOLD)
+                                hist_action = hist_signal.get("action", "").upper()
+                                if hist_action in ("LONG", "SHORT"):
+                                    fresh_signals_available = True
+                                    _log(f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_signal.get('price', 0):.2f} ({hist_signal.get('reason', '')}) - age: {age_from_now_minutes:.1f} min", symbol)
+                                    break
+                        except Exception as e:
+                            # Пропускаем сигналы с ошибками парсинга
+                            continue
+                except Exception as e:
+                    # Если не удалось проверить историю - продолжаем с проверкой объектов
+                    pass
+            
             # Если есть свежие сигналы - логируем для информации
             if fresh_signals_available:
-                _log(f"⚡ Fresh signals detected - will process immediately", symbol)
+                _log(f"⚡ Fresh signals detected - will process immediately (using 1s interval for instant processing)", symbol)
+            else:
+                _log(f"⏳ No fresh signals detected - will use normal interval ({current_settings.live_poll_seconds}s)", symbol)
             
             # Фильтруем сигналы по тренду BTC (если BTC в активных парах и это не сам BTC)
             if btc_trend and available_signals:
@@ -8204,17 +8269,17 @@ def run_live_from_api(
             update_worker_status(symbol, current_status="Running", last_action="Signal processed, waiting...")
             
             # Пауза перед следующей итерацией
-            # ВАЖНО: Если обработан свежий сигнал ИЛИ есть свежие сигналы - используем короткий интервал для немедленной проверки
+            # ВАЖНО: Если обработан свежий сигнал ИЛИ есть свежие сигналы - используем минимальный интервал для немедленной проверки
             # Это гарантирует, что новые сигналы обрабатываются сразу же, как только попадают в историю
             if fresh_signal_processed:
-                # Короткий интервал (5 секунд) для быстрой проверки новых сигналов после обработки свежего
-                wait_interval = 5.0
-                _log(f"⚡ Fresh signal was processed - using short interval ({wait_interval}s) to check for new signals immediately", symbol)
+                # Минимальный интервал (1 секунда) для немедленной проверки новых сигналов после обработки свежего
+                wait_interval = 1.0
+                _log(f"⚡ Fresh signal was processed - using minimal interval ({wait_interval}s) to check for new signals immediately", symbol)
             elif fresh_signals_available:
-                # Короткий интервал (5 секунд) если есть свежие сигналы, но они еще не обработаны
-                # Это позволяет обработать их в следующей итерации немедленно
-                wait_interval = 5.0
-                _log(f"⚡ Fresh signals available - using short interval ({wait_interval}s) to process them immediately", symbol)
+                # Минимальный интервал (1 секунда) если есть свежие сигналы, но они еще не обработаны
+                # Это позволяет обработать их в следующей итерации немедленно, без задержек
+                wait_interval = 1.0
+                _log(f"⚡ Fresh signals available - using minimal interval ({wait_interval}s) to process them immediately", symbol)
             else:
                 # Обычный интервал, если нет свежих сигналов
                 wait_interval = current_settings.live_poll_seconds
