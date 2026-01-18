@@ -3853,6 +3853,12 @@ def run_live_from_api(
                     return "smc"
                 elif reason_lower.startswith("ict_"):
                     return "ict"
+                elif reason_lower.startswith("liquidation_hunter_"):
+                    return "liquidation_hunter"
+                elif reason_lower.startswith("zscore_"):
+                    return "zscore"
+                elif reason_lower.startswith("vbo_"):
+                    return "vbo"
                 else:
                     return "unknown"
             
@@ -3920,9 +3926,11 @@ def run_live_from_api(
                             _log(f"    - Price > EMA Fast: {price > ema_fast_1h}", symbol)
                             _log(f"    - Price < EMA Fast: {price < ema_fast_1h}", symbol)
                 
-                # Детальное логирование первых 3 сигналов для диагностики
+                # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
                 if trend_generated:
-                    for i, sig in enumerate(trend_generated[:3]):
+                    # Сортируем по timestamp и берем последние 3 (самые свежие)
+                    sorted_signals = sorted(trend_generated, key=get_timestamp_for_sort)[-3:]
+                    for i, sig in enumerate(sorted_signals):
                         ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                         _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                 elif len(trend_signals) > 0:
@@ -3967,9 +3975,11 @@ def run_live_from_api(
                 strategy_name = "FLAT"
                 _log(f"📊 {strategy_name} strategy: generated {len(flat_signals)} total, {len(flat_generated)} actionable (LONG/SHORT)", symbol)
                 
-                # Детальное логирование первых 3 сигналов для диагностики
+                # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
                 if flat_generated:
-                    for i, sig in enumerate(flat_generated[:3]):
+                    # Сортируем по timestamp и берем последние 3 (самые свежие)
+                    sorted_signals = sorted(flat_generated, key=get_timestamp_for_sort)[-3:]
+                    for i, sig in enumerate(sorted_signals):
                         ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                         _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                 elif len(flat_signals) > 0:
@@ -4129,7 +4139,9 @@ def run_live_from_api(
                         _log(f"📊 ICT strategy: generated {len(ict_signals)} total, {len(ict_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if ict_generated:
-                            for i, sig in enumerate(ict_generated[:3]):
+                            # Сортируем по timestamp и берем последние 3 (самые свежие)
+                            sorted_signals = sorted(ict_generated, key=get_timestamp_for_sort)[-3:]
+                            for i, sig in enumerate(sorted_signals):
                                 ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                                 _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
@@ -4192,7 +4204,9 @@ def run_live_from_api(
                         _log(f"📊 LIQUIDATION_HUNTER strategy: generated {len(liquidation_hunter_signals)} total, {len(liquidation_hunter_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if liquidation_hunter_generated:
-                            for i, sig in enumerate(liquidation_hunter_generated[:3]):
+                            # Сортируем по timestamp и берем последние 3 (самые свежие)
+                            sorted_signals = sorted(liquidation_hunter_generated, key=get_timestamp_for_sort)[-3:]
+                            for i, sig in enumerate(sorted_signals):
                                 ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                                 _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
@@ -4255,7 +4269,9 @@ def run_live_from_api(
                         _log(f"📊 ZSCORE strategy: generated {len(zscore_signals)} total, {len(zscore_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if zscore_generated:
-                            for i, sig in enumerate(zscore_generated[:3]):
+                            # Сортируем по timestamp и берем последние 3 (самые свежие)
+                            sorted_signals = sorted(zscore_generated, key=get_timestamp_for_sort)[-3:]
+                            for i, sig in enumerate(sorted_signals):
                                 ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                                 _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
@@ -4318,7 +4334,9 @@ def run_live_from_api(
                         _log(f"📊 VBO strategy: generated {len(vbo_signals)} total, {len(vbo_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if vbo_generated:
-                            for i, sig in enumerate(vbo_generated[:3]):
+                            # Сортируем по timestamp и берем последние 3 (самые свежие)
+                            sorted_signals = sorted(vbo_generated, key=get_timestamp_for_sort)[-3:]
+                            for i, sig in enumerate(sorted_signals):
                                 ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                                 _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
@@ -4375,9 +4393,11 @@ def run_live_from_api(
                     ml_generated = [s for s in ml_signals if s.action in (Action.LONG, Action.SHORT)]
                     _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
                     
-                    # Детальное логирование первых 3 сигналов для диагностики
+                    # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
                     if ml_generated:
-                        for i, sig in enumerate(ml_generated[:3]):
+                        # Сортируем по timestamp и берем последние 3 (самые свежие)
+                        sorted_signals = sorted(ml_generated, key=get_timestamp_for_sort)[-3:]
+                        for i, sig in enumerate(sorted_signals):
                             ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
                             _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                     elif len(ml_signals) > 0:
@@ -5435,20 +5455,25 @@ def run_live_from_api(
                         sig = None
                 elif strategy_priority == "hybrid":
                     # Гибридный режим: Выбираем самый свежий из всех доступных СВЕЖИХ сигналов
+                    # БЕЗ приоритета какой-то определенной стратегии
                     print(f"[live] 🔍 Hybrid mode: {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                     if fresh_available:
                         # Если есть свежие сигналы - выбираем самый свежий по timestamp
                         # КРИТИЧЕСКИ ВАЖНО: Выбираем ТОЛЬКО из свежих сигналов (не старше 15 минут)
+                        # В hybrid mode НЕТ приоритета стратегии - выбираем просто самый свежий сигнал
                         fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                         sig = fresh_available[-1][1]
                         strategy_name = fresh_available[-1][0]
                         ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal (no strategy priority, using freshest): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
                         # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
                         # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
                         sig = None
                         print(f"[live] ⏳ Hybrid mode: No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
+                elif strategy_priority == "confluence":
+                    # Режим Конфлюэнции уже обработан выше, не должно сюда попасть
+                    sig = None
                 else:
                     # Режим приоритета конкретной стратегии
                     # ПРИОРИТЕТ - это защита открытой позиции, а не ограничение на выбор сигналов
@@ -5547,18 +5572,38 @@ def run_live_from_api(
                             sig = None
                             print(f"[live] ⚠️ Priority mode (no position): No signals available")
                     else:
-                        # Позиция есть - приоритет защищает её
-                        # Получаем entry_reason для определения стратегии, которая открыла позицию
-                        entry_reason = None
-                        try:
-                            from bot.web.history import get_open_trade
-                            avg_price = position.get("avg_price", 0)
-                            if avg_price > 0:
-                                open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
-                                if open_trade:
-                                    entry_reason = open_trade.get("entry_reason", "")
-                        except Exception as e:
-                            print(f"[live] ⚠️ Error getting entry_reason: {e}")
+                        # Позиция есть
+                        # В hybrid mode при наличии позиции тоже выбираем самый свежий сигнал без приоритета стратегии
+                        if strategy_priority == "hybrid":
+                            # Hybrid mode: Выбираем самый свежий из всех доступных СВЕЖИХ сигналов
+                            # БЕЗ приоритета какой-то определенной стратегии, даже при наличии открытой позиции
+                            print(f"[live] 🔍 Hybrid mode (with position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
+                            if fresh_available:
+                                # Если есть свежие сигналы - выбираем самый свежий по timestamp
+                                # КРИТИЧЕСКИ ВАЖНО: Выбираем ТОЛЬКО из свежих сигналов (не старше 15 минут)
+                                # В hybrid mode НЕТ приоритета стратегии - выбираем просто самый свежий сигнал
+                                fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
+                                sig = fresh_available[-1][1]
+                                strategy_name = fresh_available[-1][0]
+                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                                print(f"[live] ✅ Hybrid FRESH (with position): Selected {strategy_name.upper()} signal (no strategy priority, using freshest): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                            else:
+                                # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
+                                sig = None
+                                print(f"[live] ⏳ Hybrid mode (with position): No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
+                        else:
+                            # Позиция есть - приоритет защищает её (для режимов с приоритетом конкретной стратегии)
+                            # Получаем entry_reason для определения стратегии, которая открыла позицию
+                            entry_reason = None
+                            try:
+                                from bot.web.history import get_open_trade
+                                avg_price = position.get("avg_price", 0)
+                                if avg_price > 0:
+                                    open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+                                    if open_trade:
+                                        entry_reason = open_trade.get("entry_reason", "")
+                            except Exception as e:
+                                print(f"[live] ⚠️ Error getting entry_reason: {e}")
                         
                         # Определяем стратегию, которая открыла позицию
                         position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
@@ -5636,6 +5681,38 @@ def run_live_from_api(
                                     print(f"[live] 🛡️ Priority position: Protected from opposite signals. Waiting for same direction or fresh priority signal.")
                         else:
                             # Позиция открыта НЕ по приоритетной стратегии
+                            # Сначала проверяем сигналы от той же стратегии, что открыла позицию (SAME STRATEGY REVERSAL)
+                            position_strategy_type = None
+                            if entry_reason:
+                                position_strategy_type = get_strategy_type_from_signal(entry_reason)
+                            
+                            same_strategy_sig = None
+                            same_strategy_sig_fresh = False
+                            same_strategy_sig_age = float('inf')
+                            if position_strategy_type:
+                                same_strategy_sig = strategy_signals.get(position_strategy_type)
+                                if same_strategy_sig:
+                                    # Проверяем, является ли сигнал противоположным
+                                    is_opposite_same_strategy = (
+                                        current_position_bias == Bias.LONG and same_strategy_sig.action == Action.SHORT
+                                    ) or (
+                                        current_position_bias == Bias.SHORT and same_strategy_sig.action == Action.LONG
+                                    )
+                                    
+                                    if is_opposite_same_strategy:
+                                        try:
+                                            if isinstance(same_strategy_sig.timestamp, pd.Timestamp):
+                                                signal_ts = same_strategy_sig.timestamp
+                                                if signal_ts.tzinfo is None:
+                                                    signal_ts = signal_ts.tz_localize('UTC')
+                                                else:
+                                                    signal_ts = signal_ts.tz_convert('UTC')
+                                                current_time_utc = datetime.now(timezone.utc)
+                                                same_strategy_sig_age = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                                                same_strategy_sig_fresh = same_strategy_sig_age <= 15
+                                        except Exception as e:
+                                            print(f"[live]     ⚠️ Error checking same strategy signal freshness: {e}")
+                            
                             # Новый свежий сигнал от приоритетной стратегии может закрыть/развернуть позицию
                             priority_sig = strategy_signals.get(strategy_priority)
                             
@@ -5674,14 +5751,35 @@ def run_live_from_api(
                                 except Exception as e:
                                     print(f"[live]     ⚠️ Error checking freshness: {e}")
                             
-                            # КРИТИЧЕСКИ ВАЖНО: Только свежие сигналы (не старше 15 минут)
-                            if priority_sig and priority_sig_fresh:
-                                # Есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
+                            # Проверяем, является ли сигнал от приоритетной стратегии противоположным
+                            is_opposite_priority = False
+                            if priority_sig:
+                                is_opposite_priority = (
+                                    current_position_bias == Bias.LONG and priority_sig.action == Action.SHORT
+                                ) or (
+                                    current_position_bias == Bias.SHORT and priority_sig.action == Action.LONG
+                                )
+                            
+                            # КРИТИЧЕСКИ ВАЖНО: Приоритет выбора сигнала:
+                            # 1. Противоположный сигнал от той же стратегии, что открыла позицию (SAME STRATEGY REVERSAL) - приоритет #1
+                            # 2. Свежие сигналы от приоритетной стратегии
+                            # 3. Противоположные сигналы от приоритетной стратегии (не старше 1 часа)
+                            # 4. Свежие противоположные сигналы от других стратегий
+                            
+                            if same_strategy_sig and same_strategy_sig_age <= 60:
+                                # Есть противоположный сигнал от той же стратегии, что открыла позицию - используем его (приоритет #1)
+                                sig = same_strategy_sig
+                                age_str = f" (age: {same_strategy_sig_age:.1f} min)" if same_strategy_sig_age < float('inf') else ""
+                                freshness_note = "Fresh" if same_strategy_sig_fresh else "Not fresh but from same strategy"
+                                print(f"[live] ✅ Non-priority position: {freshness_note} {position_strategy_type.upper()} signal{age_str} (SAME STRATEGY REVERSAL) - closing and opening new position: {same_strategy_sig.action.value} @ ${same_strategy_sig.price:.2f} ({same_strategy_sig.reason})")
+                            elif priority_sig and (priority_sig_fresh or (is_opposite_priority and age_from_now_minutes <= 60)):
+                                # Есть сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
                                 sig = priority_sig
                                 age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
-                                print(f"[live] ✅ Non-priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
+                                freshness_note = "Fresh" if priority_sig_fresh else "Not fresh but opposite from priority strategy"
+                                print(f"[live] ✅ Non-priority position: {freshness_note} {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
-                                # Нет свежего сигнала от приоритетной стратегии
+                                # Нет свежего сигнала от приоритетной стратегии (или противоположный сигнал старше 1 часа)
                                 # Сначала проверяем противоположные свежие сигналы от других стратегий (для закрытия/разворота)
                                 opposite_action = Action.LONG if current_position_bias == Bias.SHORT else Action.SHORT
                                 opposite_fresh_signals = [(name, s) for name, s in fresh_available 
