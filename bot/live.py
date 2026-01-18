@@ -5434,41 +5434,16 @@ def run_live_from_api(
                         print(f"[live] ⏳ Confluence: Waiting for confirmation (fresh: {len(fresh_available)}).")
                         sig = None
                 elif strategy_priority == "hybrid":
-                    # Гибридный режим: Выбираем самый свежий из всех доступных (предпочитая свежие)
+                    # Гибридный режим: Выбираем самый свежий из всех доступных СВЕЖИХ сигналов
                     print(f"[live] 🔍 Hybrid mode: {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                     if fresh_available:
                         # Если есть свежие сигналы - выбираем самый свежий по timestamp
+                        # КРИТИЧЕСКИ ВАЖНО: Выбираем ТОЛЬКО из свежих сигналов (не старше 15 минут)
                         fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                        sig_fresh = fresh_available[-1][1]
-                        strategy_name_fresh = fresh_available[-1][0]
-                        ts_fresh = get_timestamp_for_sort(sig_fresh)
-                        
-                        # Также проверяем, нет ли среди не свежих сигналов более свежего по timestamp
-                        # Это важно для новых стратегий (ICT, Liquidation Hunter, Z-Score, VBO),
-                        # которые могут иметь timestamp от прошлых свечей, но быть актуальными
-                        not_fresh_available = [(name, s) for name, s in available_signals if not is_signal_fresh(s, df_ready)]
-                        if not_fresh_available:
-                            not_fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
-                            sig_not_fresh = not_fresh_available[-1][1]
-                            strategy_name_not_fresh = not_fresh_available[-1][0]
-                            ts_not_fresh = get_timestamp_for_sort(sig_not_fresh)
-                            
-                            # Если не свежий сигнал более свежий по timestamp, используем его
-                            if ts_not_fresh > ts_fresh:
-                                sig = sig_not_fresh
-                                strategy_name = strategy_name_not_fresh
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                print(f"[live] ✅ Hybrid FRESH (newer timestamp): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
-                            else:
-                                sig = sig_fresh
-                                strategy_name = strategy_name_fresh
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
-                        else:
-                            sig = sig_fresh
-                            strategy_name = strategy_name_fresh
-                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                            print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                        sig = fresh_available[-1][1]
+                        strategy_name = fresh_available[-1][0]
+                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
+                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
                         # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
                         # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
