@@ -3869,6 +3869,21 @@ def run_live_from_api(
             ml_actionable = []
             ml_filtered = []
             
+            # Функция для получения timestamp для сортировки (определяем раньше, чтобы использовать при логировании)
+            def get_timestamp_for_sort(sig):
+                """Получает timestamp для сортировки сигнала."""
+                ts = sig.timestamp
+                if isinstance(ts, pd.Timestamp):
+                    if ts.tzinfo is None:
+                        ts = ts.tz_localize('UTC')
+                    else:
+                        ts = ts.tz_convert('UTC')
+                    return ts.to_pydatetime()
+                elif hasattr(ts, 'timestamp'):
+                    return ts
+                else:
+                    return pd.Timestamp(ts).to_pydatetime()
+            
             # Вспомогательная функция для обновления timestamp сигнала, если он соответствует последней свече
             def update_signal_timestamp_if_fresh(ts_log, strategy_name: str = ""):
                 """Обновляет timestamp сигнала на текущее время, если он соответствует последней свече."""
@@ -4472,21 +4487,6 @@ def run_live_from_api(
             
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only
-            
-            # Функция для получения timestamp для сортировки
-            def get_timestamp_for_sort(sig):
-                """Получает timestamp для сортировки сигнала."""
-                ts = sig.timestamp
-                if isinstance(ts, pd.Timestamp):
-                    if ts.tzinfo is None:
-                        ts = ts.tz_localize('UTC')
-                    else:
-                        ts = ts.tz_convert('UTC')
-                    return ts.to_pydatetime()
-                elif hasattr(ts, 'timestamp'):
-                    return ts
-                else:
-                    return pd.Timestamp(ts).to_pydatetime()
             
             # Функция для проверки, является ли сигнал свежим (строгая проверка: не старше 15 минут от текущего времени)
             def is_signal_fresh(sig, df_ready):
