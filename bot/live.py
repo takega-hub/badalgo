@@ -5165,7 +5165,11 @@ def run_live_from_api(
                         if time_diff_seconds <= 60:  # 1 минута
                             # Обновляем timestamp в объекте сигнала на текущее время
                             updated_ts = datetime.now(timezone.utc)
-                            sig.timestamp = pd.Timestamp(updated_ts, tz='UTC')
+                            # Создаем Timestamp: если updated_ts уже с tzinfo, используем tz_convert, иначе tz_localize
+                            if updated_ts.tzinfo is not None:
+                                sig.timestamp = pd.Timestamp(updated_ts).tz_convert('UTC')
+                            else:
+                                sig.timestamp = pd.Timestamp(updated_ts, tz='UTC')
                 except Exception as e:
                     _log(f"⚠️ Error updating signal object timestamp: {e}", symbol)
                 
