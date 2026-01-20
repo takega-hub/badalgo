@@ -1340,6 +1340,9 @@ def _ensure_tp_sl_set(
                 elif not (settings.enable_trend_strategy or settings.enable_flat_strategy):
                     # Если только ML стратегия включена, используем ML TP/SL
                     use_ml_tp_sl = True
+        else:
+            # Если уже используем стратегические TP/SL на основе entry_reason, не переключаемся на ML TP/SL
+            use_ml_tp_sl = False
         
         # Используем стратегические TP/SL, если entry_reason найден
         if use_strategy_tp_sl and fake_signal:
@@ -1668,7 +1671,11 @@ def _ensure_tp_sl_set(
             if use_breakeven:
                 # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Убеждаемся, что безубыток не меньше 7% от маржи
                 if breakeven_sl_pct_from_margin < min_sl_pct_from_margin:
-                    print(f"[live] 🚨 CRITICAL: Breakeven SL ({breakeven_sl:.2f}) is too small ({breakeven_sl_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), NOT setting it. Keeping base SL ({base_sl:.2f})")
+                    print(
+                        f"[live] 🚨 CRITICAL: Breakeven SL ({breakeven_sl:.2f}) is too small "
+                        f"({breakeven_sl_pct_from_margin*100:.1f}% from margin < {min_sl_pct_from_margin*100:.0f}%), "
+                        f"NOT setting it. Keeping base SL ({base_sl:.2f})"
+                    )
                     use_breakeven = False
                 else:
                     # Если текущий SL хуже безубытка, перемещаем его
@@ -1677,18 +1684,33 @@ def _ensure_tp_sl_set(
                             current_sl_val = float(current_sl)
                             if position_bias == Bias.LONG and current_sl_val < breakeven_sl:
                                 target_sl = breakeven_sl
-                                print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                                print(
+                                    f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} "
+                                    f"({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)"
+                                )
                             elif position_bias == Bias.SHORT and current_sl_val > breakeven_sl:
                                 target_sl = breakeven_sl
-                                print(f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                                print(
+                                    f"[live] 🔒 Moving SL to breakeven: ${target_sl:.2f} "
+                                    f"({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)"
+                                )
                             else:
-                                print(f"[live] ✅ Current SL ({current_sl_val:.2f}) is already better than breakeven ({breakeven_sl:.2f}), keeping it")
+                                print(
+                                    f"[live] ✅ Current SL ({current_sl_val:.2f}) is already better than breakeven "
+                                    f"({breakeven_sl:.2f}), keeping it"
+                                )
                         except (ValueError, TypeError):
                             target_sl = breakeven_sl
-                            print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                            print(
+                                f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} "
+                                f"({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)"
+                            )
                     else:
                         target_sl = breakeven_sl
-                        print(f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} ({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)")
+                        print(
+                            f"[live] 🔒 Setting SL to breakeven: ${target_sl:.2f} "
+                            f"({breakeven_sl_pct_from_margin*100:.1f}% from margin, profit: {max_profit_pct:.2f}%)"
+                        )
             # Сообщение "is worse than base SL or too small" убрано - уже есть сообщение выше
         
         # 2. TRAILING STOP: Активируем trailing stop, когда цена прошла половину до TP
@@ -1720,14 +1742,22 @@ def _ensure_tp_sl_set(
                         target_sl = trailing_sl
                         # Устанавливаем флаг, что это trailing stop (для последующей валидации)
                         is_trailing_stop_applied = True
-                        print(f"[live] 📈 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)")
+                        print(
+                            f"[live] 📈 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} "
+                            f"(max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)"
+                        )
                         print(f"[live]   Trailing distance: {trailing_distance_pct*100:.2f}% from max price")
                     else:
-                        print(f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop ({trailing_sl:.2f}), keeping it")
+                        print(
+                            f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop "
+                            f"({trailing_sl:.2f}), keeping it"
+                        )
                         is_trailing_stop_applied = False
                 else:
                     # Если trailing SL хуже базового SL, не используем его
-                    print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
+                    print(
+                        f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL"
+                    )
                     is_trailing_stop_applied = False
             else:  # SHORT
                 # Для SHORT: SL должен быть выше максимальной цены на trailing_distance_pct
@@ -1740,14 +1770,19 @@ def _ensure_tp_sl_set(
                         target_sl = trailing_sl
                         # Устанавливаем флаг, что это trailing stop (для последующей валидации)
                         is_trailing_stop_applied = True
-                        print(f"[live] 📉 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} (max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)")
+                        print(
+                            f"[live] 📉 Trailing stop ACTIVATED: ${old_target_sl:.2f} → ${target_sl:.2f} "
+                            f"(max price: ${max_price:.2f}, profit: {max_profit_pct:.2f}%, {half_tp_distance_pct:.2f}% to half TP)"
+                        )
                         print(f"[live]   Trailing distance: {trailing_distance_pct*100:.2f}% from max price")
                     else:
                         print(f"[live] ✅ Current SL ({target_sl:.2f}) is already better than trailing stop ({trailing_sl:.2f}), keeping it")
                         is_trailing_stop_applied = False
                 else:
                     # Если trailing SL хуже базового SL, не используем его
-                    print(f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL")
+                    print(
+                        f"[live] ⚠️ Trailing stop ({trailing_sl:.2f}) is worse than base SL ({base_sl:.2f}), keeping base SL"
+                    )
                     is_trailing_stop_applied = False
         elif settings.risk.enable_trailing_stop:
             # Trailing stop еще не активирован
@@ -2047,7 +2082,7 @@ def _ensure_tp_sl_set(
                     stop_loss=final_sl,
                     take_profit=final_tp,
                 )
-                
+            
                 if tp_sl_resp.get("retCode") == 0:
                     if tp_needs_update and sl_needs_update:
                         print(f"[live] ✅ TP and SL set/updated successfully")
@@ -4690,7 +4725,7 @@ def run_live_from_api(
                             last_candle_time = last_candle_ts.to_pydatetime()
                         else:
                             last_candle_time = last_candle_ts
-                        
+                                
                         # Если сигнал соответствует последней свече - он свежий
                         signal_time = signal_ts.to_pydatetime()
                         if abs((signal_time - last_candle_time).total_seconds()) <= 60:  # В пределах 1 минуты от последней свечи
@@ -5586,7 +5621,9 @@ def run_live_from_api(
                                 else:
                                     signal_ts = signal_ts.tz_convert('UTC')
                                 current_time_utc = datetime.now(timezone.utc)
-                                age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
+                                age_from_now_minutes = abs(
+                                    (current_time_utc - signal_ts.to_pydatetime()).total_seconds()
+                                ) / 60
                                 if age_from_now_minutes <= 15:
                                     fresh_signals_available = True
                                     break
@@ -5789,7 +5826,6 @@ def run_live_from_api(
                         print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal (no strategy priority, using freshest): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
                         # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
-                        # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
                         sig = None
                         print(f"[live] ⏳ Hybrid mode: No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
                 elif strategy_priority == "confluence":
@@ -5856,51 +5892,92 @@ def run_live_from_api(
                             original_fresh_count = len(fresh_available)
                             
                             # Логируем все доступные сигналы ДО фильтрации
-                            _log(f"🔍 PRIMARY_SYMBOL filter: Before filtering - {original_count} total signals, {original_fresh_count} fresh signals", symbol)
+                            _log(
+                                f"🔍 PRIMARY_SYMBOL filter: Before filtering - {original_count} total signals, "
+                                f"{original_fresh_count} fresh signals",
+                                symbol,
+                            )
                             for name, s in available_signals[:5]:  # Показываем первые 5 для отладки
                                 _log(f"   - {name.upper()}: {s.action.value} @ ${s.price:.2f} ({s.reason})", symbol)
                             
-                            available_signals = [(name, s) for name, s in available_signals if s.action == primary_symbol_allowed_action]
-                            fresh_available = [(name, s) for name, s in fresh_available if s.action == primary_symbol_allowed_action]
+                            available_signals = [
+                                (name, s) for name, s in available_signals if s.action == primary_symbol_allowed_action
+                            ]
+                            fresh_available = [
+                                (name, s) for name, s in fresh_available if s.action == primary_symbol_allowed_action
+                            ]
                             
                             # Логируем все доступные сигналы ПОСЛЕ фильтрации
-                            _log(f"🔍 PRIMARY_SYMBOL filter: After filtering - {len(available_signals)} total signals, {len(fresh_available)} fresh signals (allowed: {primary_symbol_allowed_action.value})", symbol)
-                            for name, s in available_signals[:5]:  # Показываем первые 5 для отладки
+                            _log(
+                                f"🔍 PRIMARY_SYMBOL filter: After filtering - {len(available_signals)} total signals, "
+                                f"{len(fresh_available)} fresh signals (allowed: {primary_symbol_allowed_action.value})",
+                                symbol,
+                            )
+                            for name, s in available_signals[:5]:
                                 _log(f"   - {name.upper()}: {s.action.value} @ ${s.price:.2f} ({s.reason})", symbol)
                             
                             if available_signals:
-                                _log(f"📊 PRIMARY_SYMBOL filter applied: {len(available_signals)}/{original_count} signals passed (fresh: {len(fresh_available)}/{original_fresh_count})", symbol)
+                                _log(
+                                    f"📊 PRIMARY_SYMBOL filter applied: {len(available_signals)}/{original_count} signals passed "
+                                    f"(fresh: {len(fresh_available)}/{original_fresh_count})",
+                                    symbol,
+                                )
                             else:
-                                _log(f"⚠️ PRIMARY_SYMBOL filter removed all signals - no {primary_symbol_allowed_action.value} signals available for {symbol}", symbol)
+                                _log(
+                                    f"⚠️ PRIMARY_SYMBOL filter removed all signals - no {primary_symbol_allowed_action.value} "
+                                    f"signals available for {symbol}",
+                                    symbol,
+                                )
                                 sig = None
                                 if bot_state:
                                     bot_state["current_status"] = "Running"
-                                    bot_state["last_action"] = f"No {primary_symbol_allowed_action.value} signals (PRIMARY_SYMBOL filter)"
+                                    bot_state["last_action"] = (
+                                        f"No {primary_symbol_allowed_action.value} signals (PRIMARY_SYMBOL filter)"
+                                    )
                                     bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                                update_worker_status(symbol, current_status="Running", last_action=f"No {primary_symbol_allowed_action.value} signals (PRIMARY_SYMBOL filter)")
+                                update_worker_status(
+                                    symbol,
+                                    current_status="Running",
+                                    last_action=f"No {primary_symbol_allowed_action.value} signals (PRIMARY_SYMBOL filter)",
+                                )
                                 if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                     break
                                 continue
                         else:
-                            _log(f"ℹ️ PRIMARY_SYMBOL filter: No filter applied (primary_symbol_allowed_action is None)", symbol)
+                            _log(
+                                "ℹ️ PRIMARY_SYMBOL filter: No filter applied (primary_symbol_allowed_action is None)",
+                                symbol,
+                            )
                         
-                        print(f"[live] 🔍 Priority mode (no position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
+                        print(
+                            f"[live] 🔍 Priority mode (no position): {len(fresh_available)} fresh, "
+                            f"{len(available_signals)} total signals available"
+                        )
                         is_fallback_signal = False  # Флаг для fallback сигналов
                         if fresh_available:
                             # Если есть свежие сигналы - выбираем самый свежий по timestamp
                             fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                             sig = fresh_available[-1][1]
                             strategy_name = fresh_available[-1][0]
-                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                            print(f"[live] ✅ Priority mode (no position): Selected {strategy_name.upper()} signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
+                            ts_str = (
+                                sig.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                                if hasattr(sig.timestamp, 'strftime')
+                                else str(sig.timestamp)
+                            )
+                            print(
+                                f"[live] ✅ Priority mode (no position): Selected {strategy_name.upper()} signal: "
+                                f"{sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]"
+                            )
                         elif available_signals:
                             # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
-                            # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
                             sig = None
-                            print(f"[live] ⏳ Priority mode (no position): No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
+                            print(
+                                "[live] ⏳ Priority mode (no position): No fresh signals available. "
+                                "Waiting for fresh signals (max age: 15 minutes)..."
+                            )
                         else:
                             sig = None
-                            print(f"[live] ⚠️ Priority mode (no position): No signals available")
+                            print("[live] ⚠️ Priority mode (no position): No signals available")
                     else:
                         # Позиция есть
                         # В hybrid mode при наличии позиции тоже выбираем самый свежий сигнал без приоритета стратегии
@@ -6217,7 +6294,11 @@ def run_live_from_api(
                         bot_state["current_status"] = "Running"
                         bot_state["last_action"] = "Waiting for fresh signal (max age: 15 min)..."
                         bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
-                    update_worker_status(symbol, current_status="Running", last_action="Waiting for fresh signal (max age: 15 min)...")
+                    update_worker_status(
+                        symbol,
+                        current_status="Running",
+                        last_action="Waiting for fresh signal (max age: 15 min)...",
+                    )
                     # Используем короткую задержку (5 секунд) вместо полного live_poll_seconds,
                     # чтобы воркер не считался "мертвым" во время ожидания свежего сигнала
                     # и продолжал обновлять статус
@@ -6226,7 +6307,11 @@ def run_live_from_api(
                         _log(f"🛑 Stop event received during freshness check, stopping bot for {symbol}", symbol)
                         break
                     # Продолжаем цикл - воркер должен работать постоянно и ждать свежих сигналов
-                    _log(f"🔄 Continuing worker loop after filtering old signal, waiting for fresh signal (max age: {max_age_minutes} min)...", symbol)
+                    _log(
+                        f"🔄 Continuing worker loop after filtering old signal, "
+                        f"waiting for fresh signal (max age: {max_age_minutes} min)...",
+                        symbol,
+                    )
                     continue
             
             # Конвертируем timestamp сигнала в UTC для использования ниже
@@ -7120,27 +7205,44 @@ def run_live_from_api(
                                     
                                     if progress_to_tp >= threshold:
                                         can_add = True
-                                        add_reason = f"price moved {progress_to_tp*100:.1f}% to TP (threshold: {threshold*100:.0f}%)"
+                                        add_reason = (
+                                            f"price moved {progress_to_tp*100:.1f}% to TP "
+                                            f"(threshold: {threshold*100:.0f}%)"
+                                        )
                                     elif progress_to_sl >= threshold:
                                         can_add = True
-                                        add_reason = f"price moved {progress_to_sl*100:.1f}% to SL (threshold: {threshold*100:.0f}%) - averaging down"
+                                        add_reason = (
+                                            f"price moved {progress_to_sl*100:.1f}% to SL "
+                                            f"(threshold: {threshold*100:.0f}%) - averaging down"
+                                        )
                                     else:
-                                        print(f"[live] ⚠️ Skipping ADD_LONG: price not moved enough (to TP: {progress_to_tp*100:.1f}%, to SL: {progress_to_sl*100:.1f}%, need: {threshold*100:.0f}%)")
-                                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                        print(
+                                            "[live] ⚠️ Skipping ADD_LONG: price not moved enough "
+                                            f"(to TP: {progress_to_tp*100:.1f}%, "
+                                            f"to SL: {progress_to_sl*100:.1f}%, "
+                                            f"need: {threshold*100:.0f}%)"
+                                        )
+                                        if _wait_with_stop_check(
+                                            stop_event, current_settings.live_poll_seconds, symbol
+                                        ):
                                             break
                                         continue
                             except (ValueError, TypeError) as e:
                                 print(f"[live] ⚠️ Error calculating TP/SL progress: {e}")
                                 # Fallback на старую логику pullback
                                 max_price = position_max_price.get(symbol, sig.price)
-                                pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                                pullback_pct = (
+                                    ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                                )
                                 if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
                                     can_add = True
                                     add_reason = f"pullback {pullback_pct:.2f}% (fallback logic)"
                         else:
                             # Нет TP/SL - используем старую логику откатов
                             max_price = position_max_price.get(symbol, sig.price)
-                            pullback_pct = ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                            pullback_pct = (
+                                ((max_price - sig.price) / max_price) * 100 if max_price > 0 else 0
+                            )
                             if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
                                 can_add = True
                                 add_reason = f"pullback {pullback_pct:.2f}% (no TP/SL set)"
@@ -7928,37 +8030,58 @@ def run_live_from_api(
                                 if tp_price > 0 and sl_price > 0:
                                     # Расчёт прогресса к TP (для SHORT: цена падает к TP)
                                     distance_to_tp = avg_price - tp_price
-                                    progress_to_tp = (avg_price - sig.price) / distance_to_tp if distance_to_tp > 0 else 0
+                                    progress_to_tp = (
+                                        (avg_price - sig.price) / distance_to_tp if distance_to_tp > 0 else 0
+                                    )
                                     
                                     # Расчёт прогресса к SL (для SHORT: цена растёт к SL)
                                     distance_to_sl = sl_price - avg_price
-                                    progress_to_sl = (sig.price - avg_price) / distance_to_sl if distance_to_sl > 0 else 0
+                                    progress_to_sl = (
+                                        (sig.price - avg_price) / distance_to_sl if distance_to_sl > 0 else 0
+                                    )
                                     
                                     threshold = current_settings.risk.smart_add_tp_sl_progress_pct
                                     
                                     if progress_to_tp >= threshold:
                                         can_add = True
-                                        add_reason = f"price moved {progress_to_tp*100:.1f}% to TP (threshold: {threshold*100:.0f}%)"
+                                        add_reason = (
+                                            f"price moved {progress_to_tp*100:.1f}% to TP "
+                                            f"(threshold: {threshold*100:.0f}%)"
+                                        )
                                     elif progress_to_sl >= threshold:
                                         can_add = True
-                                        add_reason = f"price moved {progress_to_sl*100:.1f}% to SL (threshold: {threshold*100:.0f}%) - averaging down"
+                                        add_reason = (
+                                            f"price moved {progress_to_sl*100:.1f}% to SL "
+                                            f"(threshold: {threshold*100:.0f}%) - averaging down"
+                                        )
                                     else:
-                                        print(f"[live] ⚠️ Skipping ADD_SHORT: price not moved enough (to TP: {progress_to_tp*100:.1f}%, to SL: {progress_to_sl*100:.1f}%, need: {threshold*100:.0f}%)")
-                                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                        print(
+                                            "[live] ⚠️ Skipping ADD_SHORT: price not moved enough "
+                                            f"(to TP: {progress_to_tp*100:.1f}%, "
+                                            f"to SL: {progress_to_sl*100:.1f}%, "
+                                            f"need: {threshold*100:.0f}%)"
+                                        )
+                                        if _wait_with_stop_check(
+                                            stop_event, current_settings.live_poll_seconds, symbol
+                                        ):
                                             break
                                         continue
                             except (ValueError, TypeError) as e:
                                 print(f"[live] ⚠️ Error calculating TP/SL progress: {e}")
                                 # Fallback на старую логику pullback
                                 max_price = position_max_price.get(symbol, sig.price)
-                                pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                                pullback_pct = (
+                                    ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                                )
                                 if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
                                     can_add = True
                                     add_reason = f"pullback {pullback_pct:.2f}% (fallback logic)"
                         else:
                             # Нет TP/SL - используем старую логику откатов
                             max_price = position_max_price.get(symbol, sig.price)
-                            pullback_pct = ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                            pullback_pct = (
+                                ((sig.price - max_price) / max_price) * 100 if max_price > 0 else 0
+                            )
                             if pullback_pct >= current_settings.risk.smart_add_pullback_pct * 100:
                                 can_add = True
                                 add_reason = f"pullback {pullback_pct:.2f}% (no TP/SL set)"

@@ -682,7 +682,10 @@ def api_symbols_set_active():
                         
                         # Если менеджер уже запущен, перезапускаем его с новыми настройками
                         if multi_symbol_manager.running:
-                            print(f"[web] [background] Restarting MultiSymbolManager with new active symbols: {active_symbols}")
+                            print(
+                                "[web] [background] Restarting MultiSymbolManager with new active symbols: "
+                                f"{active_symbols}"
+                            )
                             multi_symbol_manager.stop()
                             # Даем время на остановку
                             import time
@@ -699,13 +702,16 @@ def api_symbols_set_active():
                 update_thread = threading.Thread(
                     target=update_and_restart,
                     name="SymbolSettingsUpdateThread",
-                    daemon=True
+                    daemon=True,
                 )
                 update_thread.start()
                 print("[web] Settings update thread launched (won't block server)")
             else:
                 # Изменился только primary_symbol - просто обновляем настройки без перезапуска
-                print(f"[web] Only primary_symbol changed ({old_primary} -> {primary_symbol}), updating settings without restart")
+                print(
+                    f"[web] Only primary_symbol changed ({old_primary} -> {primary_symbol}), "
+                    "updating settings without restart"
+                )
                 try:
                     multi_symbol_manager.update_settings(settings)
                     print("[web] Settings updated without restart (only display symbol changed)")
@@ -803,11 +809,15 @@ def api_status():
         
         # Получаем символ из query параметра или используем primary_symbol
         symbol_from_query = request.args.get("symbol", None)
-        if symbol_from_query and symbol_from_query in (settings.active_symbols if settings.active_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]):
+        if symbol_from_query and symbol_from_query in (
+            settings.active_symbols if settings.active_symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        ):
             primary_symbol = symbol_from_query
         else:
             # Получаем основной символ для отображения
-            primary_symbol = settings.primary_symbol if settings.primary_symbol else (settings.symbol if settings.symbol else "BTCUSDT")
+            primary_symbol = (
+                settings.primary_symbol if settings.primary_symbol else (settings.symbol if settings.symbol else "BTCUSDT")
+            )
         
         try:
             balance = _get_balance(client)
@@ -2465,7 +2475,9 @@ def api_ml_model_retrain():
         # Проверяем доступные пары
         available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         if symbol not in available_symbols:
-            return jsonify({"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}), 400
+            return jsonify(
+                {"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}
+            ), 400
         
         script_name = "retrain_ml_optimized.py" if mode == "optimal" else "retrain_ultra_aggressive.py"
         mode_display = "Оптимальный" if mode == "optimal" else "Агрессивный"
@@ -2479,19 +2491,20 @@ def api_ml_model_retrain():
                 print(f"[web] ✅ {mode_display} переобучение {symbol} завершено!")
             except Exception as e:
                 print(f"[web] ❌ Ошибка {symbol} ({mode_display}): {e}")
-
+    
         import threading
         thread = threading.Thread(target=run_single_retrain, daemon=True)
         thread.start()
         
-        return jsonify({
-            "success": True,
-            "message": f"Запущено {mode_display} переобучение для {symbol}",
-            "status": "training",
-            "symbol": symbol,
-            "mode": mode
-        })
-        
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Запущено {mode_display} переобучение для {symbol}",
+                "status": "training",
+                "symbol": symbol,
+                "mode": mode,
+            }
+        )
     except Exception as e:
         return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
 
@@ -3236,19 +3249,19 @@ def api_chart_data():
         # Вычисляем индикаторы
         try:
             df_ind = prepare_with_indicators(
-            df_raw,
-            adx_length=settings.strategy.adx_length,
-            di_length=settings.strategy.di_length,
-            sma_length=settings.strategy.sma_length,
-            rsi_length=settings.strategy.rsi_length,
-            breakout_lookback=settings.strategy.breakout_lookback,
-            bb_length=settings.strategy.bb_length,
-            bb_std=settings.strategy.bb_std,
-            atr_length=14,  # ATR период
-            ema_fast_length=settings.strategy.ema_fast_length,
-            ema_slow_length=settings.strategy.ema_slow_length,
-            ema_timeframe=settings.strategy.momentum_ema_timeframe,
-        )
+                df_raw,
+                adx_length=settings.strategy.adx_length,
+                di_length=settings.strategy.di_length,
+                sma_length=settings.strategy.sma_length,
+                rsi_length=settings.strategy.rsi_length,
+                breakout_lookback=settings.strategy.breakout_lookback,
+                bb_length=settings.strategy.bb_length,
+                bb_std=settings.strategy.bb_std,
+                atr_length=14,  # ATR период
+                ema_fast_length=settings.strategy.ema_fast_length,
+                ema_slow_length=settings.strategy.ema_slow_length,
+                ema_timeframe=settings.strategy.momentum_ema_timeframe,
+            )
             # Убрали избыточное логирование - слишком много сообщений
             # print(f"[web] After prepare_with_indicators: {len(df_ind)} candles")
         except Exception as e:
@@ -3782,25 +3795,25 @@ def api_chart_data():
                         # Проверяем, является ли сигнал actionable для графика
                         if action_value in ("long", "short"):
                             timestamp_ms = None
-                            if hasattr(sig, 'timestamp') and sig.timestamp:
+                            if hasattr(sig, "timestamp") and sig.timestamp:
                                 try:
                                     # Конвертируем в Unix timestamp (миллисекунды)
                                     if isinstance(sig.timestamp, pd.Timestamp):
                                         if sig.timestamp.tzinfo is None:
-                                            utc_time = sig.timestamp.tz_localize('UTC')
+                                            utc_time = sig.timestamp.tz_localize("UTC")
                                         else:
-                                            utc_time = sig.timestamp.tz_convert('UTC')
+                                            utc_time = sig.timestamp.tz_convert("UTC")
                                         timestamp_ms = int(utc_time.timestamp() * 1000)
-                                    elif hasattr(sig.timestamp, 'timestamp'):
+                                    elif hasattr(sig.timestamp, "timestamp"):
                                         # datetime объект
                                         timestamp_ms = int(sig.timestamp.timestamp() * 1000)
                                     else:
                                         # Строка - парсим
                                         dt = pd.to_datetime(str(sig.timestamp))
                                         if dt.tzinfo is None:
-                                            dt = dt.tz_localize('UTC')
+                                            dt = dt.tz_localize("UTC")
                                         else:
-                                            dt = dt.tz_convert('UTC')
+                                            dt = dt.tz_convert("UTC")
                                         timestamp_ms = int(dt.timestamp() * 1000)
                                 except Exception as e:
                                     print(f"[web] Error converting signal timestamp: {e}")
@@ -3852,13 +3865,19 @@ def api_chart_data():
                 if tp_float > 0 and entry_price > 0:
                     tp_deviation = abs(tp_float - entry_price) / entry_price
                     if tp_deviation > 5.0:  # Более 500% отклонение
-                        print(f"[web] ⚠️ ANOMALY: TP ${tp_float:.2f} is {tp_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}. Ignoring.")
+                        print(
+                            f"[web] ⚠️ ANOMALY: TP ${tp_float:.2f} is {tp_deviation*100:.0f}% away from "
+                            f"entry ${entry_price:.2f} for {symbol}. Ignoring."
+                        )
                         tp_float = 0.0  # Игнорируем явно некорректный TP
                 
                 if sl_float > 0 and entry_price > 0:
                     sl_deviation = abs(sl_float - entry_price) / entry_price
                     if sl_deviation > 5.0:  # Более 500% отклонение
-                        print(f"[web] ⚠️ ANOMALY: SL ${sl_float:.2f} is {sl_deviation*100:.0f}% away from entry ${entry_price:.2f} for {symbol}. Ignoring.")
+                        print(
+                            f"[web] ⚠️ ANOMALY: SL ${sl_float:.2f} is {sl_deviation*100:.0f}% away from "
+                            f"entry ${entry_price:.2f} for {symbol}. Ignoring."
+                        )
                         sl_float = 0.0  # Игнорируем явно некорректный SL
                 
                 position_info = {
@@ -3879,7 +3898,7 @@ def api_chart_data():
                     "unrealised_pnl": position.get("unrealised_pnl", 0),
                     "take_profit": 0.0,
                     "stop_loss": 0.0,
-            }
+                }
         
         return jsonify({
             "candles": candles,

@@ -38,7 +38,6 @@ class FeatureEngineer:
         Returns:
             DataFrame с добавленными колонками индикаторов
         """
-        try:
         df = df.copy()
         
         # Проверяем наличие необходимых колонок
@@ -155,11 +154,11 @@ class FeatureEngineer:
         
         # Volume SMA
         df["volume_sma_20"] = ta.sma(df["volume"], length=20)
-            # Защита от деления на ноль и None значений
-            volume_safe = pd.to_numeric(df.get("volume", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            volume_sma_safe = pd.to_numeric(df.get("volume_sma_20", pd.Series([1]*len(df), index=df.index)), errors='coerce').replace(0, 1).fillna(1)
-            df["volume_ratio"] = volume_safe / volume_sma_safe
-            df["volume_ratio"] = df["volume_ratio"].fillna(1)  # Если все еще есть NaN, используем 1
+        # Защита от деления на ноль и None значений
+        volume_safe = pd.to_numeric(df.get("volume", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        volume_sma_safe = pd.to_numeric(df.get("volume_sma_20", pd.Series([1]*len(df), index=df.index)), errors='coerce').replace(0, 1).fillna(1)
+        df["volume_ratio"] = volume_safe / volume_sma_safe
+        df["volume_ratio"] = df["volume_ratio"].fillna(1)  # Если все еще есть NaN, используем 1
         
         # OBV (On-Balance Volume)
         df["obv"] = ta.obv(df["close"], df["volume"])
@@ -175,30 +174,24 @@ class FeatureEngineer:
         df["oc_range"] = (df["open"] - df["close"]) / df["close"]
         
         # === Лаговые фичи (цены за предыдущие периоды) ===
-        
-            # Собираем все lag колонки сразу для оптимизации (избегаем фрагментации DataFrame)
-            lag_columns = {}
+        # Собираем все lag колонки сразу для оптимизации (избегаем фрагментации DataFrame)
+        lag_columns = {}
         for lag in [1, 2, 3, 5, 10]:
-                lag_columns[f"close_lag_{lag}"] = df["close"].shift(lag)
-                lag_columns[f"volume_lag_{lag}"] = df["volume"].shift(lag)
-                lag_columns[f"price_change_lag_{lag}"] = df["price_change"].shift(lag)
-            
-            # Добавляем все lag колонки сразу через pd.concat
-            if lag_columns:
-                df = pd.concat([df, pd.DataFrame(lag_columns, index=df.index)], axis=1)
+            lag_columns[f"close_lag_{lag}"] = df["close"].shift(lag)
+            lag_columns[f"volume_lag_{lag}"] = df["volume"].shift(lag)
+            lag_columns[f"price_change_lag_{lag}"] = df["price_change"].shift(lag)
+        if lag_columns:
+            df = pd.concat([df, pd.DataFrame(lag_columns, index=df.index)], axis=1)
         
         # === Скользящие статистики ===
-        
-            # Собираем все скользящие статистики сразу для оптимизации
-            rolling_columns = {}
+        # Собираем все скользящие статистики сразу для оптимизации
+        rolling_columns = {}
         for window in [5, 10, 20]:
-                rolling_columns[f"close_std_{window}"] = df["close"].rolling(window=window).std()
-                rolling_columns[f"close_mean_{window}"] = df["close"].rolling(window=window).mean()
-                rolling_columns[f"volume_mean_{window}"] = df["volume"].rolling(window=window).mean()
-            
-            # Добавляем все скользящие статистики сразу через pd.concat
-            if rolling_columns:
-                df = pd.concat([df, pd.DataFrame(rolling_columns, index=df.index)], axis=1)
+            rolling_columns[f"close_std_{window}"] = df["close"].rolling(window=window).std()
+            rolling_columns[f"close_mean_{window}"] = df["close"].rolling(window=window).mean()
+            rolling_columns[f"volume_mean_{window}"] = df["volume"].rolling(window=window).mean()
+        if rolling_columns:
+            df = pd.concat([df, pd.DataFrame(rolling_columns, index=df.index)], axis=1)
         
         # === Временные фичи ===
         
@@ -207,20 +200,19 @@ class FeatureEngineer:
             df["day_of_week"] = df.index.dayofweek
             df["day_of_month"] = df.index.day
             df["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
-                
-                # Циклические фичи для лучшего обучения модели (sin/cos преобразования)
-                # Это помогает модели понимать циклические паттерны
-                df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
-                df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
-                df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
-                df["day_of_week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
-                df["day_of_month_sin"] = np.sin(2 * np.pi * df["day_of_month"] / 31)
-                df["day_of_month_cos"] = np.cos(2 * np.pi * df["day_of_month"] / 31)
-                
-                # Торговые сессии (азиатская, европейская, американская)
-                df["is_asian_session"] = ((df["hour"] >= 0) & (df["hour"] < 8)).astype(int)
-                df["is_european_session"] = ((df["hour"] >= 8) & (df["hour"] < 16)).astype(int)
-                df["is_american_session"] = ((df["hour"] >= 16) | (df["hour"] < 24)).astype(int)
+            
+            # Циклические фичи для лучшего обучения модели (sin/cos преобразования)
+            df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
+            df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+            df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
+            df["day_of_week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
+            df["day_of_month_sin"] = np.sin(2 * np.pi * df["day_of_month"] / 31)
+            df["day_of_month_cos"] = np.cos(2 * np.pi * df["day_of_month"] / 31)
+            
+            # Торговые сессии (азиатская, европейская, американская)
+            df["is_asian_session"] = ((df["hour"] >= 0) & (df["hour"] < 8)).astype(int)
+            df["is_european_session"] = ((df["hour"] >= 8) & (df["hour"] < 16)).astype(int)
+            df["is_american_session"] = ((df["hour"] >= 16) | (df["hour"] < 24)).astype(int)
         
         # === Дополнительные фичи ===
         
@@ -232,123 +224,126 @@ class FeatureEngineer:
         df["roc_5"] = ta.roc(df["close"], length=5)
         df["roc_10"] = ta.roc(df["close"], length=10)
         
-            # === Свечные паттерны (Candlestick Patterns) ===
-            # Используем pandas_ta для обнаружения свечных паттернов
-            try:
-                # Основные паттерны для торговли
-                important_patterns = ["doji", "hammer", "engulfing", "morningstar", "eveningstar", 
-                                    "shootingstar", "hangingman", "invertedhammer"]
-                
-                for pattern_name in important_patterns:
-                    try:
-                        # Подавляем предупреждения для этого конкретного вызова
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings('ignore', message='.*Requires TA-Lib.*')
-                            warnings.filterwarnings('ignore', message='.*pip install TA-Lib.*')
-                            pattern_result = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name=pattern_name)
-                        if pattern_result is not None and not pattern_result.empty:
-                            # Паттерн возвращает значение > 0 для бычьего, < 0 для медвежьего
-                            pattern_col = f"cdl_{pattern_name}"
-                            if isinstance(pattern_result, pd.DataFrame):
-                                # Берем первую колонку если DataFrame
-                                df[pattern_col] = pattern_result.iloc[:, 0] if len(pattern_result.columns) > 0 else 0
-                            elif isinstance(pattern_result, pd.Series):
-                                df[pattern_col] = pattern_result
-                            else:
-                                df[pattern_col] = 0
-                    except Exception as e:
-                        # Если паттерн не поддерживается, пропускаем
-                        df[f"cdl_{pattern_name}"] = 0
-            except Exception as e:
-                # Если pandas_ta не поддерживает свечные паттерны, пропускаем
-                pass
-            
-            # === Взаимодействия между индикаторами ===
-            
-            # MACD Crossovers
-            # Заменяем None на NaN перед сравнением
-            macd_clean = pd.to_numeric(df["macd"], errors='coerce').fillna(0)
-            macd_signal_clean = pd.to_numeric(df["macd_signal"], errors='coerce').fillna(0)
-            macd_prev = pd.to_numeric(df["macd"].shift(1), errors='coerce').fillna(0)
-            macd_signal_prev = pd.to_numeric(df["macd_signal"].shift(1), errors='coerce').fillna(0)
-            
-            df["macd_cross_above"] = ((macd_clean > macd_signal_clean) & 
-                                      (macd_prev <= macd_signal_prev)).fillna(False).astype(int)
-            df["macd_cross_below"] = ((macd_clean < macd_signal_clean) & 
-                                      (macd_prev >= macd_signal_prev)).fillna(False).astype(int)
-            
-            # EMA Crossovers
-            # Защита от None/NaN перед сравнением
-            ema12_safe = pd.to_numeric(df.get("ema_12", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            ema26_safe = pd.to_numeric(df.get("ema_26", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            ema12_prev = ema12_safe.shift(1).fillna(0)
-            ema26_prev = ema26_safe.shift(1).fillna(0)
-            ema_cross_features = {}
-            ema_cross_features["ema_cross_above"] = ((ema12_safe > ema26_safe) & (ema12_prev <= ema26_prev)).fillna(False).astype(int)
-            ema_cross_features["ema_cross_below"] = ((ema12_safe < ema26_safe) & (ema12_prev >= ema26_prev)).fillna(False).astype(int)
-            
-            # Добавляем EMA cross фичи
-            if ema_cross_features:
-                df = pd.concat([df, pd.DataFrame(ema_cross_features, index=df.index)], axis=1)
-            
-            # Price vs Moving Averages
-            # Собираем все фичи в словарь для оптимизации (избегаем фрагментации)
-            combined_indicators_features = {}
-            
-            close_safe = pd.to_numeric(df.get("close", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            sma20_safe = pd.to_numeric(df.get("sma_20", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            sma50_safe = pd.to_numeric(df.get("sma_50", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            sma200_safe = pd.to_numeric(df.get("sma_200", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            combined_indicators_features["price_above_sma20"] = (close_safe > sma20_safe).fillna(False).astype(int)
-            combined_indicators_features["price_above_sma50"] = (close_safe > sma50_safe).fillna(False).astype(int)
-            combined_indicators_features["price_above_sma200"] = (close_safe > sma200_safe).fillna(False).astype(int)
-            combined_indicators_features["sma20_above_sma50"] = (sma20_safe > sma50_safe).fillna(False).astype(int)
-            combined_indicators_features["sma50_above_sma200"] = (sma50_safe > sma200_safe).fillna(False).astype(int)
-            
-            # RSI Divergence indicators (упрощенная версия)
-            rsi_safe = pd.to_numeric(df.get("rsi", pd.Series([50]*len(df), index=df.index)), errors='coerce').fillna(50)
-            combined_indicators_features["rsi_oversold"] = (rsi_safe < 30).fillna(False).astype(int)
-            combined_indicators_features["rsi_overbought"] = (rsi_safe > 70).fillna(False).astype(int)
-            combined_indicators_features["rsi_neutral"] = ((rsi_safe >= 30) & (rsi_safe <= 70)).fillna(False).astype(int)
-            
-            # Bollinger Bands interactions
-            high_safe = pd.to_numeric(df.get("high", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            low_safe = pd.to_numeric(df.get("low", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            bb_upper_safe = pd.to_numeric(df.get("bb_upper", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            bb_lower_safe = pd.to_numeric(df.get("bb_lower", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            combined_indicators_features["price_touch_bb_upper"] = (high_safe >= bb_upper_safe).fillna(False).astype(int)
-            combined_indicators_features["price_touch_bb_lower"] = (low_safe <= bb_lower_safe).fillna(False).astype(int)
-            combined_indicators_features["price_in_bb_middle"] = ((close_safe > bb_lower_safe) & (close_safe < bb_upper_safe)).fillna(False).astype(int)
-            
-            # Добавляем все фичи одним pd.concat
-            if combined_indicators_features:
-                df = pd.concat([df, pd.DataFrame(combined_indicators_features, index=df.index)], axis=1)
-            
-            # === ADX Strength indicators и нормализованные метрики ===
-            # Собираем все эти фичи в словарь для оптимизации
-            adx_normalized_features = {}
-            
-            # ADX Strength indicators
-            adx_safe = pd.to_numeric(df.get("adx", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            adx_normalized_features["adx_strong_trend"] = (adx_safe > 25).fillna(False).astype(int)
-            adx_normalized_features["adx_weak_trend"] = ((adx_safe > 20) & (adx_safe <= 25)).fillna(False).astype(int)
-            adx_normalized_features["adx_no_trend"] = (adx_safe <= 20).fillna(False).astype(int)
-            
-            # Нормализованные расстояния до индикаторов
-            # Защита от None/NaN перед вычислениями
-            bb_upper_safe = pd.to_numeric(df.get("bb_upper", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            bb_lower_safe = pd.to_numeric(df.get("bb_lower", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
-            close_safe = pd.to_numeric(df.get("close", pd.Series([1]*len(df), index=df.index)), errors='coerce').replace(0, 1).fillna(1)
-            sma20_safe = pd.to_numeric(df.get("sma_20", pd.Series([1]*len(df), index=df.index)), errors='coerce').replace(0, 1).fillna(1)
-            sma50_safe = pd.to_numeric(df.get("sma_50", pd.Series([1]*len(df), index=df.index)), errors='coerce').replace(0, 1).fillna(1)
-            rsi_safe = pd.to_numeric(df.get("rsi", pd.Series([50]*len(df), index=df.index)), errors='coerce').fillna(50)
-            
-            if bb_upper_safe.notna().any() and bb_lower_safe.notna().any():
-                bb_range = bb_upper_safe - bb_lower_safe
-                adx_normalized_features["price_norm_bb"] = np.where(bb_range > 0, 
-                                              (close_safe - bb_lower_safe) / bb_range, 0)
-            else:
-                adx_normalized_features["price_norm_bb"] = 0
+        # === Свечные паттерны (Candlestick Patterns) ===
+        try:
+            important_patterns = ["doji", "hammer", "engulfing", "morningstar", "eveningstar",
+                                  "shootingstar", "hangingman", "invertedhammer"]
+            for pattern_name in important_patterns:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', message='.*Requires TA-Lib.*')
+                        warnings.filterwarnings('ignore', message='.*pip install TA-Lib.*')
+                        pattern_result = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name=pattern_name)
+                    pattern_col = f"cdl_{pattern_name}"
+                    if pattern_result is None or pattern_result.empty:
+                        df[pattern_col] = 0
+                    elif isinstance(pattern_result, pd.DataFrame):
+                        df[pattern_col] = pattern_result.iloc[:, 0] if len(pattern_result.columns) > 0 else 0
+                    else:
+                        df[pattern_col] = pattern_result
+                except Exception:
+                    df[f"cdl_{pattern_name}"] = 0
+        except Exception:
+            pass
+        
+        # === Взаимодействия между индикаторами ===
+        macd_clean = pd.to_numeric(df["macd"], errors='coerce').fillna(0)
+        macd_signal_clean = pd.to_numeric(df["macd_signal"], errors='coerce').fillna(0)
+        macd_prev = pd.to_numeric(df["macd"].shift(1), errors='coerce').fillna(0)
+        macd_signal_prev = pd.to_numeric(df["macd_signal"].shift(1), errors='coerce').fillna(0)
+        
+        df["macd_cross_above"] = ((macd_clean > macd_signal_clean) &
+                                  (macd_prev <= macd_signal_prev)).fillna(False).astype(int)
+        df["macd_cross_below"] = ((macd_clean < macd_signal_clean) &
+                                  (macd_prev >= macd_signal_prev)).fillna(False).astype(int)
+        
+        # EMA Crossovers
+        ema12_safe = pd.to_numeric(df.get("ema_12", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        ema26_safe = pd.to_numeric(df.get("ema_26", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        ema12_prev = ema12_safe.shift(1).fillna(0)
+        ema26_prev = ema26_safe.shift(1).fillna(0)
+        ema_cross_features = {
+            "ema_cross_above": ((ema12_safe > ema26_safe) & (ema12_prev <= ema26_prev)).fillna(False).astype(int),
+            "ema_cross_below": ((ema12_safe < ema26_safe) & (ema12_prev >= ema26_prev)).fillna(False).astype(int),
+        }
+        ema_cross_df = pd.DataFrame(ema_cross_features, index=df.index)
+        df = pd.concat([df, ema_cross_df], axis=1)
+        
+        # Price vs Moving Averages
+        # Собираем все фичи в словарь для оптимизации (избегаем фрагментации)
+        combined_indicators_features = {}
+        
+        close_safe = pd.to_numeric(df.get("close", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        sma20_safe = pd.to_numeric(df.get("sma_20", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        sma50_safe = pd.to_numeric(df.get("sma_50", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        sma200_safe = pd.to_numeric(df.get("sma_200", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        combined_indicators_features["price_above_sma20"] = (close_safe > sma20_safe).fillna(False).astype(int)
+        combined_indicators_features["price_above_sma50"] = (close_safe > sma50_safe).fillna(False).astype(int)
+        combined_indicators_features["price_above_sma200"] = (close_safe > sma200_safe).fillna(False).astype(int)
+        combined_indicators_features["sma20_above_sma50"] = (sma20_safe > sma50_safe).fillna(False).astype(int)
+        combined_indicators_features["sma50_above_sma200"] = (sma50_safe > sma200_safe).fillna(False).astype(int)
+        
+        # RSI Divergence indicators (упрощенная версия)
+        rsi_safe = pd.to_numeric(df.get("rsi", pd.Series([50]*len(df), index=df.index)), errors='coerce').fillna(50)
+        combined_indicators_features["rsi_oversold"] = (rsi_safe < 30).fillna(False).astype(int)
+        combined_indicators_features["rsi_overbought"] = (rsi_safe > 70).fillna(False).astype(int)
+        combined_indicators_features["rsi_neutral"] = ((rsi_safe >= 30) & (rsi_safe <= 70)).fillna(False).astype(int)
+        
+        # Bollinger Bands interactions
+        high_safe = pd.to_numeric(df.get("high", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        low_safe = pd.to_numeric(df.get("low", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        bb_upper_safe = pd.to_numeric(df.get("bb_upper", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        bb_lower_safe = pd.to_numeric(df.get("bb_lower", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        combined_indicators_features["price_touch_bb_upper"] = (high_safe >= bb_upper_safe).fillna(False).astype(int)
+        combined_indicators_features["price_touch_bb_lower"] = (low_safe <= bb_lower_safe).fillna(False).astype(int)
+        combined_indicators_features["price_in_bb_middle"] = (
+            (close_safe > bb_lower_safe) & (close_safe < bb_upper_safe)
+        ).fillna(False).astype(int)
+        
+        # Добавляем все фичи одним pd.concat
+        if combined_indicators_features:
+            df = pd.concat([df, pd.DataFrame(combined_indicators_features, index=df.index)], axis=1)
+        
+        # === ADX Strength indicators и нормализованные метрики ===
+        # Собираем все эти фичи в словарь для оптимизации
+        adx_normalized_features = {}
+        
+        # ADX Strength indicators
+        adx_safe = pd.to_numeric(df.get("adx", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        adx_normalized_features["adx_strong_trend"] = (adx_safe > 25).fillna(False).astype(int)
+        adx_normalized_features["adx_weak_trend"] = ((adx_safe > 20) & (adx_safe <= 25)).fillna(False).astype(int)
+        adx_normalized_features["adx_no_trend"] = (adx_safe <= 20).fillna(False).astype(int)
+        
+        # Нормализованные расстояния до индикаторов
+        # Защита от None/NaN перед вычислениями
+        bb_upper_safe = pd.to_numeric(df.get("bb_upper", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        bb_lower_safe = pd.to_numeric(df.get("bb_lower", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
+        close_safe = (
+            pd.to_numeric(df.get("close", pd.Series([1]*len(df), index=df.index)), errors='coerce')
+            .replace(0, 1)
+            .fillna(1)
+        )
+        sma20_safe = (
+            pd.to_numeric(df.get("sma_20", pd.Series([1]*len(df), index=df.index)), errors='coerce')
+            .replace(0, 1)
+            .fillna(1)
+        )
+        sma50_safe = (
+            pd.to_numeric(df.get("sma_50", pd.Series([1]*len(df), index=df.index)), errors='coerce')
+            .replace(0, 1)
+            .fillna(1)
+        )
+        rsi_safe = pd.to_numeric(df.get("rsi", pd.Series([50]*len(df), index=df.index)), errors='coerce').fillna(50)
+        
+        if bb_upper_safe.notna().any() and bb_lower_safe.notna().any():
+            bb_range = bb_upper_safe - bb_lower_safe
+            adx_normalized_features["price_norm_bb"] = np.where(
+                bb_range > 0,
+                (close_safe - bb_lower_safe) / bb_range,
+                0,
+            )
+        else:
+            adx_normalized_features["price_norm_bb"] = 0
             
             # Нормализованное расстояние до SMA
             adx_normalized_features["price_norm_sma20"] = (close_safe - sma20_safe) / sma20_safe
@@ -591,41 +586,6 @@ class FeatureEngineer:
         self.feature_names = [col for col in df.columns if col not in original_cols]
         
         return df
-        except TypeError as e:
-            if "'>' not supported" in str(e) or "NoneType" in str(e) or "'<' not supported" in str(e):
-                print(f"[feature_engineering] ❌ ERROR: Comparison with None detected!")
-                print(f"[feature_engineering]   Error: {e}")
-                print(f"[feature_engineering]   DataFrame shape: {df.shape if 'df' in locals() else 'N/A'}")
-                if 'df' in locals():
-                    print(f"[feature_engineering]   DataFrame columns: {df.columns.tolist()[:20]}...")
-                    # Пытаемся найти проблемную колонку
-                    for col in df.columns:
-                        if df[col].dtype == 'object':
-                            try:
-                                # Избегаем прямого сравнения с None
-                                try:
-                                    none_mask = df[col].apply(lambda x: x is None if pd.notna(x) else False)
-                                    none_count = none_mask.sum()
-                                except:
-                                    none_count = 0
-                                if none_count > 0:
-                                    print(f"[feature_engineering]   Column '{col}' has {none_count} None values")
-                            except:
-                                pass
-                # Заменяем все None на NaN и повторяем попытку
-                print(f"[feature_engineering]   Attempting to fix by replacing all None with NaN...")
-                if 'df' in locals():
-                    for col in df.columns:
-                        try:
-                            df[col] = df[col].replace([None], np.nan)
-                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                        except:
-                            pass
-                raise ValueError(f"Comparison with None error. Please check data quality. Original error: {e}") from e
-            raise
-        except Exception as e:
-            print(f"[feature_engineering] ❌ Unexpected error in create_technical_indicators: {e}")
-            raise
     
     def create_target_variable(
         self,
