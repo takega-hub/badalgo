@@ -258,6 +258,7 @@ def _save_settings_to_env(settings: AppSettings):
             'ENABLE_LIQUIDATION_HUNTER_STRATEGY',
             'ENABLE_ZSCORE_STRATEGY',
             'ENABLE_VBO_STRATEGY',
+            'ENABLE_AMT_OF_STRATEGY',
             'TRADING_SYMBOL', 'STRATEGY_PRIORITY',  # Приоритет стратегии
             'ML_CONFIDENCE_THRESHOLD', 'ML_MIN_SIGNAL_STRENGTH', 'ML_STABILITY_FILTER',
             'ML_MODEL_TYPE_FOR_ALL',  # Тип модели для всех пар
@@ -297,6 +298,7 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ENABLE_LIQUIDATION_HUNTER_STRATEGY'] = str(settings.enable_liquidation_hunter_strategy).lower()
         env_dict['ENABLE_ZSCORE_STRATEGY'] = str(settings.enable_zscore_strategy).lower()
         env_dict['ENABLE_VBO_STRATEGY'] = str(settings.enable_vbo_strategy).lower()
+        env_dict['ENABLE_AMT_OF_STRATEGY'] = str(settings.enable_amt_of_strategy).lower()
         env_dict['STRATEGY_PRIORITY'] = str(settings.strategy_priority).lower()
         env_dict['TRADING_SYMBOL'] = str(settings.symbol)
         
@@ -384,6 +386,7 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ENABLE_LIQUIDATION_HUNTER_STRATEGY={env_dict['ENABLE_LIQUIDATION_HUNTER_STRATEGY']}\n")
             f.write(f"ENABLE_ZSCORE_STRATEGY={env_dict['ENABLE_ZSCORE_STRATEGY']}\n")
             f.write(f"ENABLE_VBO_STRATEGY={env_dict['ENABLE_VBO_STRATEGY']}\n")
+            f.write(f"ENABLE_AMT_OF_STRATEGY={env_dict['ENABLE_AMT_OF_STRATEGY']}\n")
             f.write(f"STRATEGY_PRIORITY={env_dict['STRATEGY_PRIORITY']}\n")
             f.write(f"TRADING_SYMBOL={env_dict['TRADING_SYMBOL']}\n")
             
@@ -1236,6 +1239,7 @@ def api_get_settings():
                 "enable_liquidation_hunter_strategy": settings.enable_liquidation_hunter_strategy,
                 "enable_zscore_strategy": settings.enable_zscore_strategy,
                 "enable_vbo_strategy": settings.enable_vbo_strategy,
+                "enable_amt_of_strategy": settings.enable_amt_of_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
                 "ml_model_type_for_all": settings.ml_model_type_for_all or "",
@@ -1321,6 +1325,7 @@ def api_update_settings():
                                "enable_momentum_strategy", 
                                "enable_liquidity_sweep_strategy", "enable_smc_strategy", "enable_ict_strategy",
                                "enable_liquidation_hunter_strategy", "enable_zscore_strategy", "enable_vbo_strategy",
+                               "enable_amt_of_strategy",
                                "ml_stability_filter"):
                         setattr(settings, key, bool(value))
                     elif key == "symbol":
@@ -1352,7 +1357,9 @@ def api_update_settings():
                             return jsonify({"error": f"Invalid ml_confidence_threshold: {value}. Must be a number between 0 and 1. Error: {e}"}), 400
                     elif key == "strategy_priority":
                         # Проверяем допустимые значения приоритета стратегии
-                        allowed_priorities = ["trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence"]
+                        allowed_priorities = ["trend", "flat", "ml", "momentum", "smc", "ict",
+                                              "liquidation_hunter", "zscore", "vbo", "amt_of",
+                                              "hybrid", "confluence"]
                         if value in allowed_priorities:
                             setattr(settings, key, value)
                             print(f"[web] Strategy priority updated: {value}")
@@ -1460,6 +1467,7 @@ def api_update_settings():
                 "enable_liquidation_hunter_strategy": settings.enable_liquidation_hunter_strategy,
                 "enable_zscore_strategy": settings.enable_zscore_strategy,
                 "enable_vbo_strategy": settings.enable_vbo_strategy,
+                "enable_amt_of_strategy": settings.enable_amt_of_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
                 "ml_model_type_for_all": settings.ml_model_type_for_all or "",

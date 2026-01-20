@@ -893,6 +893,14 @@
                     </label>
                 </div>
                 
+                <div class="stat-item" style="margin-bottom: 15px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="enable-amt-of-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
+                        <span style="font-size: 1.1em; font-weight: bold; color: #00d4ff;">AMT &amp; Order Flow Scalper</span>
+                        <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Absorption Squeeze по ленте)</span>
+                    </label>
+                </div>
+                
                 <div class="form-group" style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #444;">
                     <label for="strategy-priority-select" style="display: block; margin-bottom: 10px; color: #aaa; font-weight: bold;">Strategy Priority (при конфликте сигналов):</label>
                     <select id="strategy-priority-select" style="width: 100%; max-width: 400px; padding: 8px; border-radius: 4px; background-color: #333; color: #e0e0e0; border: 1px solid #555; font-size: 1em;">
@@ -905,6 +913,7 @@
                         <option value="liquidation_hunter">Liquidation Hunter Priority</option>
                         <option value="zscore">Z-Score Priority</option>
                         <option value="vbo">VBO Priority</option>
+                        <option value="amt_of">AMT &amp; Order Flow Priority</option>
                         <option value="hybrid">Hybrid (использовать любой самый свежий сигнал)</option>
                         <option value="confluence">Confluence (только если 2+ стратегии подтверждают направление)</option>
                     </select>
@@ -2078,6 +2087,7 @@
                             'liquidation_hunter': '🟠 Liquidation Hunter',
                             'zscore': '🟢 Z-Score',
                             'vbo': '🟣 VBO (Volatility Breakout)',
+                            'amt_of': '⚫ AMT & Order Flow Scalper',
                             'hybrid': '🔄 Hybrid',
                             'unknown': 'Unknown'
                         };
@@ -2106,7 +2116,7 @@
                             // Форматируем reason для лучшей читаемости
                             let formattedReason = entryReason;
                             // Убираем префиксы стратегий для краткости
-                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|liquidation_hunter_|zscore_|vbo_)/, '');
+                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|liquidation_hunter_|zscore_|vbo_|amt_of_)/, '');
                             // Заменяем подчеркивания на пробелы
                             formattedReason = formattedReason.replace(/_/g, ' ');
                             // Улучшаем читаемость специфичных паттернов
@@ -3963,6 +3973,7 @@
                     const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
                     const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                     const vboCheckbox = document.getElementById('enable-vbo-strategy');
+                    const amtOfCheckbox = document.getElementById('enable-amt-of-strategy');
                     const strategyPrioritySelect = document.getElementById('strategy-priority-select');
                     
                     if (trendCheckbox) trendCheckbox.checked = settings.enable_trend_strategy || false;
@@ -3974,6 +3985,7 @@
                     if (liquidationHunterCheckbox) liquidationHunterCheckbox.checked = settings.enable_liquidation_hunter_strategy || false;
                     if (zscoreCheckbox) zscoreCheckbox.checked = settings.enable_zscore_strategy || false;
                     if (vboCheckbox) vboCheckbox.checked = settings.enable_vbo_strategy || false;
+                    if (amtOfCheckbox) amtOfCheckbox.checked = settings.enable_amt_of_strategy || false;
                     if (strategyPrioritySelect) strategyPrioritySelect.value = settings.strategy_priority || 'trend';
                 }
             } catch (error) {
@@ -4741,6 +4753,7 @@
                 const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
                 const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                 const vboCheckbox = document.getElementById('enable-vbo-strategy');
+                const amtOfCheckbox = document.getElementById('enable-amt-of-strategy');
                 
                 // Проверяем наличие элементов
                 const missingElements = [];
@@ -4768,6 +4781,7 @@
                     enable_liquidation_hunter_strategy: liquidationHunterCheckbox ? liquidationHunterCheckbox.checked : false,
                     enable_zscore_strategy: zscoreCheckbox ? zscoreCheckbox.checked : false,
                     enable_vbo_strategy: vboCheckbox ? vboCheckbox.checked : false,
+                    enable_amt_of_strategy: amtOfCheckbox ? amtOfCheckbox.checked : false,
                         strategy_priority: selectedPriority
                 };
                 
