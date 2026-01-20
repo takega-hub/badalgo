@@ -5403,8 +5403,10 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional LIQUIDATION_HUNTER signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от Z-Score стратегии
+                # Используем локальный alias для Action из ZSCORE стратегии
+                from bot.zscore_strategy import Action as StrategyActionZscore
                 for sig in zscore_signals_only:
-                    if sig.action in (Action.LONG, Action.SHORT):
+                    if sig.action in (StrategyActionZscore.LONG, StrategyActionZscore.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == zscore_sig_save and zscore_sig_save:
                             continue
