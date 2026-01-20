@@ -255,6 +255,42 @@ class BybitClient:
         except Exception as e:
             print(f"[bybit] Error getting qtyStep: {e}")
             return 0.001  # Дефолтное значение
+
+    def get_orderbook(self, symbol: str, limit: int = 50) -> Dict[str, Any]:
+        """
+        Получить текущий ордербук (Level 2) для инструмента.
+        Возвращает сырой словарь Bybit unified trading API.
+        """
+        try:
+            resp = self._retry_request(
+                self.session.get_orderbook,
+                category="linear",
+                symbol=symbol,
+                limit=limit,
+            )
+            return resp
+        except Exception as e:
+            print(f"[bybit] Error getting orderbook for {symbol}: {e}")
+            return {}
+
+    def get_recent_trades(self, symbol: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Получить последние сделки (тик-данные) для инструмента.
+        Используется для расчёта CVD и упрощённого order flow анализа.
+        """
+        try:
+            resp = self._retry_request(
+                self.session.get_public_trading_history,
+                category="linear",
+                symbol=symbol,
+                limit=limit,
+            )
+            result = resp.get("result", {}) if isinstance(resp, dict) else {}
+            trades = result.get("list", []) or result.get("rows", []) or []
+            return trades
+        except Exception as e:
+            print(f"[bybit] Error getting recent trades for {symbol}: {e}")
+            return []
     
     def get_price_step(self, symbol: str) -> float:
         """Получить priceStep (шаг цены / tick size) для символа."""

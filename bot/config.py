@@ -105,6 +105,13 @@ class StrategyParams:
     ict_liquidity_lookback_days: int = 1  # Количество дней для поиска ликвидности
     ict_atr_multiplier_sl: float = 2.0  # Множитель ATR для стоп-лосса
     ict_rr_ratio: float = 3.0  # Минимальное соотношение Risk/Reward (1:3) - улучшено с 2.0 для лучших результатов
+    
+    # AMT & Order Flow Scalper (Absorption Squeeze) - базовые параметры для order flow анализа
+    amt_of_lookback_seconds: int = 60  # окно анализа тиков (секунды)
+    amt_of_min_total_volume: float = 10_000.0  # минимальный суммарный объём в окне
+    amt_of_min_buy_sell_ratio: float = 2.0  # во сколько раз покупки больше продаж для bear-squeeze
+    amt_of_max_price_drift_pct: float = 0.05  # максимум движения цены в % при сильном CVD
+    amt_of_min_cvd_delta: float = 5_000.0  # минимальный прирост CVD за окно
 
 
 @dataclass
@@ -165,7 +172,8 @@ class SymbolStrategySettings:
     enable_liquidation_hunter_strategy: bool = False
     enable_zscore_strategy: bool = False
     enable_vbo_strategy: bool = False
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence"
+    enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "amt_of", "hybrid", "confluence"
     
     def to_dict(self) -> Dict:
         """Преобразует настройки в словарь"""
@@ -180,6 +188,7 @@ class SymbolStrategySettings:
             "enable_liquidation_hunter_strategy": self.enable_liquidation_hunter_strategy,
             "enable_zscore_strategy": self.enable_zscore_strategy,
             "enable_vbo_strategy": self.enable_vbo_strategy,
+            "enable_amt_of_strategy": self.enable_amt_of_strategy,
             "strategy_priority": self.strategy_priority,
         }
     
@@ -197,6 +206,7 @@ class SymbolStrategySettings:
             enable_liquidation_hunter_strategy=data.get("enable_liquidation_hunter_strategy", False),
             enable_zscore_strategy=data.get("enable_zscore_strategy", False),
             enable_vbo_strategy=data.get("enable_vbo_strategy", False),
+            enable_amt_of_strategy=data.get("enable_amt_of_strategy", False),
             strategy_priority=data.get("strategy_priority", "trend"),
         )
 
@@ -239,8 +249,9 @@ class AppSettings:
     enable_liquidation_hunter_strategy: bool = False  # Liquidation Hunter стратегия
     enable_zscore_strategy: bool = False  # Z-Score стратегия
     enable_vbo_strategy: bool = False  # VBO (Volatility Breakout) стратегия
+    enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
     # Приоритетная стратегия при конфликте сигналов (глобальная, используется если нет настроек для конкретной пары)
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence" (liquidity отключена)
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "amt_of", "hybrid", "confluence" (liquidity отключена)
     # Настройки стратегий для каждой пары отдельно
     symbol_strategy_settings: Dict[str, SymbolStrategySettings] = field(default_factory=dict)  # {"BTCUSDT": SymbolStrategySettings(...), ...}
     
@@ -261,6 +272,7 @@ class AppSettings:
             enable_liquidation_hunter_strategy=self.enable_liquidation_hunter_strategy,
             enable_zscore_strategy=self.enable_zscore_strategy,
             enable_vbo_strategy=self.enable_vbo_strategy,
+            enable_amt_of_strategy=self.enable_amt_of_strategy,
             strategy_priority=self.strategy_priority,
         )
     

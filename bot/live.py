@@ -51,6 +51,7 @@ from bot.ict_strategy import build_ict_signals
 from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
 from bot.zscore_strategy import build_zscore_signals
 from bot.vbo_strategy import build_vbo_signals
+from bot.amt_orderflow_strategy import detect_absorption_squeeze_short, AbsorptionConfig
 
 # Импорт для обработки ошибок Bybit API
 try:
@@ -3464,7 +3465,20 @@ def run_live_from_api(
     print(f"[live] [{symbol}] 🚀 Starting live trading bot for {symbol}")
     # Получаем настройки стратегий для текущей пары
     symbol_strategy_settings = local_settings.get_strategy_settings_for_symbol(symbol)
-    print(f"[live] [{symbol}] 📊 Active strategies: Trend={symbol_strategy_settings.enable_trend_strategy}, Flat={symbol_strategy_settings.enable_flat_strategy}, ML={symbol_strategy_settings.enable_ml_strategy}, Momentum={symbol_strategy_settings.enable_momentum_strategy}, Liquidity={symbol_strategy_settings.enable_liquidity_sweep_strategy}, SMC={symbol_strategy_settings.enable_smc_strategy}, ICT={symbol_strategy_settings.enable_ict_strategy}, LiquidationHunter={symbol_strategy_settings.enable_liquidation_hunter_strategy}, ZScore={symbol_strategy_settings.enable_zscore_strategy}, VBO={symbol_strategy_settings.enable_vbo_strategy}")
+    print(
+        f"[live] [{symbol}] 📊 Active strategies: "
+        f"Trend={symbol_strategy_settings.enable_trend_strategy}, "
+        f"Flat={symbol_strategy_settings.enable_flat_strategy}, "
+        f"ML={symbol_strategy_settings.enable_ml_strategy}, "
+        f"Momentum={symbol_strategy_settings.enable_momentum_strategy}, "
+        f"Liquidity={symbol_strategy_settings.enable_liquidity_sweep_strategy}, "
+        f"SMC={symbol_strategy_settings.enable_smc_strategy}, "
+        f"ICT={symbol_strategy_settings.enable_ict_strategy}, "
+        f"LiquidationHunter={symbol_strategy_settings.enable_liquidation_hunter_strategy}, "
+        f"ZScore={symbol_strategy_settings.enable_zscore_strategy}, "
+        f"VBO={symbol_strategy_settings.enable_vbo_strategy}, "
+        f"AMT_OF={symbol_strategy_settings.enable_amt_of_strategy}"
+    )
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
     print(f"[live] [{symbol}] ========================================")
     
@@ -4592,6 +4606,83 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ VBO strategy is DISABLED for {symbol}", symbol)
+            
+            # AMT & Order Flow Scalper (Absorption Squeeze) - сценарий B в обе стороны (LONG/SHORT)
+            if symbol_strategy_settings.enable_amt_of_strategy:
+                try:
+                    # Для AMT/OrderFlow используем тики/ленту через BybitClient
+                    # Берём текущую цену из последней свечи
+                    current_price = float(df_ready["close"].iloc[-1])
+                    
+                    # Формируем конфиг из StrategyParams
+                    cfg = AbsorptionConfig(
+                        lookback_seconds=current_settings.strategy.amt_of_lookback_seconds,
+                        min_total_volume=current_settings.strategy.amt_of_min_total_volume,
+                        min_buy_sell_ratio=current_settings.strategy.amt_of_min_buy_sell_ratio,
+                        max_price_drift_pct=current_settings.strategy.amt_of_max_price_drift_pct,
+                        min_cvd_delta=current_settings.strategy.amt_of_min_cvd_delta,
+                    )
+                    
+                    _log(
+                        f"🔍 AMT_OF: Checking absorption squeeze (lookback={cfg.lookback_seconds}s, "
+                        f"min_vol={cfg.min_total_volume}, min_cvd={cfg.min_cvd_delta})",
+                        symbol,
+                    )
+                    
+                    # Пытаемся найти сначала SHORT-сценарий (поглощение лимитами продавца),
+                    # затем LONG-сценарий (поглощение лимитами покупателя)
+                    from bot.amt_orderflow_strategy import detect_absorption_squeeze_long
+
+                    amt_signals = []
+                    short_sig = detect_absorption_squeeze_short(client, symbol, current_price, cfg)
+                    if short_sig:
+                        amt_signals.append(short_sig)
+                        _log(
+                            f"📊 AMT_OF strategy: detected SHORT absorption squeeze @ ${short_sig.price:.2f} "
+                            f"({short_sig.reason})",
+                            symbol,
+                        )
+
+                    long_sig = detect_absorption_squeeze_long(client, symbol, current_price, cfg)
+                    if long_sig:
+                        amt_signals.append(long_sig)
+                        _log(
+                            f"📊 AMT_OF strategy: detected LONG absorption squeeze @ ${long_sig.price:.2f} "
+                            f"({long_sig.reason})",
+                            symbol,
+                        )
+
+                    if amt_signals:
+                        for amt_signal in amt_signals:
+                            # Добавляем в общий список сигналов
+                            all_signals.append(amt_signal)
+                            # Сохраняем в историю
+                            try:
+                                ts_log = amt_signal.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize("UTC")
+                                    else:
+                                        ts_log = ts_log.tz_convert("UTC")
+                                    ts_log = ts_log.to_pydatetime()
+                                
+                                add_signal(
+                                    action=amt_signal.action.value,
+                                    reason=amt_signal.reason,
+                                    price=amt_signal.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="amt_of",
+                                    signal_id=amt_signal.signal_id if getattr(amt_signal, "signal_id", None) else None,
+                                )
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save AMT_OF signal to history: {e}", symbol)
+                    else:
+                        _log("ℹ️ AMT_OF: no valid absorption squeeze signal in current window", symbol)
+                except Exception as e:
+                    _log(f"❌ Error in AMT_OF strategy: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
             
             # ML стратегия
             if symbol_strategy_settings.enable_ml_strategy and current_settings.ml_model_path:
