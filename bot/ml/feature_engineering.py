@@ -39,16 +39,16 @@ class FeatureEngineer:
             DataFrame с добавленными колонками индикаторов
         """
         try:
-            df = df.copy()
-            
-            # Проверяем наличие необходимых колонок
-            required_cols = ["open", "high", "low", "close", "volume"]
-            if not all(col in df.columns for col in required_cols):
-                raise ValueError(f"DataFrame must contain columns: {required_cols}")
-            
-            # Устанавливаем timestamp как индекс если он есть
-            if "timestamp" in df.columns:
-                df = df.set_index("timestamp")
+        df = df.copy()
+        
+        # Проверяем наличие необходимых колонок
+        required_cols = ["open", "high", "low", "close", "volume"]
+        if not all(col in df.columns for col in required_cols):
+            raise ValueError(f"DataFrame must contain columns: {required_cols}")
+        
+        # Устанавливаем timestamp как индекс если он есть
+        if "timestamp" in df.columns:
+            df = df.set_index("timestamp")
         
             # ГЛОБАЛЬНАЯ ЗАЩИТА: Заменяем все None на NaN во всем DataFrame перед обработкой
             # Это предотвращает ошибки сравнения "'>' not supported between instances of 'float' and 'NoneType'"
@@ -100,85 +100,85 @@ class FeatureEngineer:
                         # Если ошибка, используем безопасное значение
                         print(f"[feature_engineering] Warning: Error filling NaN in column '{col}': {e}")
                         df[col] = df[col].replace([None], np.nan).fillna(1.0)
-            
-            # === Трендовые индикаторы ===
-            
-            # Moving Averages
-            df["sma_20"] = ta.sma(df["close"], length=20)
-            df["sma_50"] = ta.sma(df["close"], length=50)
-            df["sma_200"] = ta.sma(df["close"], length=200)
-            df["ema_12"] = ta.ema(df["close"], length=12)
-            df["ema_26"] = ta.ema(df["close"], length=26)
-            
-            # ADX (Average Directional Index) - сила тренда
-            adx_result = ta.adx(df["high"], df["low"], df["close"], length=14)
-            df["adx"] = adx_result[f"ADX_14"]
-            df["plus_di"] = adx_result[f"DMP_14"]
-            df["minus_di"] = adx_result[f"DMN_14"]
-            
-            # MACD
-            macd_result = ta.macd(df["close"])
-            df["macd"] = macd_result["MACD_12_26_9"]
-            df["macd_signal"] = macd_result["MACDs_12_26_9"]
-            df["macd_hist"] = macd_result["MACDh_12_26_9"]
-            
-            # === Осцилляторы ===
-            
-            # RSI (Relative Strength Index)
-            df["rsi"] = ta.rsi(df["close"], length=14)
-            df["rsi_7"] = ta.rsi(df["close"], length=7)
-            df["rsi_21"] = ta.rsi(df["close"], length=21)
-            
-            # Stochastic Oscillator
-            stoch_result = ta.stoch(df["high"], df["low"], df["close"])
-            df["stoch_k"] = stoch_result["STOCHk_14_3_3"]
-            df["stoch_d"] = stoch_result["STOCHd_14_3_3"]
-            
-            # CCI (Commodity Channel Index)
-            df["cci"] = ta.cci(df["high"], df["low"], df["close"], length=20)
-            
-            # === Волатильность ===
-            
-            # Bollinger Bands
-            bb_result = ta.bbands(df["close"], length=20, std=2.0)
-            df["bb_upper"] = bb_result[f"BBU_20_2.0_2.0"]
-            df["bb_middle"] = bb_result[f"BBM_20_2.0_2.0"]
-            df["bb_lower"] = bb_result[f"BBL_20_2.0_2.0"]
-            df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"]
-            df["bb_position"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
-            
-            # ATR (Average True Range)
-            df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
-            df["atr_pct"] = (df["atr"] / df["close"]) * 100  # ATR в процентах
-            
-            # === Объемные индикаторы ===
-            
-            # Volume SMA
-            df["volume_sma_20"] = ta.sma(df["volume"], length=20)
+        
+        # === Трендовые индикаторы ===
+        
+        # Moving Averages
+        df["sma_20"] = ta.sma(df["close"], length=20)
+        df["sma_50"] = ta.sma(df["close"], length=50)
+        df["sma_200"] = ta.sma(df["close"], length=200)
+        df["ema_12"] = ta.ema(df["close"], length=12)
+        df["ema_26"] = ta.ema(df["close"], length=26)
+        
+        # ADX (Average Directional Index) - сила тренда
+        adx_result = ta.adx(df["high"], df["low"], df["close"], length=14)
+        df["adx"] = adx_result[f"ADX_14"]
+        df["plus_di"] = adx_result[f"DMP_14"]
+        df["minus_di"] = adx_result[f"DMN_14"]
+        
+        # MACD
+        macd_result = ta.macd(df["close"])
+        df["macd"] = macd_result["MACD_12_26_9"]
+        df["macd_signal"] = macd_result["MACDs_12_26_9"]
+        df["macd_hist"] = macd_result["MACDh_12_26_9"]
+        
+        # === Осцилляторы ===
+        
+        # RSI (Relative Strength Index)
+        df["rsi"] = ta.rsi(df["close"], length=14)
+        df["rsi_7"] = ta.rsi(df["close"], length=7)
+        df["rsi_21"] = ta.rsi(df["close"], length=21)
+        
+        # Stochastic Oscillator
+        stoch_result = ta.stoch(df["high"], df["low"], df["close"])
+        df["stoch_k"] = stoch_result["STOCHk_14_3_3"]
+        df["stoch_d"] = stoch_result["STOCHd_14_3_3"]
+        
+        # CCI (Commodity Channel Index)
+        df["cci"] = ta.cci(df["high"], df["low"], df["close"], length=20)
+        
+        # === Волатильность ===
+        
+        # Bollinger Bands
+        bb_result = ta.bbands(df["close"], length=20, std=2.0)
+        df["bb_upper"] = bb_result[f"BBU_20_2.0_2.0"]
+        df["bb_middle"] = bb_result[f"BBM_20_2.0_2.0"]
+        df["bb_lower"] = bb_result[f"BBL_20_2.0_2.0"]
+        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"]
+        df["bb_position"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
+        
+        # ATR (Average True Range)
+        df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+        df["atr_pct"] = (df["atr"] / df["close"]) * 100  # ATR в процентах
+        
+        # === Объемные индикаторы ===
+        
+        # Volume SMA
+        df["volume_sma_20"] = ta.sma(df["volume"], length=20)
             # Защита от деления на ноль и None значений
             volume_safe = pd.to_numeric(df.get("volume", pd.Series([0]*len(df), index=df.index)), errors='coerce').fillna(0)
             volume_sma_safe = pd.to_numeric(df.get("volume_sma_20", pd.Series([1]*len(df), index=df.index)), errors='coerce').replace(0, 1).fillna(1)
             df["volume_ratio"] = volume_safe / volume_sma_safe
             df["volume_ratio"] = df["volume_ratio"].fillna(1)  # Если все еще есть NaN, используем 1
-            
-            # OBV (On-Balance Volume)
-            df["obv"] = ta.obv(df["close"], df["volume"])
-            
-            # === Ценовые паттерны ===
-            
-            # Price changes
-            df["price_change"] = df["close"].pct_change()
-            df["price_change_abs"] = df["price_change"].abs()
-            
-            # High-Low range
-            df["hl_range"] = (df["high"] - df["low"]) / df["close"]
-            df["oc_range"] = (df["open"] - df["close"]) / df["close"]
-            
-            # === Лаговые фичи (цены за предыдущие периоды) ===
-            
+        
+        # OBV (On-Balance Volume)
+        df["obv"] = ta.obv(df["close"], df["volume"])
+        
+        # === Ценовые паттерны ===
+        
+        # Price changes
+        df["price_change"] = df["close"].pct_change()
+        df["price_change_abs"] = df["price_change"].abs()
+        
+        # High-Low range
+        df["hl_range"] = (df["high"] - df["low"]) / df["close"]
+        df["oc_range"] = (df["open"] - df["close"]) / df["close"]
+        
+        # === Лаговые фичи (цены за предыдущие периоды) ===
+        
             # Собираем все lag колонки сразу для оптимизации (избегаем фрагментации DataFrame)
             lag_columns = {}
-            for lag in [1, 2, 3, 5, 10]:
+        for lag in [1, 2, 3, 5, 10]:
                 lag_columns[f"close_lag_{lag}"] = df["close"].shift(lag)
                 lag_columns[f"volume_lag_{lag}"] = df["volume"].shift(lag)
                 lag_columns[f"price_change_lag_{lag}"] = df["price_change"].shift(lag)
@@ -186,12 +186,12 @@ class FeatureEngineer:
             # Добавляем все lag колонки сразу через pd.concat
             if lag_columns:
                 df = pd.concat([df, pd.DataFrame(lag_columns, index=df.index)], axis=1)
-            
-            # === Скользящие статистики ===
-            
+        
+        # === Скользящие статистики ===
+        
             # Собираем все скользящие статистики сразу для оптимизации
             rolling_columns = {}
-            for window in [5, 10, 20]:
+        for window in [5, 10, 20]:
                 rolling_columns[f"close_std_{window}"] = df["close"].rolling(window=window).std()
                 rolling_columns[f"close_mean_{window}"] = df["close"].rolling(window=window).mean()
                 rolling_columns[f"volume_mean_{window}"] = df["volume"].rolling(window=window).mean()
@@ -199,14 +199,14 @@ class FeatureEngineer:
             # Добавляем все скользящие статистики сразу через pd.concat
             if rolling_columns:
                 df = pd.concat([df, pd.DataFrame(rolling_columns, index=df.index)], axis=1)
-            
-            # === Временные фичи ===
-            
-            if isinstance(df.index, pd.DatetimeIndex):
-                df["hour"] = df.index.hour
-                df["day_of_week"] = df.index.dayofweek
-                df["day_of_month"] = df.index.day
-                df["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
+        
+        # === Временные фичи ===
+        
+        if isinstance(df.index, pd.DatetimeIndex):
+            df["hour"] = df.index.hour
+            df["day_of_week"] = df.index.dayofweek
+            df["day_of_month"] = df.index.day
+            df["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
                 
                 # Циклические фичи для лучшего обучения модели (sin/cos преобразования)
                 # Это помогает модели понимать циклические паттерны
@@ -221,17 +221,17 @@ class FeatureEngineer:
                 df["is_asian_session"] = ((df["hour"] >= 0) & (df["hour"] < 8)).astype(int)
                 df["is_european_session"] = ((df["hour"] >= 8) & (df["hour"] < 16)).astype(int)
                 df["is_american_session"] = ((df["hour"] >= 16) | (df["hour"] < 24)).astype(int)
-            
-            # === Дополнительные фичи ===
-            
-            # Momentum
-            df["momentum_5"] = df["close"].pct_change(5)
-            df["momentum_10"] = df["close"].pct_change(10)
-            
-            # Rate of Change
-            df["roc_5"] = ta.roc(df["close"], length=5)
-            df["roc_10"] = ta.roc(df["close"], length=10)
-            
+        
+        # === Дополнительные фичи ===
+        
+        # Momentum
+        df["momentum_5"] = df["close"].pct_change(5)
+        df["momentum_10"] = df["close"].pct_change(10)
+        
+        # Rate of Change
+        df["roc_5"] = ta.roc(df["close"], length=5)
+        df["roc_10"] = ta.roc(df["close"], length=10)
+        
             # === Свечные паттерны (Candlestick Patterns) ===
             # Используем pandas_ta для обнаружения свечных паттернов
             try:
@@ -585,12 +585,12 @@ class FeatureEngineer:
             
             # Дефрагментируем DataFrame в конце для оптимизации производительности
             df = df.copy()
-            
-            # Сохраняем список фичей (исключаем исходные колонки)
-            original_cols = ["open", "high", "low", "close", "volume", "turnover"]
-            self.feature_names = [col for col in df.columns if col not in original_cols]
-            
-            return df
+        
+        # Сохраняем список фичей (исключаем исходные колонки)
+        original_cols = ["open", "high", "low", "close", "volume", "turnover"]
+        self.feature_names = [col for col in df.columns if col not in original_cols]
+        
+        return df
         except TypeError as e:
             if "'>' not supported" in str(e) or "NoneType" in str(e) or "'<' not supported" in str(e):
                 print(f"[feature_engineering] ❌ ERROR: Comparison with None detected!")

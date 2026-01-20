@@ -1033,19 +1033,19 @@
                     <!-- Переобучение одной модели -->
                     <div style="padding: 15px; background: #1a1a1a; border: 1px solid #444; border-radius: 4px;">
                         <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 10px;">Retrain Single Model</h4>
-                        <label style="display: block; margin-bottom: 10px;">
-                            <span style="display: block; margin-bottom: 5px; color: #aaa;">Trading Pair for Retraining:</span>
+                    <label style="display: block; margin-bottom: 10px;">
+                        <span style="display: block; margin-bottom: 5px; color: #aaa;">Trading Pair for Retraining:</span>
                             <select id="ml-symbol-select" style="width: 100%; max-width: 300px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
-                                <option value="BTCUSDT">BTC/USDT</option>
-                                <option value="ETHUSDT">ETH/USDT</option>
+                            <option value="BTCUSDT">BTC/USDT</option>
+                            <option value="ETHUSDT">ETH/USDT</option>
                                 <option value="SOLUSDT" selected>SOL/USDT</option>
-                            </select>
-                        </label>
+                        </select>
+                    </label>
                         <div style="display: flex; gap: 10px;">
                             <button class="btn success" onclick="retrainMLModel('optimal')">Retrain Optimal</button>
                             <button class="btn danger" onclick="retrainMLModel('aggressive')">Retrain Aggressive</button>
                         </div>
-                        <div id="retrain-status" style="margin-top: 10px; color: #aaa;"></div>
+                    <div id="retrain-status" style="margin-top: 10px; color: #aaa;"></div>
                     </div>
                 </div>
             </div>
@@ -1719,7 +1719,7 @@
             
             // Находим кнопку, которая вызвала функцию
             if (event && event.target) {
-                event.target.classList.add('active');
+            event.target.classList.add('active');
             } else {
                 // Если event не передан, находим кнопку по tabName
                 const buttons = document.querySelectorAll('.tab');
@@ -2382,15 +2382,15 @@
                         </small>
                         
                         <div style="margin-top: 10px;">
-                            <label>Range TP Aggressive:</label>
-                            <input type="checkbox" name="range_tp_aggressive" ${strategy.range_tp_aggressive ? 'checked' : ''}>
+                        <label>Range TP Aggressive:</label>
+                        <input type="checkbox" name="range_tp_aggressive" ${strategy.range_tp_aggressive ? 'checked' : ''}>
                             <small style="color: #aaa; display: block; margin-top: 5px;">
                                 Если включено: закрывает позицию при достижении противоположной границы Bollinger Bands (верхней для LONG, нижней для SHORT)
                             </small>
-                        </div>
+                    </div>
                         
                         <div style="margin-top: 15px;">
-                            <label>Range Stop Loss %:</label>
+                        <label>Range Stop Loss %:</label>
                             <input type="number" name="range_stop_loss_pct" value="${(strategy.range_stop_loss_pct * 100).toFixed(2)}" step="0.1" min="0.1" max="50">
                             <small style="color: #aaa; display: block; margin-top: 5px;">
                                 Стоп-лосс для FLAT стратегии в процентах (например, 1.5 для 1.5%).<br>
@@ -2540,7 +2540,7 @@
                     // Пользователь вводит проценты (например, 0.5 для 0.5%), преобразуем в доли (0.005)
                     data[key] = isNaN(numValue) ? value : numValue / 100.0;
                 } else {
-                    data[key] = isNaN(numValue) ? value : numValue;
+                data[key] = isNaN(numValue) ? value : numValue;
                 }
             }
             
@@ -4758,9 +4758,9 @@
                 const selectedPriority = strategyPrioritySelect ? strategyPrioritySelect.value : 'trend';
                 
                 const data = {
-                    enable_trend_strategy: trendCheckbox.checked,
-                    enable_flat_strategy: flatCheckbox.checked,
-                    enable_ml_strategy: mlCheckbox.checked,
+                        enable_trend_strategy: trendCheckbox.checked,
+                        enable_flat_strategy: flatCheckbox.checked,
+                        enable_ml_strategy: mlCheckbox.checked,
                     enable_momentum_strategy: momentumCheckbox ? momentumCheckbox.checked : false,
                     enable_liquidity_sweep_strategy: false,  // Стратегия отключена
                     enable_smc_strategy: smcCheckbox ? smcCheckbox.checked : false,
@@ -4768,7 +4768,7 @@
                     enable_liquidation_hunter_strategy: liquidationHunterCheckbox ? liquidationHunterCheckbox.checked : false,
                     enable_zscore_strategy: zscoreCheckbox ? zscoreCheckbox.checked : false,
                     enable_vbo_strategy: vboCheckbox ? vboCheckbox.checked : false,
-                    strategy_priority: selectedPriority
+                        strategy_priority: selectedPriority
                 };
                 
                 const response = await fetch(`/api/settings/symbol/${selectedSymbol}`, {
@@ -5254,11 +5254,11 @@
                     optgroup.label = `${symbol} (${symbolModels.length} model${symbolModels.length > 1 ? 's' : ''})`;
                     
                     symbolModels.forEach(model => {
-                        const option = document.createElement('option');
-                        option.value = model.path;
-                        const trainedDate = model.trained_at ? new Date(model.trained_at).toLocaleDateString() : 'Unknown';
-                        const accuracy = (model.accuracy * 100).toFixed(2);
-                        const modelTypeDisplay = model.model_type || 'Unknown';
+                    const option = document.createElement('option');
+                    option.value = model.path;
+                    const trainedDate = model.trained_at ? new Date(model.trained_at).toLocaleDateString() : 'Unknown';
+                    const accuracy = (model.accuracy * 100).toFixed(2);
+                    const modelTypeDisplay = model.model_type || 'Unknown';
                         
                         // Добавляем метрики для ансамбля
                         let metricsText = '';

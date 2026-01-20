@@ -4378,7 +4378,11 @@ def run_live_from_api(
                         liquidation_hunter_signals = build_liquidation_hunter_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="Liquidation Hunter signals generated")
-                        liquidation_hunter_generated = [s for s in liquidation_hunter_signals if s.action in (Action.LONG, Action.SHORT)]
+                        from bot.strategy import Action as StrategyActionLH
+                        liquidation_hunter_generated = [
+                            s for s in liquidation_hunter_signals
+                            if s.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT)
+                        ]
                         _log(f"📊 LIQUIDATION_HUNTER strategy: generated {len(liquidation_hunter_signals)} total, {len(liquidation_hunter_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if liquidation_hunter_generated:
@@ -4509,7 +4513,11 @@ def run_live_from_api(
                         vbo_signals = build_vbo_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="VBO signals generated")
-                        vbo_generated = [s for s in vbo_signals if s.action in (Action.LONG, Action.SHORT)]
+                        from bot.strategy import Action as StrategyActionVbo
+                        vbo_generated = [
+                            s for s in vbo_signals
+                            if s.action in (StrategyActionVbo.LONG, StrategyActionVbo.SHORT)
+                        ]
                         _log(f"📊 VBO strategy: generated {len(vbo_signals)} total, {len(vbo_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if vbo_generated:
