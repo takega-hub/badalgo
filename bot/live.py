@@ -248,6 +248,9 @@ def _close_conflicting_positions_for_primary(
     Логика:
     - Если на PRIMARY_SYMBOL открывается LONG, закрываем все SHORT по другим активным символам.
     - Если на PRIMARY_SYMBOL открывается SHORT, закрываем все LONG по другим активным символам.
+    
+    ВАЖНО: Эта функция вызывается ТОЛЬКО при открытии позиции на PRIMARY_SYMBOL,
+    и только после подтверждения, что позиция действительно открыта.
     """
     try:
         primary_symbol = getattr(settings, "primary_symbol", None) or getattr(settings, "symbol", None)
@@ -255,6 +258,17 @@ def _close_conflicting_positions_for_primary(
             return
 
         primary_symbol = primary_symbol.upper()
+        
+        # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Убеждаемся, что на PRIMARY_SYMBOL действительно есть открытая позиция
+        # Это предотвращает закрытие позиций, если позиция на PRIMARY_SYMBOL не открылась
+        try:
+            primary_position = _get_position(client, primary_symbol)
+            if not primary_position or primary_position.get("size", 0) <= 0:
+                print(f"[live] ⚠️ PRIMARY_SYMBOL ({primary_symbol}) position not confirmed - skipping close of opposite positions")
+                return
+        except Exception as e:
+            print(f"[live] ⚠️ Error verifying PRIMARY_SYMBOL position before closing opposite positions: {e}")
+            return
 
         # Получаем все открытые позиции по USDT
         resp = client.get_position_info(settle_coin="USDT")
@@ -3285,6 +3299,7 @@ def run_live_from_api(
     last_handled_signal: Optional[tuple] = None  # (timestamp, action)
     seen_signal_keys_cycle: set = set()  # Отслеживание сохраненных сигналов за цикл
     previous_position: Optional[Dict[str, Any]] = None  # Хранит предыдущую позицию для обнаружения закрытия
+    position_opened_time: Optional[datetime] = None  # Время открытия последней позиции (для защиты от ложных закрытий)
     
     # Устанавливаем плечо
     try:
@@ -3617,7 +3632,32 @@ def run_live_from_api(
             current_position_bias = _get_position_bias_from_position(position) if position else None
             
             # Обнаруживаем закрытие позиции (была позиция, теперь нет)
+            # ВАЖНО: Не считаем позицию закрытой, если она была открыта недавно (в течение последних 30 секунд)
+            # Это защищает от ложных срабатываний из-за задержек API
             if previous_position and not position:
+                # Проверяем, не была ли позиция открыта недавно
+                if position_opened_time:
+                    time_since_open = (datetime.now(timezone.utc) - position_opened_time).total_seconds()
+                    if time_since_open < 30:  # Позиция была открыта менее 30 секунд назад
+                        _log(f"⚠️ Position not found, but was opened {time_since_open:.1f}s ago - likely API delay, will recheck next cycle", symbol)
+                        # Перепроверяем позицию через API еще раз
+                        try:
+                            retry_position = _get_position(client, symbol)
+                            if retry_position and retry_position.get("size", 0) > 0:
+                                _log(f"✅ Position found on retry - was API delay, position is still open", symbol)
+                                position = retry_position
+                                current_position_bias = _get_position_bias_from_position(position)
+                            else:
+                                _log(f"⚠️ Position still not found on retry - will check again next cycle", symbol)
+                        except Exception as e:
+                            _log(f"⚠️ Error retrying position check: {e}", symbol)
+                        # Не считаем позицию закрытой, если она была открыта недавно
+                        if not position:
+                            # Пропускаем обработку закрытия, но обновляем previous_position
+                            previous_position = position.copy() if position else None
+                            continue  # Пропускаем остальную обработку в этом цикле
+                
+                # Позиция действительно закрыта (не была открыта недавно или прошло достаточно времени)
                 previous_bias = _get_position_bias_from_position(previous_position)
                 if previous_bias:
                     prev_entry = previous_position.get("avg_price", 0)
@@ -3633,6 +3673,7 @@ def run_live_from_api(
                     position_order_link_id.pop(symbol, None)
                     position_add_count.pop(symbol, None)
                     position_entry_price.pop(symbol, None)
+                    position_opened_time = None  # Сбрасываем время открытия
                     _clear_bot_state(symbol)
             
             # Обновляем previous_position для следующего цикла
@@ -5864,7 +5905,9 @@ def run_live_from_api(
                                         same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                                         sig = same_direction_signals[-1][1]
                                         strategy_name = same_direction_signals[-1][0]
-                                        print(f"[live] ✅ Non-priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
+                                        # ВАЖНО: Устанавливаем флаг для добавления к позиции, а не открытия новой
+                                        should_add_to_position = True
+                                        print(f"[live] ✅ Non-priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - will ADD to position")
                                     else:
                                         # Нет сигналов для усиления - не обрабатываем противоположные сигналы
                                         sig = None
@@ -6361,6 +6404,11 @@ def run_live_from_api(
             if sig.action == Action.LONG:
                 print(f"[live] 🔍 Processing LONG signal: position exists={position is not None}, position_bias={current_position_bias if position else 'None'}")
                 
+                # ВАЖНО: Если позиция уже LONG и сигнал LONG - всегда добавляем к позиции, а не открываем новую
+                if position and current_position_bias == Bias.LONG:
+                    should_add_to_position = True
+                    print(f"[live] ✅ Position already LONG - will ADD to position instead of opening new one")
+                
                 # Проверяем приоритет стратегии перед закрытием позиции
                 signal_strategy_type = get_strategy_type_from_signal(sig.reason)
                 can_close_position = True
@@ -6463,6 +6511,15 @@ def run_live_from_api(
                 if not position:
                     # Позиции нет → открываем LONG
                     # Если сигналы подтверждают друг друга, это уже учтено в выборе сигнала
+                    
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: Перепроверяем наличие позиции перед открытием новой
+                    # Это предотвращает открытие нескольких позиций по одной паре
+                    position_check = _get_position(client, symbol)
+                    if position_check and position_check.get("size", 0) > 0:
+                        _log(f"⚠️ Position already exists for {symbol} (size: {position_check.get('size', 0)}), skipping new position open", symbol)
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
                     
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем LONG, если на PRIMARY_SYMBOL есть SHORT позиция
                     _log(f"🔍 [FINAL CHECK] Checking PRIMARY_SYMBOL position before opening LONG for {symbol}...", symbol)
@@ -6659,6 +6716,8 @@ def run_live_from_api(
                         print(f"[live]   Quantity: {qty:.3f} (${desired_usd:.2f})")
                         print(f"[live]   Order Link ID: {unique_order_link_id}")
                         print("=" * 80)
+                        # Запоминаем время открытия позиции для защиты от ложных закрытий
+                        position_opened_time = datetime.now(timezone.utc)
                         
                         # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
                         if is_fresh_check:
@@ -6756,31 +6815,28 @@ def run_live_from_api(
                         except Exception as e:
                             _log(f"⚠️ Error saving LONG position to history: {e}", symbol)
 
-                        # Если открываем новую позицию по PRIMARY_SYMBOL в SHORT,
-                        # закрываем все противонаправленные (LONG) позиции по другим активным символам
-                        primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
-                        if primary_symbol_for_check and symbol.upper() == str(primary_symbol_for_check).upper():
-                            try:
-                                _close_conflicting_positions_for_primary(
-                                    client=client,
-                                    settings=current_settings,
-                                    new_primary_bias=Bias.SHORT,
-                                )
-                            except Exception as e:
-                                print(f"[live] [{symbol}] ⚠️ Error while closing opposite positions for PRIMARY_SYMBOL SHORT: {e}")
-
-                        # Если открываем новую позицию по PRIMARY_SYMBOL в LONG,
-                        # закрываем все противонаправленные (SHORT) позиции по другим активным символам
-                        primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
-                        if primary_symbol_for_check and symbol.upper() == str(primary_symbol_for_check).upper():
-                            try:
-                                _close_conflicting_positions_for_primary(
-                                    client=client,
-                                    settings=current_settings,
-                                    new_primary_bias=Bias.LONG,
-                                )
-                            except Exception as e:
-                                print(f"[live] [{symbol}] ⚠️ Error while closing opposite positions for PRIMARY_SYMBOL LONG: {e}")
+                        # ОТКЛЮЧЕНО: Автоматическое закрытие позиций при открытии на PRIMARY_SYMBOL
+                        # Эта логика вызывала каскадное закрытие позиций, когда все сигналы в одном направлении
+                        # Если нужно закрыть противонаправленные позиции, это должно делаться вручную или через другую логику
+                        # primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
+                        # if primary_symbol_for_check and symbol.upper() == str(primary_symbol_for_check).upper():
+                        #     # Перепроверяем, что позиция действительно открыта на PRIMARY_SYMBOL
+                        #     try:
+                        #         position_verify = _get_position(client, symbol)
+                        #         if position_verify and position_verify.get("size", 0) > 0:
+                        #             _log(f"✅ Position confirmed open on PRIMARY_SYMBOL ({symbol}) - closing opposite positions on other symbols", symbol)
+                        #             try:
+                        #                 _close_conflicting_positions_for_primary(
+                        #                     client=client,
+                        #                     settings=current_settings,
+                        #                     new_primary_bias=Bias.LONG,
+                        #                 )
+                        #             except Exception as e:
+                        #                 print(f"[live] [{symbol}] ⚠️ Error while closing opposite positions for PRIMARY_SYMBOL LONG: {e}")
+                        #         else:
+                        #             _log(f"⚠️ Position not confirmed on PRIMARY_SYMBOL ({symbol}) - skipping close of opposite positions", symbol)
+                        #     except Exception as e:
+                        #         _log(f"⚠️ Error verifying position on PRIMARY_SYMBOL before closing opposite positions: {e}", symbol)
                     elif resp.get("retCode") == 110072:
                         # Ошибка дубликата order_link_id - сигнал уже обработан
                         print(f"[live] [{symbol}] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
@@ -7009,6 +7065,8 @@ def run_live_from_api(
                             print(f"[live]   Quantity: {qty:.3f} (${desired_usd:.2f})")
                             print(f"[live]   Order Link ID: {unique_order_link_id_reverse}")
                             print("=" * 80)
+                            # Запоминаем время открытия позиции для защиты от ложных закрытий
+                            position_opened_time = datetime.now(timezone.utc)
                             
                             # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
                             if is_fresh_check:
@@ -7159,6 +7217,11 @@ def run_live_from_api(
             elif sig.action == Action.SHORT:
                 print(f"[live] 🔍 Processing SHORT signal: position exists={position is not None}, position_bias={current_position_bias if position else 'None'}")
                 
+                # ВАЖНО: Если позиция уже SHORT и сигнал SHORT - всегда добавляем к позиции, а не открываем новую
+                if position and current_position_bias == Bias.SHORT:
+                    should_add_to_position = True
+                    print(f"[live] ✅ Position already SHORT - will ADD to position instead of opening new one")
+                
                 # Проверяем приоритет стратегии перед закрытием позиции
                 signal_strategy_type = get_strategy_type_from_signal(sig.reason)
                 can_close_position = True
@@ -7260,6 +7323,15 @@ def run_live_from_api(
                 
                 if not position:
                     # Позиции нет → открываем SHORT
+                    
+                    # КРИТИЧЕСКАЯ ПРОВЕРКА: Перепроверяем наличие позиции перед открытием новой
+                    # Это предотвращает открытие нескольких позиций по одной паре
+                    position_check = _get_position(client, symbol)
+                    if position_check and position_check.get("size", 0) > 0:
+                        _log(f"⚠️ Position already exists for {symbol} (size: {position_check.get('size', 0)}), skipping new position open", symbol)
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
                     
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем SHORT, если на PRIMARY_SYMBOL есть LONG позиция
                     _log(f"🔍 [FINAL CHECK] Checking PRIMARY_SYMBOL position before opening SHORT for {symbol}...", symbol)
@@ -7456,6 +7528,8 @@ def run_live_from_api(
                         print(f"[live]   Quantity: {qty:.3f} (${desired_usd:.2f})")
                         print(f"[live]   Order Link ID: {unique_order_link_id}")
                         print("=" * 80)
+                        # Запоминаем время открытия позиции для защиты от ложных закрытий
+                        position_opened_time = datetime.now(timezone.utc)
                         
                         # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
                         if is_fresh_check:
@@ -7551,6 +7625,29 @@ def run_live_from_api(
                             _log(f"💾 Saved {expected_side.upper()} position to history: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason})", symbol)
                         except Exception as e:
                             _log(f"⚠️ Error saving SHORT position to history: {e}", symbol)
+                        
+                        # ОТКЛЮЧЕНО: Автоматическое закрытие позиций при открытии на PRIMARY_SYMBOL
+                        # Эта логика вызывала каскадное закрытие позиций, когда все сигналы в одном направлении
+                        # Если нужно закрыть противонаправленные позиции, это должно делаться вручную или через другую логику
+                        # primary_symbol_for_check = getattr(current_settings, "primary_symbol", None) or getattr(current_settings, "symbol", None)
+                        # if primary_symbol_for_check and symbol.upper() == str(primary_symbol_for_check).upper():
+                        #     # Перепроверяем, что позиция действительно открыта на PRIMARY_SYMBOL
+                        #     try:
+                        #         position_verify = _get_position(client, symbol)
+                        #         if position_verify and position_verify.get("size", 0) > 0:
+                        #             _log(f"✅ Position confirmed open on PRIMARY_SYMBOL ({symbol}) - closing opposite LONG positions on other symbols", symbol)
+                        #             try:
+                        #                 _close_conflicting_positions_for_primary(
+                        #                     client=client,
+                        #                     settings=current_settings,
+                        #                     new_primary_bias=Bias.SHORT,
+                        #                 )
+                        #             except Exception as e:
+                        #                 print(f"[live] [{symbol}] ⚠️ Error while closing opposite positions for PRIMARY_SYMBOL SHORT: {e}")
+                        #         else:
+                        #             _log(f"⚠️ Position not confirmed on PRIMARY_SYMBOL ({symbol}) - skipping close of opposite positions", symbol)
+                        #     except Exception as e:
+                        #         _log(f"⚠️ Error verifying position on PRIMARY_SYMBOL before closing opposite positions: {e}", symbol)
                     elif resp.get("retCode") == 110072:
                         # Ошибка дубликата order_link_id - сигнал уже обработан
                         print(f"[live] [{symbol}] ⚠️ OrderLinkID duplicate - signal already processed: {signal_id}")
@@ -7782,6 +7879,8 @@ def run_live_from_api(
                             print(f"[live]   Quantity: {qty:.3f} (${desired_usd:.2f})")
                             print(f"[live]   Order Link ID: {unique_order_link_id}")
                             print("=" * 80)
+                            # Запоминаем время открытия позиции для защиты от ложных закрытий
+                            position_opened_time = datetime.now(timezone.utc)
                             
                             # Отмечаем, что обработан свежий сигнал (для оптимизации интервала ожидания)
                             if is_fresh_check:
