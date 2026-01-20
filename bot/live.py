@@ -61,6 +61,7 @@ from bot.amt_orderflow_strategy import (
     build_volume_profile_from_ohlcv,
     _parse_trades,
     _compute_cvd_metrics,
+    _resolve_symbol_settings,
 )
 
 # Импорт для обработки ошибок Bybit API
@@ -4761,23 +4762,20 @@ def run_live_from_api(
                     current_price = float(df_ready["close"].iloc[-1])
 
                     # Конфиги для orderflow и профиля
-                    abs_cfg = AbsorptionConfig(
-                        lookback_seconds=current_settings.strategy.amt_of_lookback_seconds,
-                        min_total_volume=current_settings.strategy.amt_of_min_total_volume,
-                        min_buy_sell_ratio=current_settings.strategy.amt_of_min_buy_sell_ratio,
-                        max_price_drift_pct=current_settings.strategy.amt_of_max_price_drift_pct,
-                        min_cvd_delta=current_settings.strategy.amt_of_min_cvd_delta,
-                    )
-                    vp_cfg = VolumeProfileConfig(
-                        price_step=current_settings.strategy.amt_of_price_step,
-                        value_area_pct=current_settings.strategy.amt_of_value_area_pct,
-                        session_start_utc=None,
-                        session_end_utc=None,
-                    )
+                    symbol_settings = _resolve_symbol_settings(symbol)
+                    abs_cfg = symbol_settings.absorption
+                    vp_cfg = symbol_settings.volume_profile
+
+                    # Allow runtime overrides for select parameters while keeping per-symbol thresholds
+                    abs_cfg.lookback_seconds = current_settings.strategy.amt_of_lookback_seconds
+                    abs_cfg.min_buy_sell_ratio = current_settings.strategy.amt_of_min_buy_sell_ratio
+                    abs_cfg.max_price_drift_pct = current_settings.strategy.amt_of_max_price_drift_pct
+                    vp_cfg.value_area_pct = current_settings.strategy.amt_of_value_area_pct
 
                     _log(
-                        f"🔍 AMT_OF: Checking AMT signals (lookback={abs_cfg.lookback_seconds}s, "
-                        f"min_vol={abs_cfg.min_total_volume}, min_cvd={abs_cfg.min_cvd_delta}, "
+                        "🔍 AMT_OF: Checking AMT signals "
+                        f"(lookback={abs_cfg.lookback_seconds}s, "
+                        f"min_vol={abs_cfg.min_total_volume:,.0f}, min_cvd={abs_cfg.min_cvd_delta:,.0f}, "
                         f"step={vp_cfg.price_step}, VA={vp_cfg.value_area_pct*100:.0f}%)",
                         symbol,
                     )
