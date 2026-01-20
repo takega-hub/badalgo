@@ -4144,7 +4144,11 @@ def run_live_from_api(
             # Flat стратегия
             if symbol_strategy_settings.enable_flat_strategy:
                 flat_signals = build_signals(df_ready, current_settings.strategy, use_momentum=False, use_liquidity=False)
-                flat_generated = [s for s in flat_signals if s.reason.startswith("range_") and s.action in (Action.LONG, Action.SHORT)]
+                from bot.strategy import Action as StrategyActionFlat
+                flat_generated = [
+                    s for s in flat_signals
+                    if s.reason.startswith("range_") and s.action in (StrategyActionFlat.LONG, StrategyActionFlat.SHORT)
+                ]
                 strategy_name = "FLAT"
                 _log(f"📊 {strategy_name} strategy: generated {len(flat_signals)} total, {len(flat_generated)} actionable (LONG/SHORT)", symbol)
                 
@@ -4158,7 +4162,7 @@ def run_live_from_api(
                 elif len(flat_signals) > 0:
                     # Убираем логи о том, что нет LONG/SHORT сигналов - это нормальная ситуация
                     # Показываем примеры HOLD сигналов для диагностики
-                    hold_signals = [s for s in flat_signals if s.reason.startswith("range_") and s.action == Action.HOLD]
+                    hold_signals = [s for s in flat_signals if s.reason.startswith("range_") and s.action == StrategyActionFlat.HOLD]
                     if hold_signals:
                         _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
                 else:
