@@ -62,20 +62,6 @@ class ICTStrategy:
             (time(14, 0), time(15, 0)), # NY PM SB
         ]
     
-    def _ensure_tz_compat(self, dt: pd.Timestamp, reference_index: pd.Index) -> pd.Timestamp:
-        """Синхронизирует наличие временной зоны у Timestamp с индексом DataFrame."""
-        index_has_tz = reference_index.tz is not None
-        dt_has_tz = dt.tz is not None
-
-        if index_has_tz and not dt_has_tz:
-            # Присваиваем TZ индекса (обычно UTC)
-            return dt.tz_localize(reference_index.tz if reference_index.tz else 'UTC')
-        if not index_has_tz and dt_has_tz:
-            # Убираем TZ, если индекс naive
-            return dt.tz_localize(None)
-        return dt
-    
-    
     def is_trading_session(self, timestamp: pd.Timestamp) -> bool:
         """
         Проверяет, находится ли время в активном Silver Bullet окне (NY local time).
@@ -287,7 +273,18 @@ class ICTStrategy:
                 continue
             
             for idx, row in sess_data.iterrows():
-                bar_idx = df.index.get_loc(idx)  # индекс в оригинальном df
+                # Ensure idx is compatible with df.index for get_loc
+                search_idx = idx
+                if df.index.tzinfo is None and idx.tzinfo is not None:
+                    search_idx = idx.tz_localize(None)
+                elif df.index.tzinfo is not None and idx.tzinfo is None:
+                    search_idx = idx.tz_localize('UTC').tz_convert(df.index.tzinfo)
+                
+                try:
+                    bar_idx = df.index.get_loc(search_idx)  # индекс в оригинальном df
+                except (KeyError, TypeError):
+                    # Fallback if exact match fails due to minor tz/format differences
+                    continue
                 
                 # Sweep выше high предыдущей сессии
                 if prev_high > 0 and row["high"] > prev_high * 0.999:
@@ -415,12 +412,20 @@ class ICTStrategy:
         """
         Основной метод получения сигналов ICT Silver Bullet.
         Генерирует сигналы для всех свечей в истории.
+        
+        Args:
+            df: DataFrame с данными OHLCV
+            symbol: Торговая пара для логирования
+            
+        Returns:
+            Список сигналов ICT
         """
         if len(df) < 200:  # Минимум для индикаторов
             return []
         
         signals = []
         
+        # Рассчитываем индикаторы один раз для всего DataFrame
         # 1. Williams Alligator
         jaw, teeth, lips = self.calculate_williams_alligator(df)
         
@@ -428,129 +433,317 @@ class ICTStrategy:
         if 'atr' not in df.columns:
             try:
                 import pandas_ta as ta
-                df['atr'] = ta.atr(high=df['high'], low=df['low'], close=df['close'], length=14)
+                atr = ta.atr(high=df['high'], low=df['low'], close=df['close'], length=14)
+                df['atr'] = atr
             except:
+                # Простой расчет ATR если pandas_ta недоступен
                 high_low = df['high'] - df['low']
                 high_close = np.abs(df['high'] - df['close'].shift())
                 low_close = np.abs(df['low'] - df['close'].shift())
                 tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df['atr'] = tr.rolling(window=14).mean()
         
-        # 3. Поиск снятия ликвидности
-        lookback_days = max(getattr(self.params, 'ict_liquidity_lookback_days', 1), 5)
+        # 3. Ищем все снятия ликвидности за весь период
+        lookback_days = getattr(self.params, 'ict_liquidity_lookback_days', 1)
+        # Увеличиваем lookback_days для поиска большего количества снятий ликвидности
+        lookback_days = max(lookback_days, 5)
         liquidity_sweeps = self.find_liquidity_sweeps(df, lookback_days=lookback_days)
         
+        # Диагностика: логируем количество найденных снятий ликвидности
         if len(liquidity_sweeps) == 0:
+            print(f"[ICT] ⚠️  Не найдено снятий ликвидности за последние {lookback_days} дней")
+            print(f"[ICT] 💡 Пробуем альтернативный метод поиска ликвидности...")
+            # Альтернативный метод: ищем свечи, которые выходят за пределы предыдущих N свечей
             liquidity_sweeps = self.find_liquidity_sweeps_alternative(df, lookback_bars=50)
+            # Убрали избыточное логирование - слишком много сообщений
+            # if len(liquidity_sweeps) > 0:
+            #     print(f"[ICT] ✅ Альтернативным методом найдено {len(liquidity_sweeps)} снятий ликвидности")
+        # else:
+        #     print(f"[ICT] ✅ Найдено {len(liquidity_sweeps)} снятий ликвидности")
         
-        # 4. Поиск FVG зон
+        # 4. Ищем все FVG после снятия ликвидности
         fvg_zones = self.find_fvg(df, liquidity_sweeps)
+        
         if not fvg_zones:
-            return []
-            
+            # Убрали избыточное логирование
+            # print(f"[ICT] ⚠️  Не найдено FVG зон после снятий ликвидности")
+            return []  # Нет FVG
+        # else:
+        #     print(f"[ICT] ✅ Найдено {len(fvg_zones)} FVG зон")
+        
+        # Подготовка словаря ликвидности по bar_index для MSS / Premium/Discount фильтров
         liq_by_bar = {liq.bar_index: liq for liq in liquidity_sweeps}
         
-        # 5. Основной цикл по свечам
+        # 5. Проходим по всем свечам и генерируем сигналы
+        # Начинаем с 200 для индикаторов
+        candles_in_session = 0
+        candles_with_trend = 0
+        fvg_retests_checked = 0
+        
         for i in range(200, len(df)):
             current_row = df.iloc[i]
             current_price = current_row['close']
             current_atr = df['atr'].iloc[i] if pd.notna(df['atr'].iloc[i]) else current_price * 0.02
             
-            # Получаем и синхронизируем timestamp
-            current_ts = current_row.name if isinstance(df.index, pd.DatetimeIndex) else current_row.get('timestamp')
+            # Получаем timestamp текущей свечи
+            current_ts = current_row.get('timestamp', df.index[i])
             if not isinstance(current_ts, pd.Timestamp):
                 current_ts = pd.to_datetime(current_ts)
             
-            # Проверка торговой сессии
+            # Проверяем, находимся ли в одном из Silver Bullet окон (NY local time)
             if not self.is_trading_session(current_ts):
-                continue
+                continue  # Пропускаем свечи вне Silver Bullet окон
             
-            # Проверка Аллигатора
+            candles_in_session += 1
+            
+            # Проверяем, раскрыт ли аллигатор на текущей свече
             is_expanded, alligator_direction = self.is_alligator_expanded(jaw, teeth, lips, i)
-            if not is_expanded:
-                continue
             
-            # Обновление статуса митигации FVG
+            if not is_expanded:
+                continue  # Аллигатор не раскрыт - нет тренда
+            
+            candles_with_trend += 1
+            
+            # Перед проверкой FVG помечаем митигированные зоны как неактивные
             for fvg in fvg_zones:
-                if not fvg.active: continue
+                if not fvg.active:
+                    continue
+                # Зона считается полностью митигированной, если минимум и максимум цены
+                # внутри диапазона [fvg.lower, fvg.upper] встречались в истории после её формирования
                 if i > fvg.bar_index + 1:
                     lows_since = df['low'].iloc[fvg.bar_index + 1 : i + 1].min()
                     highs_since = df['high'].iloc[fvg.bar_index + 1 : i + 1].max()
                     if lows_since <= fvg.lower and highs_since >= fvg.upper:
                         fvg.active = False
 
+            # Проверяем все FVG зоны на ретест
+            # Используем set для отслеживания уже обработанных FVG на этой свече
             processed_fvg_ids = set()
+            
             for fvg in fvg_zones:
-                if not fvg.active or fvg.bar_index >= i:
-                    continue
+                if not fvg.active:
+                    continue  # Пропускаем митигированные FVG
                 
-                # Проверка возраста FVG
-                max_age = max(getattr(self.params, 'ict_fvg_max_age_bars', 20), 50)
-                if (i - fvg.bar_index) > max_age:
-                    continue
-
-                # Проверка MSS
+                # Проверка MSS (Market Structure Shift) между снятием ликвидности и FVG
                 liq = liq_by_bar.get(fvg.liquidity_bar_index)
                 if liq is not None:
-                    prior_slice = df.iloc[max(0, liq.bar_index - 20):liq.bar_index]
+                    # Простая MSS: после снятия ликвидности цена должна пробить локальный свинг
+                    lookback = 20
+                    prior_start = max(0, liq.bar_index - lookback)
+                    prior_slice = df.iloc[prior_start:liq.bar_index]
                     mid_slice = df.iloc[liq.bar_index + 1 : fvg.bar_index + 1]
                     if not prior_slice.empty and not mid_slice.empty:
-                        if fvg.direction == "bullish" and mid_slice["close"].max() <= prior_slice["high"].max():
-                            continue
-                        elif fvg.direction == "bearish" and mid_slice["close"].min() >= prior_slice["low"].min():
-                            continue
-
-                # Фильтр направления
-                if (fvg.direction == "bullish" and alligator_direction == "bearish") or \
-                   (fvg.direction == "bearish" and alligator_direction == "bullish"):
+                        if fvg.direction == "bullish":
+                            # Для бычьего сетапа: цена после лику должна пробить предыдущий high
+                            recent_high = prior_slice["high"].max()
+                            if mid_slice["close"].max() <= recent_high:
+                                continue
+                        elif fvg.direction == "bearish":
+                            # Для медвежьего сетапа: цена после лику должна пробить предыдущий low
+                            recent_low = prior_slice["low"].min()
+                            if mid_slice["close"].min() >= recent_low:
+                                continue
+                # Проверяем возраст FVG (не старше max_age свечей)
+                max_age = getattr(self.params, 'ict_fvg_max_age_bars', 20)
+                # Увеличиваем max_age для более старых FVG (до 50 баров)
+                max_age = max(max_age, 50)
+                if (i - fvg.bar_index) > max_age:
                     continue
-
-                # Уникальность сигнала на текущей свече
-                fvg_id = (fvg.bar_index, fvg.direction)
-                if fvg_id in processed_fvg_ids: continue
+                
+                # FVG должен быть создан до текущей свечи
+                if fvg.bar_index >= i:
+                    continue
+                
+                # Проверяем направление аллигатора и FVG (но делаем это менее строго)
+                # Разрешаем вход, если направление совпадает или аллигатор нейтрален
+                if fvg.direction == "bullish" and alligator_direction == "bearish":
+                    continue  # Только блокируем противоположное направление
+                if fvg.direction == "bearish" and alligator_direction == "bullish":
+                    continue  # Только блокируем противоположное направление
+                
+                # Создаем уникальный ID для FVG (чтобы избежать дубликатов)
+                fvg_id = (fvg.bar_index, fvg.direction, round(fvg.lower, 2), round(fvg.upper, 2))
+                if fvg_id in processed_fvg_ids:
+                    continue  # Пропускаем уже обработанный FVG
+                
                 processed_fvg_ids.add(fvg_id)
-
-                # Размер FVG
-                if (fvg.upper - fvg.lower) < (current_atr * 0.2):
-                    continue
-
-                # Проверка ретеста
-                zone_exp = (fvg.upper - fvg.lower) * 0.15
+                fvg_retests_checked += 1
+                
+                # ФИЛЬТР КАЧЕСТВА 1: Проверяем минимальный размер FVG (слишком маленькие могут быть ложными)
+                fvg_size = fvg.upper - fvg.lower
+                min_fvg_size = current_atr * 0.2  # Минимум 20% от ATR (ослаблено с 30%)
+                if fvg_size < min_fvg_size:
+                    continue  # Пропускаем слишком маленькие FVG
+                
+                # ФИЛЬТР КАЧЕСТВА 2: Проверяем, что цена действительно "вернулась" в FVG
+                # Для бычьего FVG: цена должна была быть выше зоны, а затем вернулась
+                # Для медвежьего FVG: цена должна была быть ниже зоны, а затем вернулась
+                # Делаем проверку менее строгой - разрешаем сигналы даже если цена не сильно вышла за зону
+                if fvg.bar_index < i and (i - fvg.bar_index) > 2:  # Только если прошло минимум 2 свечи
+                    # Проверяем движение после создания FVG
+                    price_after_fvg = df['high'].iloc[fvg.bar_index+1:i+1].max() if fvg.direction == "bullish" else df['low'].iloc[fvg.bar_index+1:i+1].min()
+                    
+                    if fvg.direction == "bullish":
+                        # Для бычьего FVG: цена должна была быть выше зоны (ослаблено - допуск 0.5%)
+                        if price_after_fvg < fvg.upper * 1.005:  # Допуск 0.5% (ослаблено с 1%)
+                            # Не блокируем полностью, но это слабый сигнал - пропускаем только если цена вообще не вышла
+                            if price_after_fvg < fvg.upper * 0.998:  # Если цена даже не достигла зоны
+                                continue
+                    else:
+                        # Для медвежьего FVG: цена должна была быть ниже зоны (ослаблено - допуск 0.5%)
+                        if price_after_fvg > fvg.lower * 0.995:  # Допуск 0.5% (ослаблено с 1%)
+                            # Не блокируем полностью, но это слабый сигнал - пропускаем только если цена вообще не вышла
+                            if price_after_fvg > fvg.lower * 1.002:  # Если цена даже не достигла зоны
+                                continue
+                
+                # Проверяем, находится ли цена в зоне FVG (ретест)
+                # Используем более мягкое условие - цена может касаться зоны или быть внутри
                 if fvg.direction == "bullish":
-                    if (fvg.lower - zone_exp) <= current_price <= (fvg.upper + zone_exp):
-                        # Фильтр Discount
-                        if liq and (current_price - liq.daily_low) / (liq.daily_high - liq.daily_low + 1e-9) > 0.5:
-                            continue
+                    # Бычий FVG: вход если цена в зоне или касается её
+                    # Расширяем зону на небольшой процент для более гибкого входа
+                    zone_expansion = (fvg.upper - fvg.lower) * 0.15  # 15% расширение зоны (увеличено)
+                    zone_lower = fvg.lower - zone_expansion
+                    zone_upper = fvg.upper + zone_expansion
+                    
+                    # Проверяем, находится ли цена в зоне FVG
+                    if zone_lower <= current_price <= zone_upper:
+                        # Stop Loss за экстремум свечи, создавшей FVG
+                        if fvg.bar_index > 0:
+                            sl_price = df['low'].iloc[fvg.bar_index - 1]
+                        else:
+                            atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
+                            sl_price = fvg.lower - current_atr * atr_mult
                         
-                        sl_price = df['low'].iloc[fvg.bar_index - 1] if fvg.bar_index > 0 else current_price - current_atr * 2
-                        # Валидация SL (7-10% от маржи при 10х = 0.7-1% от цены)
-                        sl_dist = (current_price - sl_price) / current_price
-                        sl_price = current_price * (1 - np.clip(sl_dist, 0.007, 0.01))
+                        # Проверяем, что SL не выше цены входа
+                        if sl_price >= current_price:
+                            atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
+                            sl_price = current_price - current_atr * atr_mult
                         
-                        tp_price = current_price + (current_price - sl_price) * 3.0
+                        # ВАЛИДАЦИЯ SL: Проверяем, что SL соответствует требованиям (7-10% от маржи)
+                        # Предполагаем leverage = 10x (можно получить из params если доступно)
+                        leverage = getattr(self.params, 'leverage', 10)
+                        min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+                        max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+                        min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # 0.7% от цены при 10x
+                        max_sl_pct_from_price = max_sl_pct_from_margin / leverage  # 1.0% от цены при 10x
                         
-                        signals.append(Signal(
-                            timestamp=current_ts, action=Action.LONG, price=current_price,
-                            reason=f"ict_sb_long_retest_sl_{sl_price:.2f}_tp_{tp_price:.2f}"
-                        ))
+                        sl_distance_pct = (current_price - sl_price) / current_price
+                        
+                        # Если SL слишком близко (< 7% от маржи), используем минимальный SL
+                        if sl_distance_pct < min_sl_pct_from_price:
+                            sl_price = current_price * (1 - min_sl_pct_from_price)
+                            sl_distance_pct = min_sl_pct_from_price
+                        # Если SL слишком далеко (> 10% от маржи), используем максимальный SL
+                        elif sl_distance_pct > max_sl_pct_from_price:
+                            sl_price = current_price * (1 - max_sl_pct_from_price)
+                            sl_distance_pct = max_sl_pct_from_price
+                        
+                        # Take Profit: используем улучшенный R:R (3.0 вместо 2.0 для лучших результатов)
+                        risk = current_price - sl_price
+                        if risk > 0:
+                            # Увеличиваем R:R до 3.0 для ICT стратегии (лучше для FVG ретестов)
+                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)
+                            if rr_ratio < 3.0:
+                                rr_ratio = 3.0  # Минимум 3.0 для ICT
+                            tp_price = current_price + risk * rr_ratio
 
+                            # Premium/Discount фильтр: входим в LONG только в discount‑зоне
+                            if liq is not None:
+                                rng_high = liq.daily_high
+                                rng_low = liq.daily_low
+                                if rng_high > rng_low:
+                                    rel = (current_price - rng_low) / (rng_high - rng_low)
+                                    if rel > 0.5:  # выше 0.5 (premium) — пропускаем LONG
+                                        continue
+                            
+                            # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный риск (0.7% от цены = 7% от маржи)
+                            if risk < min_sl_pct_from_price * current_price:
+                                continue  # Слишком маленький риск - пропускаем
+                            
+                            signals.append(Signal(
+                                timestamp=current_ts,
+                                action=Action.LONG,
+                                reason=f"ict_silver_bullet_long_fvg_reteest_sl_{sl_price:.2f}_tp_{tp_price:.2f}",
+                                price=current_price
+                            ))
+                
                 elif fvg.direction == "bearish":
-                    if (fvg.lower - zone_exp) <= current_price <= (fvg.upper + zone_exp):
-                        # Фильтр Premium
-                        if liq and (current_price - liq.daily_low) / (liq.daily_high - liq.daily_low + 1e-9) < 0.5:
-                            continue
-
-                        sl_price = df['high'].iloc[fvg.bar_index - 1] if fvg.bar_index > 0 else current_price + current_atr * 2
-                        sl_dist = (sl_price - current_price) / current_price
-                        sl_price = current_price * (1 + np.clip(sl_dist, 0.007, 0.01))
+                    # Медвежий FVG: вход если цена в зоне или касается её
+                    # Расширяем зону на небольшой процент для более гибкого входа
+                    zone_expansion = (fvg.upper - fvg.lower) * 0.15  # 15% расширение зоны (увеличено)
+                    zone_lower = fvg.lower - zone_expansion
+                    zone_upper = fvg.upper + zone_expansion
+                    
+                    # Проверяем, находится ли цена в зоне FVG
+                    if zone_lower <= current_price <= zone_upper:
+                        # Stop Loss за экстремум свечи, создавшей FVG
+                        if fvg.bar_index > 0:
+                            sl_price = df['high'].iloc[fvg.bar_index - 1]
+                        else:
+                            atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
+                            sl_price = fvg.upper + current_atr * atr_mult
                         
-                        tp_price = current_price - (sl_price - current_price) * 3.0
+                        # Проверяем, что SL не ниже цены входа
+                        if sl_price <= current_price:
+                            atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
+                            sl_price = current_price + current_atr * atr_mult
                         
-                        signals.append(Signal(
-                            timestamp=current_ts, action=Action.SHORT, price=current_price,
-                            reason=f"ict_sb_short_retest_sl_{sl_price:.2f}_tp_{tp_price:.2f}"
-                        ))
+                        # ВАЛИДАЦИЯ SL: Проверяем, что SL соответствует требованиям (7-10% от маржи)
+                        # Предполагаем leverage = 10x (можно получить из params если доступно)
+                        leverage = getattr(self.params, 'leverage', 10)
+                        min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
+                        max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
+                        min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # 0.7% от цены при 10x
+                        max_sl_pct_from_price = max_sl_pct_from_margin / leverage  # 1.0% от цены при 10x
+                        
+                        sl_distance_pct = (sl_price - current_price) / current_price
+                        
+                        # Если SL слишком близко (< 7% от маржи), используем минимальный SL
+                        if sl_distance_pct < min_sl_pct_from_price:
+                            sl_price = current_price * (1 + min_sl_pct_from_price)
+                            sl_distance_pct = min_sl_pct_from_price
+                        # Если SL слишком далеко (> 10% от маржи), используем максимальный SL
+                        elif sl_distance_pct > max_sl_pct_from_price:
+                            sl_price = current_price * (1 + max_sl_pct_from_price)
+                            sl_distance_pct = max_sl_pct_from_price
+                        
+                        # Take Profit: используем улучшенный R:R (3.0 вместо 2.0 для лучших результатов)
+                        risk = sl_price - current_price
+                        if risk > 0:
+                            # Увеличиваем R:R до 3.0 для ICT стратегии (лучше для FVG ретестов)
+                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)
+                            if rr_ratio < 3.0:
+                                rr_ratio = 3.0  # Минимум 3.0 для ICT
+                            tp_price = current_price - risk * rr_ratio
 
+                            # Premium/Discount фильтр: входим в SHORT только в premium‑зоне
+                            if liq is not None:
+                                rng_high = liq.daily_high
+                                rng_low = liq.daily_low
+                                if rng_high > rng_low:
+                                    rel = (current_price - rng_low) / (rng_high - rng_low)
+                                    if rel < 0.5:  # ниже 0.5 (discount) — пропускаем SHORT
+                                        continue
+                            
+                            # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный риск (0.7% от цены = 7% от маржи)
+                            if risk < min_sl_pct_from_price * current_price:
+                                continue  # Слишком маленький риск - пропускаем
+                            
+                            signals.append(Signal(
+                                timestamp=current_ts,
+                                action=Action.SHORT,
+                                reason=f"ict_silver_bullet_short_fvg_reteest_sl_{sl_price:.2f}_tp_{tp_price:.2f}",
+                                price=current_price
+                            ))
+        
+        # Убрали избыточное логирование статистики - слишком много сообщений
+        # Диагностика: выводим статистику
+        # print(f"[ICT] 📊 Статистика обработки:")
+        # print(f"   - Свечей в торговых сессиях: {candles_in_session}")
+        # print(f"   - Свечей с раскрытым аллигатором: {candles_with_trend}")
+        # print(f"   - Проверок ретеста FVG: {fvg_retests_checked}")
+        # print(f"   - Сгенерировано сигналов: {len(signals)}")
+        
         return signals
 
 
