@@ -5243,7 +5243,8 @@ def run_live_from_api(
                                 traceback.print_exc()
                 
                 for sig in ml_signals_only:
-                    if sig != ml_sig and sig.action in (Action.LONG, Action.SHORT):  # Не сохраняем дубликат и только LONG/SHORT
+                    # Используем MlAction (alias для ML‑сигналов), а не общий Action
+                    if sig != ml_sig and sig.action in (MlAction.LONG, MlAction.SHORT):  # Не сохраняем дубликат и только LONG/SHORT
                         # Проверяем, что сигнал не был отфильтрован (не должен быть в ml_filtered)
                         # Сигналы в ml_signals_only уже прошли фильтрацию, но для безопасности проверяем еще раз
                         should_skip = False
