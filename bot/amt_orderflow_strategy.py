@@ -1,9 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 import numpy as np
 import pandas as pd
+import logging
 
 from bot.exchange.bybit_client import BybitClient
 from bot.strategy import Signal, Action
@@ -506,8 +507,8 @@ def generate_amt_signals(
     symbol: str,
     current_price: float,
     df_ohlcv: pd.DataFrame,
-    vp_config: VolumeProfileConfig,
-    abs_config: AbsorptionConfig,
+    vp_config: Optional[VolumeProfileConfig] = None,
+    abs_config: Optional[AbsorptionConfig] = None,
     delta_aggr_mult: float = 2.5,
 ) -> List[Signal]:
     """
@@ -519,10 +520,13 @@ def generate_amt_signals(
     """
     signals: List[Signal] = []
 
+    # Resolve per-symbol configs
+    resolved_vp_config, resolved_abs_config = _resolve_amt_configs(symbol, vp_config, abs_config)
+
     # --- Volume Profile ---
     vp = None
     try:
-        vp = build_volume_profile_from_ohlcv(df_ohlcv, vp_config)
+        vp = build_volume_profile_from_ohlcv(df_ohlcv, resolved_vp_config)
     except Exception:
         vp = None
 
@@ -536,12 +540,39 @@ def generate_amt_signals(
     trades = client.get_recent_trades(symbol, limit=500)
     trades_df = _parse_trades(trades)
 
-    cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=abs_config.lookback_seconds)
+    lookback_seconds = resolved_abs_config.lookback_seconds
+    cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=lookback_seconds)
     delta_velocity = None
     avg_abs_delta = None
     if cvd_metrics:
         delta_velocity = cvd_metrics["delta_velocity"]
         avg_abs_delta = cvd_metrics["avg_abs_delta"]
+
+    # Diagnostics for volume and delta within the absorption window
+    if not trades_df.empty:
+        now_utc = datetime.now(timezone.utc)
+        window_start = now_utc - pd.Timedelta(seconds=lookback_seconds)
+        window_df = trades_df[trades_df["time"] >= window_start]
+        if not window_df.empty:
+            buy_volume = float(window_df.loc[window_df["side"].str.upper() == "BUY", "qty"].sum())
+            sell_volume = float(window_df.loc[window_df["side"].str.upper() == "SELL", "qty"].sum())
+            total_volume = buy_volume + sell_volume
+            cvd_delta_window = buy_volume - sell_volume
+            logger.debug(
+                "AMT diagnostics %s: ΔCVD=%0.2f, total_volume=%0.2f over last %ss",
+                symbol,
+                cvd_delta_window,
+                total_volume,
+                lookback_seconds,
+            )
+        else:
+            logger.debug(
+                "AMT diagnostics %s: no trades in the last %ss window",
+                symbol,
+                lookback_seconds,
+            )
+    else:
+        logger.debug("AMT diagnostics %s: trade feed empty", symbol)
 
     # --- Breakout / Squeeze сценарии ---
     if vp and cvd_metrics and avg_abs_delta and avg_abs_delta > 0:
@@ -601,10 +632,10 @@ def generate_amt_signals(
 
     # --- Absorption Squeeze (существующие сценарии) ---
     try:
-        short_abs = detect_absorption_squeeze_short(client, symbol, current_price, abs_config)
+        short_abs = detect_absorption_squeeze_short(client, symbol, current_price, resolved_abs_config)
         if short_abs:
             signals.append(short_abs)
-        long_abs = detect_absorption_squeeze_long(client, symbol, current_price, abs_config)
+        long_abs = detect_absorption_squeeze_long(client, symbol, current_price, resolved_abs_config)
         if long_abs:
             signals.append(long_abs)
     except Exception:
@@ -623,4 +654,55 @@ __all__ = [
     "LhOrderflowConfig",
     "generate_lh_orderflow_signals",
 ]
+logger = logging.getLogger(__name__)
 
+
+DEFAULT_VOLUME_PROFILE_PRICE_STEP = 1.0
+
+
+AMT_CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "BTCUSDT": {
+        "absorption": AbsorptionConfig(min_total_volume=80_000.0, min_cvd_delta=35_000.0),
+        "volume_profile": VolumeProfileConfig(price_step=10.0),
+    },
+    "ETHUSDT": {
+        "absorption": AbsorptionConfig(min_total_volume=30_000.0, min_cvd_delta=12_000.0),
+        "volume_profile": VolumeProfileConfig(price_step=1.0),
+    },
+    "SOLUSDT": {
+        "absorption": AbsorptionConfig(min_total_volume=12_000.0, min_cvd_delta=5_000.0),
+        "volume_profile": VolumeProfileConfig(price_step=0.1),
+    },
+}
+
+
+def _resolve_amt_configs(
+    symbol: str,
+    vp_config: Optional[VolumeProfileConfig],
+    abs_config: Optional[AbsorptionConfig],
+) -> tuple[VolumeProfileConfig, AbsorptionConfig]:
+    symbol_key = (symbol or "").upper()
+    registry_entry = AMT_CONFIG_REGISTRY.get(symbol_key)
+
+    resolved_vp = vp_config
+    resolved_abs = abs_config
+
+    if registry_entry:
+        if resolved_vp is None and registry_entry.get("volume_profile") is not None:
+            resolved_vp = replace(registry_entry["volume_profile"])
+        if resolved_abs is None and registry_entry.get("absorption") is not None:
+            resolved_abs = replace(registry_entry["absorption"])
+
+    if resolved_abs is None:
+        resolved_abs = AbsorptionConfig()
+        logger.debug("AMT config fallback: using default absorption settings for %s", symbol_key or "<unknown>")
+
+    if resolved_vp is None:
+        resolved_vp = VolumeProfileConfig(price_step=DEFAULT_VOLUME_PROFILE_PRICE_STEP)
+        logger.debug(
+            "AMT config fallback: using default volume profile price_step=%.4f for %s",
+            DEFAULT_VOLUME_PROFILE_PRICE_STEP,
+            symbol_key or "<unknown>",
+        )
+
+    return resolved_vp, resolved_abs
