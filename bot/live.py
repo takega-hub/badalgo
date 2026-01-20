@@ -5331,8 +5331,10 @@ def run_live_from_api(
                         except Exception as e:
                             _log(f"⚠️ Failed to save additional MOMENTUM signal to history: {e}", symbol)
                 
+                # Сохраняем все сигналы от LIQUIDITY стратегии
+                from bot.liquidation_hunter_strategy import Action as StrategyActionLH  # локальный alias
                 for sig in liquidity_signals_only:
-                    if sig.action in (Action.LONG, Action.SHORT):
+                    if sig.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == liquidity_sig_latest and liquidity_sig_latest:
                             continue
@@ -5471,8 +5473,10 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional VBO signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от ICT стратегии
+                # Используем локальный alias для Action из ICT стратегии
+                from bot.ict_strategy import Action as StrategyActionIct
                 for sig in ict_signals_only:
-                    if sig.action in (Action.LONG, Action.SHORT):
+                    if sig.action in (StrategyActionIct.LONG, StrategyActionIct.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == ict_sig_save and ict_sig_save:
                             continue
