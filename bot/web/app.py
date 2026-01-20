@@ -189,7 +189,7 @@ def _find_model_for_symbol(symbol: str) -> Optional[str]:
         return None
 
 # Функция для сохранения настроек в .env файл
-def _save_symbol_settings_to_env(active_symbols: list, primary_symbol: str):
+def _save_symbol_settings_to_env(active_symbols: list, primary_symbol: str, follow_primary_symbol: bool = True):
     """Сохраняет настройки активных символов в .env файл."""
     try:
         env_path = Path(__file__).parent.parent.parent / ".env"
@@ -200,8 +200,8 @@ def _save_symbol_settings_to_env(active_symbols: list, primary_symbol: str):
             with open(env_path, 'r', encoding='utf-8') as f:
                 env_lines = f.readlines()
         
-        # Создаем новый файл, пропуская старые значения ACTIVE_SYMBOLS и PRIMARY_SYMBOL
-        keys_to_update = {'ACTIVE_SYMBOLS', 'PRIMARY_SYMBOL'}
+        # Создаем новый файл, пропуская старые значения ACTIVE_SYMBOLS, PRIMARY_SYMBOL и FOLLOW_PRIMARY_SYMBOL
+        keys_to_update = {'ACTIVE_SYMBOLS', 'PRIMARY_SYMBOL', 'FOLLOW_PRIMARY_SYMBOL'}
         
         with open(env_path, 'w', encoding='utf-8') as f:
             symbol_section_found = False
@@ -226,8 +226,9 @@ def _save_symbol_settings_to_env(active_symbols: list, primary_symbol: str):
                 f.write(f"\n# Multi-Symbol Trading (auto-updated by admin panel)\n")
             f.write(f"ACTIVE_SYMBOLS={','.join(active_symbols)}\n")
             f.write(f"PRIMARY_SYMBOL={primary_symbol}\n")
+            f.write(f"FOLLOW_PRIMARY_SYMBOL={'true' if follow_primary_symbol else 'false'}\n")
         
-        print(f"[web] Symbol settings saved to .env: ACTIVE_SYMBOLS={','.join(active_symbols)}, PRIMARY_SYMBOL={primary_symbol}")
+        print(f"[web] Symbol settings saved to .env: ACTIVE_SYMBOLS={','.join(active_symbols)}, PRIMARY_SYMBOL={primary_symbol}, FOLLOW_PRIMARY_SYMBOL={follow_primary_symbol}")
     
     except Exception as e:
         print(f"[web] Error saving symbol settings to .env: {e}")
@@ -595,7 +596,8 @@ def api_symbols_active():
         "success": True,
         "available_symbols": settings.symbols,
         "active_symbols": settings.active_symbols,
-        "primary_symbol": settings.primary_symbol
+        "primary_symbol": settings.primary_symbol,
+        "follow_primary_symbol": getattr(settings, 'follow_primary_symbol', True)  # По умолчанию True
     })
 
 
@@ -651,9 +653,10 @@ def api_symbols_set_active():
         settings.active_symbols = active_symbols
         settings.primary_symbol = primary_symbol
         settings.symbol = primary_symbol  # Для обратной совместимости
+        settings.follow_primary_symbol = follow_primary_symbol
         
         # Сохраняем в .env
-        _save_symbol_settings_to_env(active_symbols, primary_symbol)
+        _save_symbol_settings_to_env(active_symbols, primary_symbol, follow_primary_symbol)
         
         # Обновляем MultiSymbolManager только если изменились активные символы
         # Если изменился только primary_symbol (для отображения), просто обновляем настройки без перезапуска

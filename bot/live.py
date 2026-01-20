@@ -2659,6 +2659,114 @@ def get_strategy_type_from_signal(signal_reason: str) -> str:
         return "unknown"
 
 
+def _check_liquidation_hunter_confirmation(
+    signal: Any,
+    all_liquidation_hunter_signals: List[Any],
+    confirmation_window_minutes: int = 5,
+    min_confirmations: int = 2,
+    symbol: Optional[str] = None
+) -> Tuple[bool, int, List[Any]]:
+    """
+    Проверяет, есть ли достаточное количество подтверждающих сигналов liquidation_hunter
+    в одном направлении за указанный период времени.
+    
+    Args:
+        signal: Сигнал, который нужно проверить
+        all_liquidation_hunter_signals: Все сигналы liquidation_hunter
+        confirmation_window_minutes: Окно времени для подтверждения (по умолчанию 5 минут)
+        min_confirmations: Минимальное количество подтверждений (по умолчанию 2)
+        symbol: Символ для логирования
+    
+    Returns:
+        Tuple[bool, int, List[Any]]: (is_confirmed, confirmation_count, confirming_signals)
+        - is_confirmed: True если есть достаточное количество подтверждений
+        - confirmation_count: Количество подтверждающих сигналов
+        - confirming_signals: Список подтверждающих сигналов
+    """
+    if not signal or not all_liquidation_hunter_signals:
+        return False, 0, []
+    
+    try:
+        # Получаем timestamp сигнала
+        signal_ts = signal.timestamp
+        if isinstance(signal_ts, pd.Timestamp):
+            if signal_ts.tzinfo is None:
+                signal_ts = signal_ts.tz_localize('UTC')
+            else:
+                signal_ts = signal_ts.tz_convert('UTC')
+            signal_time = signal_ts.to_pydatetime()
+        else:
+            signal_time = signal_ts
+        
+        # Вычисляем временное окно: 5 минут ДО текущего сигнала (включая сам сигнал)
+        window_start = signal_time - timedelta(minutes=confirmation_window_minutes)
+        window_end = signal_time
+        
+        # Фильтруем сигналы в том же направлении в пределах временного окна
+        confirming_signals = []
+        for sig in all_liquidation_hunter_signals:
+            # Проверяем, что сигнал в том же направлении
+            if sig.action != signal.action:
+                continue
+            
+            # Получаем timestamp сигнала
+            try:
+                sig_ts = sig.timestamp
+                if isinstance(sig_ts, pd.Timestamp):
+                    if sig_ts.tzinfo is None:
+                        sig_ts = sig_ts.tz_localize('UTC')
+                    else:
+                        sig_ts = sig_ts.tz_convert('UTC')
+                    sig_time_check = sig_ts.to_pydatetime()
+                elif isinstance(sig_ts, datetime):
+                    if sig_ts.tzinfo is None:
+                        sig_time_check = sig_ts.replace(tzinfo=timezone.utc)
+                    else:
+                        sig_time_check = sig_ts
+                else:
+                    continue  # Пропускаем сигналы с неподдерживаемым форматом timestamp
+                
+                # Проверяем, что сигнал в пределах временного окна (включая границы)
+                if window_start <= sig_time_check <= window_end:
+                    confirming_signals.append(sig)
+            except Exception:
+                continue  # Пропускаем сигналы с ошибками в timestamp
+        
+        # Сортируем по времени (от старых к новым) для логирования
+        def get_sortable_timestamp(s):
+            try:
+                ts = s.timestamp
+                if isinstance(ts, pd.Timestamp):
+                    if ts.tzinfo is None:
+                        ts = ts.tz_localize('UTC')
+                    else:
+                        ts = ts.tz_convert('UTC')
+                    return ts.to_pydatetime()
+                elif isinstance(ts, datetime):
+                    return ts
+                return ts
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+        
+        confirming_signals.sort(key=get_sortable_timestamp)
+        
+        confirmation_count = len(confirming_signals)
+        is_confirmed = confirmation_count >= min_confirmations
+        
+        if symbol:
+            if is_confirmed:
+                _log(f"✅ LIQUIDATION_HUNTER confirmation: {confirmation_count} signals in {signal.action.value} direction within {confirmation_window_minutes} minutes", symbol)
+            else:
+                _log(f"⚠️ LIQUIDATION_HUNTER confirmation FAILED: only {confirmation_count} signals in {signal.action.value} direction (need {min_confirmations}) within {confirmation_window_minutes} minutes", symbol)
+        
+        return is_confirmed, confirmation_count, confirming_signals
+    
+    except Exception as e:
+        if symbol:
+            _log(f"⚠️ Error checking LIQUIDATION_HUNTER confirmation: {e}", symbol)
+        return False, 0, []
+
+
 def _determine_strategy_with_fallback(
     symbol: str,
     position_strategy: Dict[str, str],
@@ -5274,6 +5382,90 @@ def run_live_from_api(
             smc_sig_latest = get_latest_fresh_signal(smc_signals_only, df_ready)
             ict_sig_latest = get_latest_fresh_signal(ict_signals_only, df_ready)
             liquidation_hunter_sig_latest = get_latest_fresh_signal(liquidation_hunter_signals_only, df_ready)
+            
+            # ВАЖНО: Для liquidation_hunter требуется минимум 2 подтверждающих сигнала в одном направлении за 5 минут
+            # Загружаем сигналы из истории для проверки подтверждения
+            if liquidation_hunter_sig_latest:
+                try:
+                    from bot.web.history import get_signals
+                    # Получаем сигналы liquidation_hunter из истории за последние 10 минут (для проверки подтверждения)
+                    history_signals_raw = get_signals(limit=100, symbol_filter=symbol)
+                    history_liquidation_hunter_signals = []
+                    
+                    for hist_sig in history_signals_raw:
+                        hist_reason = hist_sig.get("reason", "")
+                        hist_strategy = hist_sig.get("strategy_type", "").lower()
+                        if hist_reason.startswith("liquidation_hunter_") or hist_strategy == "liquidation_hunter":
+                            # Создаем объект сигнала из истории для проверки
+                            hist_action_str = hist_sig.get("action", "").lower()
+                            if hist_action_str in ("long", "short"):
+                                from bot.strategy import Action
+                                hist_action = Action.LONG if hist_action_str == "long" else Action.SHORT
+                                
+                                # Парсим timestamp из истории
+                                hist_timestamp_str = hist_sig.get("timestamp", "")
+                                try:
+                                    if isinstance(hist_timestamp_str, str):
+                                        # Пробуем разные форматы
+                                        try:
+                                            hist_ts = datetime.fromisoformat(hist_timestamp_str.replace('Z', '+00:00'))
+                                        except:
+                                            try:
+                                                hist_ts = pd.to_datetime(hist_timestamp_str, utc=True).to_pydatetime()
+                                            except:
+                                                continue
+                                    else:
+                                        hist_ts = hist_timestamp_str
+                                    
+                                    # Создаем простой объект сигнала для проверки
+                                    class HistorySignal:
+                                        def __init__(self, action, price, reason, timestamp):
+                                            self.action = action
+                                            self.price = price
+                                            self.reason = reason
+                                            self.timestamp = timestamp
+                                    
+                                    hist_signal_obj = HistorySignal(
+                                        action=hist_action,
+                                        price=float(hist_sig.get("price", 0)),
+                                        reason=hist_reason,
+                                        timestamp=hist_ts
+                                    )
+                                    history_liquidation_hunter_signals.append(hist_signal_obj)
+                                except Exception:
+                                    continue
+                    
+                    # Объединяем сигналы из текущего цикла и из истории
+                    all_liquidation_hunter_for_confirmation = list(liquidation_hunter_signals_only) + history_liquidation_hunter_signals
+                    
+                    is_confirmed, confirmation_count, confirming_signals = _check_liquidation_hunter_confirmation(
+                        signal=liquidation_hunter_sig_latest,
+                        all_liquidation_hunter_signals=all_liquidation_hunter_for_confirmation,
+                        confirmation_window_minutes=5,
+                        min_confirmations=2,
+                        symbol=symbol
+                    )
+                    if not is_confirmed:
+                        _log(f"⛔ LIQUIDATION_HUNTER signal REJECTED: insufficient confirmations ({confirmation_count}/2) for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
+                        liquidation_hunter_sig_latest = None  # Отклоняем сигнал без достаточного подтверждения
+                    else:
+                        _log(f"✅ LIQUIDATION_HUNTER signal CONFIRMED: {confirmation_count} confirmations for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
+                except Exception as e:
+                    _log(f"⚠️ Error checking LIQUIDATION_HUNTER confirmation from history: {e}", symbol)
+                    # В случае ошибки используем только сигналы из текущего цикла
+                    is_confirmed, confirmation_count, confirming_signals = _check_liquidation_hunter_confirmation(
+                        signal=liquidation_hunter_sig_latest,
+                        all_liquidation_hunter_signals=liquidation_hunter_signals_only,
+                        confirmation_window_minutes=5,
+                        min_confirmations=2,
+                        symbol=symbol
+                    )
+                    if not is_confirmed:
+                        _log(f"⛔ LIQUIDATION_HUNTER signal REJECTED: insufficient confirmations ({confirmation_count}/2) for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
+                        liquidation_hunter_sig_latest = None
+                    else:
+                        _log(f"✅ LIQUIDATION_HUNTER signal CONFIRMED: {confirmation_count} confirmations for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
+            
             zscore_sig_latest = get_latest_fresh_signal(zscore_signals_only, df_ready)
             vbo_sig_latest = get_latest_fresh_signal(vbo_signals_only, df_ready)
             
@@ -5599,14 +5791,20 @@ def run_live_from_api(
                         # Если на PRIMARY_SYMBOL есть позиция, на других символах можно открывать только в том же направлении
                         primary_symbol_allowed_action = None
                         try:
-                            # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
-                            # primary_symbol должен быть установлен глобально в настройках
-                            primary_symbol = getattr(current_settings, 'primary_symbol', None)
-                            if not primary_symbol:
-                                _log(f"ℹ️ PRIMARY_SYMBOL not set in settings - skipping filter for {symbol}", symbol)
+                            # Проверяем, включена ли функция следования за главным символом
+                            follow_primary_symbol = getattr(current_settings, 'follow_primary_symbol', True)  # По умолчанию True
+                            
+                            if not follow_primary_symbol:
+                                _log(f"ℹ️ FOLLOW_PRIMARY_SYMBOL is disabled - skipping PRIMARY_SYMBOL filter for {symbol}", symbol)
                             else:
-                                _log(f"🔍 Checking PRIMARY_SYMBOL filter for {symbol}: primary_symbol={primary_symbol}", symbol)
-                            if primary_symbol and symbol.upper() != str(primary_symbol).upper():
+                                # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
+                                # primary_symbol должен быть установлен глобально в настройках
+                                primary_symbol = getattr(current_settings, 'primary_symbol', None)
+                                if not primary_symbol:
+                                    _log(f"ℹ️ PRIMARY_SYMBOL not set in settings - skipping filter for {symbol}", symbol)
+                                else:
+                                    _log(f"🔍 Checking PRIMARY_SYMBOL filter for {symbol}: primary_symbol={primary_symbol}", symbol)
+                            if follow_primary_symbol and primary_symbol and symbol.upper() != str(primary_symbol).upper():
                                 # Проверяем позицию на PRIMARY_SYMBOL
                                 _log(f"🔍 Fetching position info for PRIMARY_SYMBOL ({primary_symbol})...", symbol)
                                 pos_resp = client.get_position_info(symbol=primary_symbol)
@@ -6534,12 +6732,19 @@ def run_live_from_api(
                     _log(f"   PRIMARY_SYMBOL from settings: {primary_symbol_from_settings}", symbol)
                     _log(f"   Current symbol: {symbol}", symbol)
                     
-                    should_block, block_reason = _check_primary_symbol_position(
-                        client=client,
-                        current_symbol=symbol,
-                        settings=current_settings,
-                        target_action=Action.LONG,
-                    )
+                    # Проверяем, включена ли функция следования за главным символом
+                    follow_primary_symbol = getattr(current_settings, 'follow_primary_symbol', True)  # По умолчанию True
+                    should_block = False
+                    block_reason = None
+                    if follow_primary_symbol:
+                        should_block, block_reason = _check_primary_symbol_position(
+                            client=client,
+                            current_symbol=symbol,
+                            settings=current_settings,
+                            target_action=Action.LONG,
+                        )
+                    else:
+                        _log(f"ℹ️ FOLLOW_PRIMARY_SYMBOL is disabled - skipping PRIMARY_SYMBOL check for {symbol}", symbol)
                     
                     _log(f"   [FINAL CHECK RESULT] PRIMARY_SYMBOL check result: should_block={should_block}, reason={block_reason}", symbol)
                     if should_block:
@@ -7347,12 +7552,19 @@ def run_live_from_api(
                     _log(f"   PRIMARY_SYMBOL from settings: {primary_symbol_from_settings}", symbol)
                     _log(f"   Current symbol: {symbol}", symbol)
                     
-                    should_block, block_reason = _check_primary_symbol_position(
-                        client=client,
-                        current_symbol=symbol,
-                        settings=current_settings,
-                        target_action=Action.SHORT,
-                    )
+                    # Проверяем, включена ли функция следования за главным символом
+                    follow_primary_symbol = getattr(current_settings, 'follow_primary_symbol', True)  # По умолчанию True
+                    should_block = False
+                    block_reason = None
+                    if follow_primary_symbol:
+                        should_block, block_reason = _check_primary_symbol_position(
+                            client=client,
+                            current_symbol=symbol,
+                            settings=current_settings,
+                            target_action=Action.SHORT,
+                        )
+                    else:
+                        _log(f"ℹ️ FOLLOW_PRIMARY_SYMBOL is disabled - skipping PRIMARY_SYMBOL check for {symbol}", symbol)
                     
                     _log(f"   [FINAL CHECK RESULT] PRIMARY_SYMBOL check result: should_block={should_block}, reason={block_reason}", symbol)
                     if should_block:

@@ -207,6 +207,7 @@ class AppSettings:
     symbols: List[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])  # Все доступные пары
     active_symbols: List[str] = field(default_factory=lambda: ["BTCUSDT"])  # Активные для торговли
     primary_symbol: str = "BTCUSDT"  # Основная пара для UI (по умолчанию)
+    follow_primary_symbol: bool = True  # Следовать за главным символом (если True - открываем сделки только в том же направлении, что и PRIMARY_SYMBOL)
     
     # Обратная совместимость (deprecated, используйте primary_symbol)
     symbol: str = "BTCUSDT"  # Доступные пары: BTCUSDT, ETHUSDT, SOLUSDT
@@ -484,6 +485,18 @@ def load_settings() -> AppSettings:
     
     # Синхронизируем symbol с primary_symbol для обратной совместимости
     settings.symbol = settings.primary_symbol
+    
+    # Загружаем настройку следования за главным символом
+    follow_primary_symbol_raw = os.getenv("FOLLOW_PRIMARY_SYMBOL", "")
+    if not follow_primary_symbol_raw:
+        follow_primary_symbol_raw = cleaned_env_values.get("FOLLOW_PRIMARY_SYMBOL", "")
+    
+    if follow_primary_symbol_raw:
+        follow_primary_symbol_value = follow_primary_symbol_raw.strip().lower()
+        settings.follow_primary_symbol = follow_primary_symbol_value in ("true", "1", "yes")
+        print(f"[config] FOLLOW_PRIMARY_SYMBOL loaded from .env: {settings.follow_primary_symbol}")
+    else:
+        print(f"[config] FOLLOW_PRIMARY_SYMBOL not found, using default: {settings.follow_primary_symbol}")
     
     # Применяем настройки стратегий (если заданы в .env, переопределяем значения по умолчанию)
     # Проверяем, что переменная присутствует в .env (используем cleaned_env_values для надежности)

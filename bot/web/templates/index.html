@@ -770,6 +770,17 @@
                         - если на PRIMARY_SYMBOL есть позиция, бот не открывает противонаправленные позиции на других парах.<br>
                         График и данные в интерфейсе также по умолчанию показываются по этой паре.
                     </p>
+                    
+                    <div style="margin-top: 15px; padding: 15px; background: #2a2a2a; border-radius: 5px; border: 1px solid #444;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="follow-primary-symbol-checkbox" style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+                            <span style="color: #e0e0e0; font-weight: bold;">Следовать за главным символом (PRIMARY_SYMBOL)</span>
+                        </label>
+                        <p style="color: #666; font-size: 0.9em; margin-top: 8px; margin-left: 30px;">
+                            <strong>Если включено:</strong> Бот открывает сделки только в том же направлении, что и позиция на PRIMARY_SYMBOL.<br>
+                            <strong>Если выключено:</strong> Бот игнорирует правило PRIMARY_SYMBOL и открывает сделки по всем сигналам без фильтра.
+                        </p>
+                    </div>
                 </div>
                 
                 <div style="margin-top: 30px;">
@@ -3553,6 +3564,12 @@
                         primarySelect.value = data.primary_symbol;
                     }
                     
+                    // Обновляем чекбокс следования за главным символом
+                    const followPrimaryCheckbox = document.getElementById('follow-primary-symbol-checkbox');
+                    if (followPrimaryCheckbox) {
+                        followPrimaryCheckbox.checked = data.follow_primary_symbol !== false; // По умолчанию true, если не указано
+                    }
+                    
                     // НЕ синхронизируем topSelect (селект для просмотра графика) с PRIMARY_SYMBOL
                     // Эти два селекта независимы - пользователь выбирает символ для просмотра отдельно
                     
@@ -3594,6 +3611,10 @@
                     return;
                 }
                 
+                // Получаем состояние чекбокса следования за главным символом
+                const followPrimaryCheckbox = document.getElementById('follow-primary-symbol-checkbox');
+                const followPrimarySymbol = followPrimaryCheckbox ? followPrimaryCheckbox.checked : true; // По умолчанию true
+                
                 const response = await fetch('/api/symbols/set-active', {
                     method: 'POST',
                     headers: {
@@ -3601,7 +3622,8 @@
                     },
                     body: JSON.stringify({
                         symbols: activeSymbols,
-                        primary: primarySymbol
+                        primary: primarySymbol,
+                        follow_primary_symbol: followPrimarySymbol
                     })
                 });
                 
