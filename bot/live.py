@@ -4960,7 +4960,10 @@ def run_live_from_api(
             def save_latest_signal_to_history(sig, strategy_type_name: str, strategy_key: str):
                 """Сохраняет latest сигнал в историю с проверками. Сохраняет только один сигнал от каждой стратегии за цикл."""
                 try:
-                    if sig is None or sig.action == Action.HOLD:
+                    # Локальный alias для Action из rule-based стратегий
+                    from bot.strategy import Action as StrategyActionLocal
+
+                    if sig is None or sig.action == StrategyActionLocal.HOLD:
                         return  # Пропускаем HOLD сигналы и None
                     
                     ts_log = sig.timestamp
@@ -5124,7 +5127,8 @@ def run_live_from_api(
                 for sig in main_strategy_signals:
                     # Сохраняем все сигналы LONG/SHORT, даже если они не свежие
                     # main_sig уже сохранен выше, поэтому пропускаем его здесь
-                    if sig != main_sig and sig.action in (Action.LONG, Action.SHORT):
+                    from bot.strategy import Action as StrategyActionHistory
+                    if sig != main_sig and sig.action in (StrategyActionHistory.LONG, StrategyActionHistory.SHORT):
                         try:
                             strategy_type = get_strategy_type_from_signal(sig.reason)
                             ts_log = sig.timestamp
@@ -5159,7 +5163,8 @@ def run_live_from_api(
                 if not main_sig and main_strategy_signals:
                     _log(f"💾 No fresh main_sig, but saving all {len(main_strategy_signals)} TREND/FLAT signals", symbol)
                     for sig in main_strategy_signals:
-                        if sig.action in (Action.LONG, Action.SHORT):
+                        from bot.strategy import Action as StrategyActionHistory2
+                        if sig.action in (StrategyActionHistory2.LONG, StrategyActionHistory2.SHORT):
                             try:
                                 strategy_type = get_strategy_type_from_signal(sig.reason)
                                 ts_log = sig.timestamp

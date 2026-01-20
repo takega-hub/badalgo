@@ -279,8 +279,23 @@ class BybitClient:
         Используется для расчёта CVD и упрощённого order flow анализа.
         """
         try:
+            # Поддержка разных версий pybit: метод может называться по‑разному
+            http = self.session
+            method = None
+            if hasattr(http, "get_public_trading_history"):
+                method = http.get_public_trading_history
+            elif hasattr(http, "get_public_trade_history"):
+                method = http.get_public_trade_history
+            else:
+                print(
+                    "[bybit] ⚠️ WARNING: Neither get_public_trading_history nor "
+                    "get_public_trade_history is available on HTTP client – "
+                    "orderflow-based AMT_OF strategy will be disabled."
+                )
+                return []
+
             resp = self._retry_request(
-                self.session.get_public_trading_history,
+                method,
                 category="linear",
                 symbol=symbol,
                 limit=limit,

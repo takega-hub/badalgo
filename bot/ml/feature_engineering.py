@@ -194,7 +194,6 @@ class FeatureEngineer:
             df = pd.concat([df, pd.DataFrame(rolling_columns, index=df.index)], axis=1)
         
         # === Временные фичи ===
-        
         if isinstance(df.index, pd.DatetimeIndex):
             df["hour"] = df.index.hour
             df["day_of_week"] = df.index.dayofweek
@@ -202,17 +201,23 @@ class FeatureEngineer:
             df["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
             
             # Циклические фичи для лучшего обучения модели (sin/cos преобразования)
-            df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
-            df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
-            df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
-            df["day_of_week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
-            df["day_of_month_sin"] = np.sin(2 * np.pi * df["day_of_month"] / 31)
-            df["day_of_month_cos"] = np.cos(2 * np.pi * df["day_of_month"] / 31)
+            df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24.0)
+            df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24.0)
+            df["day_of_week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7.0)
+            df["day_of_week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7.0)
+            df["day_of_month_sin"] = np.sin(2 * np.pi * df["day_of_month"] / 31.0)
+            df["day_of_month_cos"] = np.cos(2 * np.pi * df["day_of_month"] / 31.0)
             
             # Торговые сессии (азиатская, европейская, американская)
             df["is_asian_session"] = ((df["hour"] >= 0) & (df["hour"] < 8)).astype(int)
             df["is_european_session"] = ((df["hour"] >= 8) & (df["hour"] < 16)).astype(int)
             df["is_american_session"] = ((df["hour"] >= 16) | (df["hour"] < 24)).astype(int)
+            
+            # Дополнительные временные циклы (дублируем на случай пропуска индексов)
+            df["hour_sin_cycle"] = np.sin(2 * np.pi * df.index.hour / 24.0)
+            df["hour_cos_cycle"] = np.cos(2 * np.pi * df.index.hour / 24.0)
+            df["dow_sin_cycle"] = np.sin(2 * np.pi * df.index.dayofweek / 7.0)
+            df["dow_cos_cycle"] = np.cos(2 * np.pi * df.index.dayofweek / 7.0)
         
         # === Дополнительные фичи ===
         
@@ -223,6 +228,50 @@ class FeatureEngineer:
         # Rate of Change
         df["roc_5"] = ta.roc(df["close"], length=5)
         df["roc_10"] = ta.roc(df["close"], length=10)
+        
+        # === Advanced statistical & SMC/ICT features ===
+        # 1) Z-Score по цене (20‑барное окно)
+        window_z = 20
+        close_rolling_mean = df["close"].rolling(window=window_z).mean()
+        close_rolling_std = df["close"].rolling(window=window_z).std()
+        df["z_score"] = (df["close"] - close_rolling_mean) / close_rolling_std
+        df["z_score"] = df["z_score"].replace([np.inf, -np.inf], np.nan)
+        
+        # 2) Волатильность (стд. отклонение закрытия)
+        df["volatility_10"] = df["close"].rolling(window=10).std()
+        df["volatility_20"] = df["close"].rolling(window=20).std()
+        
+        # 3) Distance to EMA200 (в %)
+        try:
+            df["ema_200"] = ta.ema(df["close"], length=200)
+            ema200_safe = pd.to_numeric(df.get("ema_200"), errors="coerce")
+            df["dist_to_ema200_pct"] = (df["close"] - ema200_safe) / ema200_safe * 100.0
+            df["dist_to_ema200_pct"] = df["dist_to_ema200_pct"].replace([np.inf, -np.inf], np.nan)
+        except Exception:
+            df["dist_to_ema200_pct"] = 0.0
+        
+        # 4) FVG (Fair Value Gap) — простая бинарная детекция
+        # Bullish FVG: low[i] > high[i-2]
+        df["fvg_up"] = ((df["low"] > df["high"].shift(2))).astype(int)
+        # Bearish FVG: high[i] < low[i-2]
+        df["fvg_down"] = ((df["high"] < df["low"].shift(2))).astype(int)
+        # Сводный признак
+        df["fvg_trend"] = df["fvg_up"] - df["fvg_down"]
+        
+        # 5) Wick-to-Body ratio (снятие ликвидности / SMC контекст)
+        body = (df["close"] - df["open"]).abs()
+        upper_wick = df[["close", "open"]].max(axis=1) - df["high"]
+        lower_wick = df["low"] - df[["close", "open"]].min(axis=1)
+        df["upper_wick_body_ratio"] = np.where(body > 0, (upper_wick.abs() / body), 0.0)
+        df["lower_wick_body_ratio"] = np.where(body > 0, (lower_wick.abs() / body), 0.0)
+        
+        # 6) Market Structure — упрощённый флаг последнего пробоя (BOS)
+        ms_lookback = 20
+        prev_high_max = df["high"].shift(1).rolling(window=ms_lookback).max()
+        prev_low_min = df["low"].shift(1).rolling(window=ms_lookback).min()
+        df["bos_up"] = (df["high"] > prev_high_max).astype(int)
+        df["bos_down"] = (df["low"] < prev_low_min).astype(int)
+        df["market_structure_trend"] = df["bos_up"] - df["bos_down"]
         
         # === Свечные паттерны (Candlestick Patterns) ===
         try:
