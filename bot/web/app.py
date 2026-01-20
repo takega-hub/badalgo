@@ -622,6 +622,15 @@ def api_symbols_set_active():
         
         # Получаем основной символ
         primary_symbol = data.get("primary", None)
+
+        # Получаем настройку следования за главным символом
+        follow_primary_symbol = data.get("follow_primary_symbol", True)
+        if not isinstance(follow_primary_symbol, bool):
+            # На всякий случай приводим строковые значения к bool
+            if isinstance(follow_primary_symbol, str):
+                follow_primary_symbol = follow_primary_symbol.strip().lower() in ("true", "1", "yes")
+            else:
+                follow_primary_symbol = True
         
         # Валидация символов
         available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]

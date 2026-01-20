@@ -4072,10 +4072,17 @@ def run_live_from_api(
                 strategy_name = "MOMENTUM" if use_momentum else "TREND"
                 trend_signals = build_signals(df_ready, current_settings.strategy, use_momentum=use_momentum, use_liquidity=False)
                 # Фильтруем сигналы по префиксу reason
+                from bot.strategy import Action as StrategyAction
                 if use_momentum:
-                    trend_generated = [s for s in trend_signals if s.reason.startswith("momentum_") and s.action in (Action.LONG, Action.SHORT)]
+                    trend_generated = [
+                        s for s in trend_signals
+                        if s.reason.startswith("momentum_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+                    ]
                 else:
-                    trend_generated = [s for s in trend_signals if s.reason.startswith("trend_") and s.action in (Action.LONG, Action.SHORT)]
+                    trend_generated = [
+                        s for s in trend_signals
+                        if s.reason.startswith("trend_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+                    ]
                 _log(f"📊 {strategy_name} strategy: generated {len(trend_signals)} total, {len(trend_generated)} actionable (LONG/SHORT)", symbol)
                 
                 # Диагностика для Momentum стратегии
