@@ -5204,8 +5204,9 @@ def run_live_from_api(
                 # КРИТИЧЕСКИ ВАЖНО: Сохраняем ВСЕ сигналы от тренд/флэт стратегий, даже если они не свежие
                 # Это гарантирует, что сигналы попадают в историю независимо от фильтра свежести
                 if main_strategy_signals:
+                    from bot.strategy import Action as StrategyActionHist
                     for sig in main_strategy_signals:
-                        if sig.action in (Action.LONG, Action.SHORT):
+                        if sig.action in (StrategyActionHist.LONG, StrategyActionHist.SHORT):
                             # Пропускаем только если это main_sig (уже сохранен выше)
                             if sig == main_sig:
                                 continue
@@ -5295,8 +5296,9 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional ML signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от новых стратегий (включая latest, если они есть)
+                from bot.strategy import Action as StrategyActionMomentum
                 for sig in momentum_signals_only:
-                    if sig.action in (Action.LONG, Action.SHORT):
+                    if sig.action in (StrategyActionMomentum.LONG, StrategyActionMomentum.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == momentum_sig and momentum_sig:
                             continue
