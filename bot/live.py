@@ -4603,6 +4603,9 @@ def run_live_from_api(
                         break
                     # Логируем, какая модель используется для этого символа
                     _log(f"🤖 Using ML model: {current_settings.ml_model_path}", symbol)
+                    # Локальный alias для Action из ML сигналов
+                    from bot.ml.strategy_ml import Action as MlAction
+
                     ml_signals = build_ml_signals(
                         df_ready,
                         current_settings.ml_model_path,
@@ -4612,7 +4615,7 @@ def run_live_from_api(
                     )
                     # Обновляем статус после генерации
                     update_worker_status(symbol, current_status="Running", last_action="ML signals generated")
-                    ml_generated = [s for s in ml_signals if s.action in (Action.LONG, Action.SHORT)]
+                    ml_generated = [s for s in ml_signals if s.action in (MlAction.LONG, MlAction.SHORT)]
                     _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
                     
                     # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
@@ -4624,7 +4627,7 @@ def run_live_from_api(
                             _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                     elif len(ml_signals) > 0:
                         # Показываем примеры HOLD сигналов и статистику по уверенности
-                        hold_signals = [s for s in ml_signals if s.action == Action.HOLD]
+                        hold_signals = [s for s in ml_signals if s.action == MlAction.HOLD]
                         if hold_signals:
                             _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
                             # Показываем статистику по уверенности модели
@@ -4681,16 +4684,49 @@ def run_live_from_api(
             
             # Разделяем сигналы по стратегиям
             # Только LONG и SHORT сигналы (HOLD игнорируем)
-            trend_signals_only = [s for s in all_signals if s.reason.startswith("trend_") and s.action in (Action.LONG, Action.SHORT)]
-            flat_signals_only = [s for s in all_signals if s.reason.startswith("range_") and s.action in (Action.LONG, Action.SHORT)]
-            ml_signals_only = [s for s in all_signals if s.reason.startswith("ml_") and s.action in (Action.LONG, Action.SHORT)]
-            momentum_signals_only = [s for s in all_signals if s.reason.startswith("momentum_") and s.action in (Action.LONG, Action.SHORT)]
-            liquidity_signals_only = [s for s in all_signals if s.reason.startswith("liquidity_") and s.action in (Action.LONG, Action.SHORT)]
-            smc_signals_only = [s for s in all_signals if s.reason.lower().startswith("smc_") and s.action in (Action.LONG, Action.SHORT)]
-            ict_signals_only = [s for s in all_signals if s.reason.startswith("ict_") and s.action in (Action.LONG, Action.SHORT)]
-            liquidation_hunter_signals_only = [s for s in all_signals if s.reason.startswith("liquidation_hunter_") and s.action in (Action.LONG, Action.SHORT)]
-            zscore_signals_only = [s for s in all_signals if s.reason.startswith("zscore_") and s.action in (Action.LONG, Action.SHORT)]
-            vbo_signals_only = [s for s in all_signals if s.reason.startswith("vbo_") and s.action in (Action.LONG, Action.SHORT)]
+            from bot.strategy import Action as StrategyAction
+
+            trend_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("trend_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            flat_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("range_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            ml_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("ml_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            momentum_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("momentum_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            liquidity_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("liquidity_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            smc_signals_only = [
+                s for s in all_signals
+                if s.reason.lower().startswith("smc_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            ict_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("ict_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            liquidation_hunter_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("liquidation_hunter_")
+                and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            zscore_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("zscore_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            vbo_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("vbo_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
             
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only

@@ -206,14 +206,24 @@ class MLStrategy:
         missing_features = [f for f in self.feature_names if f not in df_with_features.columns]
         if missing_features:
             # Выводим только один раз при первом обнаружении
-            if not hasattr(self, '_missing_features_warned'):
-                print(f"[ml_strategy] ⚠️ WARNING: Missing {len(missing_features)} features: {missing_features[:10]}...")
-                print(f"[ml_strategy]   Expected {len(self.feature_names)} features, got {len(df_with_features.columns)}")
+            if not hasattr(self, "_missing_features_warned"):
+                print(
+                    f"[ml_strategy] ⚠️ WARNING: Missing {len(missing_features)} features: "
+                    f"{missing_features[:10]}..."
+                )
+                print(
+                    f"[ml_strategy]   Expected {len(self.feature_names)} features, "
+                    f"got {len(df_with_features.columns)}"
+                )
                 self._missing_features_warned = True
             
-            # Заполняем отсутствующие фичи нулями
-            for missing_feat in missing_features:
-                df_with_features[missing_feat] = 0.0
+            # Заполняем отсутствующие фичи нулями одним батчем, чтобы избежать фрагментации DataFrame
+            zeros_df = pd.DataFrame(
+                0.0,
+                index=df_with_features.index,
+                columns=missing_features,
+            )
+            df_with_features = pd.concat([df_with_features, zeros_df], axis=1)
         
         # Проверяем лишние фичи (которые есть в данных, но не ожидаются моделью)
         extra_features = [f for f in df_with_features.columns if f not in self.feature_names and f not in key_columns]
