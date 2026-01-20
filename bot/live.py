@@ -5740,7 +5740,6 @@ def run_live_from_api(
                             # Создаем объект сигнала из истории для проверки
                             hist_action_str = hist_sig.get("action", "").lower()
                             if hist_action_str in ("long", "short"):
-                                from bot.strategy import Action
                                 hist_action = Action.LONG if hist_action_str == "long" else Action.SHORT
                                 
                                 # Парсим timestamp из истории
