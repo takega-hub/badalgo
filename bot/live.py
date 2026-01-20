@@ -5365,8 +5365,10 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional LIQUIDITY signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от Liquidation Hunter стратегии
+                # Используем локальный alias для Action из liquidation_hunter стратегии
+                from bot.liquidation_hunter_strategy import Action as StrategyActionLH
                 for sig in liquidation_hunter_signals_only:
-                    if sig.action in (Action.LONG, Action.SHORT):
+                    if sig.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == liquidation_hunter_sig_save and liquidation_hunter_sig_save:
                             continue
