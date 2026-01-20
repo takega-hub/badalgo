@@ -253,7 +253,8 @@ def _close_conflicting_positions_for_primary(
     и только после подтверждения, что позиция действительно открыта.
     """
     try:
-        primary_symbol = getattr(settings, "primary_symbol", None) or getattr(settings, "symbol", None)
+        # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
+        primary_symbol = getattr(settings, "primary_symbol", None)
         if not primary_symbol:
             return
 
@@ -363,7 +364,8 @@ def _check_primary_symbol_position(
     """
     try:
         # Получаем PRIMARY_SYMBOL из настроек
-        primary_symbol = getattr(settings, 'primary_symbol', None) or getattr(settings, 'symbol', None)
+        # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
+        primary_symbol = getattr(settings, 'primary_symbol', None)
         if not primary_symbol:
             # Если PRIMARY_SYMBOL не задан, проверку не делаем
             print(f"[live] [{current_symbol}] ⚠️ PRIMARY_SYMBOL not set in settings, skipping check")
@@ -5597,9 +5599,14 @@ def run_live_from_api(
                         # Если на PRIMARY_SYMBOL есть позиция, на других символах можно открывать только в том же направлении
                         primary_symbol_allowed_action = None
                         try:
-                            primary_symbol = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
-                            _log(f"🔍 Checking PRIMARY_SYMBOL filter for {symbol}: primary_symbol={primary_symbol}", symbol)
-                            if primary_symbol and symbol.upper() != primary_symbol.upper():
+                            # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
+                            # primary_symbol должен быть установлен глобально в настройках
+                            primary_symbol = getattr(current_settings, 'primary_symbol', None)
+                            if not primary_symbol:
+                                _log(f"ℹ️ PRIMARY_SYMBOL not set in settings - skipping filter for {symbol}", symbol)
+                            else:
+                                _log(f"🔍 Checking PRIMARY_SYMBOL filter for {symbol}: primary_symbol={primary_symbol}", symbol)
+                            if primary_symbol and symbol.upper() != str(primary_symbol).upper():
                                 # Проверяем позицию на PRIMARY_SYMBOL
                                 _log(f"🔍 Fetching position info for PRIMARY_SYMBOL ({primary_symbol})...", symbol)
                                 pos_resp = client.get_position_info(symbol=primary_symbol)
@@ -5617,9 +5624,7 @@ def run_live_from_api(
                                         _log(f"✅ PRIMARY_SYMBOL ({primary_symbol}) has no open position - no filter applied for {symbol}", symbol)
                                 else:
                                     _log(f"⚠️ Failed to get position info for PRIMARY_SYMBOL ({primary_symbol}): {pos_resp.get('retMsg', 'Unknown error')}", symbol)
-                            elif not primary_symbol:
-                                _log(f"ℹ️ PRIMARY_SYMBOL not set - skipping filter for {symbol}", symbol)
-                            else:
+                            elif primary_symbol and symbol.upper() == str(primary_symbol).upper():
                                 _log(f"ℹ️ Current symbol ({symbol}) is PRIMARY_SYMBOL - skipping filter", symbol)
                         except Exception as e:
                             _log(f"⚠️ Error checking PRIMARY_SYMBOL position for signal filtering: {e}", symbol)
@@ -6524,7 +6529,8 @@ def run_live_from_api(
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем LONG, если на PRIMARY_SYMBOL есть SHORT позиция
                     _log(f"🔍 [FINAL CHECK] Checking PRIMARY_SYMBOL position before opening LONG for {symbol}...", symbol)
                     _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) from {strategy_name}", symbol)
-                    primary_symbol_from_settings = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
+                    # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
+                    primary_symbol_from_settings = getattr(current_settings, 'primary_symbol', None)
                     _log(f"   PRIMARY_SYMBOL from settings: {primary_symbol_from_settings}", symbol)
                     _log(f"   Current symbol: {symbol}", symbol)
                     
@@ -7336,7 +7342,8 @@ def run_live_from_api(
                     # КРИТИЧЕСКАЯ ПРОВЕРКА: Не открываем SHORT, если на PRIMARY_SYMBOL есть LONG позиция
                     _log(f"🔍 [FINAL CHECK] Checking PRIMARY_SYMBOL position before opening SHORT for {symbol}...", symbol)
                     _log(f"   Signal: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) from {strategy_name}", symbol)
-                    primary_symbol_from_settings = getattr(current_settings, 'primary_symbol', None) or getattr(current_settings, 'symbol', None)
+                    # ВАЖНО: Используем ТОЛЬКО primary_symbol из настроек, БЕЗ fallback на symbol
+                    primary_symbol_from_settings = getattr(current_settings, 'primary_symbol', None)
                     _log(f"   PRIMARY_SYMBOL from settings: {primary_symbol_from_settings}", symbol)
                     _log(f"   Current symbol: {symbol}", symbol)
                     
