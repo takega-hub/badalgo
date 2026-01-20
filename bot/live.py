@@ -4312,7 +4312,8 @@ def run_live_from_api(
                         ict_signals = build_ict_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="ICT signals generated")
-                        ict_generated = [s for s in ict_signals if s.action in (Action.LONG, Action.SHORT)]
+                        from bot.strategy import Action as StrategyActionIct
+                        ict_generated = [s for s in ict_signals if s.action in (StrategyActionIct.LONG, StrategyActionIct.SHORT)]
                         _log(f"📊 ICT strategy: generated {len(ict_signals)} total, {len(ict_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if ict_generated:
@@ -4442,7 +4443,8 @@ def run_live_from_api(
                         zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="Z-Score signals generated")
-                        zscore_generated = [s for s in zscore_signals if s.action in (Action.LONG, Action.SHORT)]
+                        from bot.strategy import Action as StrategyActionZscore
+                        zscore_generated = [s for s in zscore_signals if s.action in (StrategyActionZscore.LONG, StrategyActionZscore.SHORT)]
                         _log(f"📊 ZSCORE strategy: generated {len(zscore_signals)} total, {len(zscore_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if zscore_generated:
