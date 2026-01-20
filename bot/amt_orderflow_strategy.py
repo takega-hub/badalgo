@@ -267,7 +267,7 @@ def generate_lh_orderflow_signals(
     client: BybitClient,
     symbol: str,
     df_ohlcv: pd.DataFrame,
-    vp_config: VolumeProfileConfig,
+    vp_config: Optional[VolumeProfileConfig] = None,
     cfg: Optional[LhOrderflowConfig] = None,
 ) -> List[Signal]:
     """
@@ -276,7 +276,8 @@ def generate_lh_orderflow_signals(
     - вход по возврату внутрь VA,
     - TP предполагается по POC (Poc включаем в reason).
     """
-    cfg = cfg or LhOrderflowConfig()
+    symbol_settings = _resolve_symbol_settings(symbol)
+    cfg = cfg or symbol_settings.liquidation_hunter
     signals: List[Signal] = []
     if df_ohlcv is None or df_ohlcv.empty:
         return signals
@@ -287,6 +288,7 @@ def generate_lh_orderflow_signals(
         df_vp["timestamp"] = pd.to_datetime(df_vp["timestamp"], unit="ms", utc=True)
         df_vp = df_vp.set_index("timestamp")
 
+    vp_config = vp_config or symbol_settings.volume_profile
     vp = build_volume_profile_from_ohlcv(df_vp, vp_config)
     if not vp:
         return signals
@@ -653,27 +655,97 @@ __all__ = [
     "generate_amt_signals",
     "LhOrderflowConfig",
     "generate_lh_orderflow_signals",
+    "SymbolSettings",
+    "AMT_CONFIG_REGISTRY",
+    "get_signals_for_symbol",
 ]
+
+
+def get_signals_for_symbol(
+    client: BybitClient,
+    symbol: str,
+    current_price: float,
+    df_ohlcv: pd.DataFrame,
+) -> List[Signal]:
+    """Convenience wrapper that applies per-symbol AMT settings automatically."""
+    settings = _resolve_symbol_settings(symbol)
+
+    signals = generate_amt_signals(
+        client=client,
+        symbol=symbol,
+        current_price=current_price,
+        df_ohlcv=df_ohlcv,
+        vp_config=settings.volume_profile,
+        abs_config=settings.absorption,
+    )
+
+    return signals
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_VOLUME_PROFILE_PRICE_STEP = 1.0
 
 
-AMT_CONFIG_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "BTCUSDT": {
-        "absorption": AbsorptionConfig(min_total_volume=80_000.0, min_cvd_delta=35_000.0),
-        "volume_profile": VolumeProfileConfig(price_step=10.0),
-    },
-    "ETHUSDT": {
-        "absorption": AbsorptionConfig(min_total_volume=30_000.0, min_cvd_delta=12_000.0),
-        "volume_profile": VolumeProfileConfig(price_step=1.0),
-    },
-    "SOLUSDT": {
-        "absorption": AbsorptionConfig(min_total_volume=12_000.0, min_cvd_delta=5_000.0),
-        "volume_profile": VolumeProfileConfig(price_step=0.1),
-    },
+@dataclass(frozen=True)
+class SymbolSettings:
+    absorption: AbsorptionConfig
+    volume_profile: VolumeProfileConfig
+    liquidation_hunter: LhOrderflowConfig
+
+
+AMT_CONFIG_REGISTRY: Dict[str, SymbolSettings] = {
+    "BTCUSDT": SymbolSettings(
+        absorption=AbsorptionConfig(
+            lookback_seconds=60,
+            min_total_volume=80_000.0,
+            min_cvd_delta=35_000.0,
+            min_buy_sell_ratio=2.5,
+            max_price_drift_pct=0.03,
+        ),
+        volume_profile=VolumeProfileConfig(price_step=10.0, value_area_pct=0.7),
+        liquidation_hunter=LhOrderflowConfig(cvd_spike_mult=2.5),
+    ),
+    "ETHUSDT": SymbolSettings(
+        absorption=AbsorptionConfig(
+            lookback_seconds=60,
+            min_total_volume=30_000.0,
+            min_cvd_delta=12_000.0,
+            min_buy_sell_ratio=2.0,
+            max_price_drift_pct=0.05,
+        ),
+        volume_profile=VolumeProfileConfig(price_step=1.0, value_area_pct=0.7),
+        liquidation_hunter=LhOrderflowConfig(cvd_spike_mult=2.0),
+    ),
+    "SOLUSDT": SymbolSettings(
+        absorption=AbsorptionConfig(
+            lookback_seconds=60,
+            min_total_volume=12_000.0,
+            min_cvd_delta=5_000.0,
+            min_buy_sell_ratio=2.0,
+            max_price_drift_pct=0.08,
+        ),
+        volume_profile=VolumeProfileConfig(price_step=0.1, value_area_pct=0.7),
+        liquidation_hunter=LhOrderflowConfig(cvd_spike_mult=2.0),
+    ),
 }
+
+
+def _resolve_symbol_settings(symbol: str) -> SymbolSettings:
+    symbol_key = (symbol or "").upper()
+    registry_entry = AMT_CONFIG_REGISTRY.get(symbol_key)
+    if registry_entry:
+        return SymbolSettings(
+            absorption=replace(registry_entry.absorption),
+            volume_profile=replace(registry_entry.volume_profile),
+            liquidation_hunter=replace(registry_entry.liquidation_hunter),
+        )
+
+    logger.warning("AMT config fallback: using default settings for %s", symbol_key or "<unknown>")
+    return SymbolSettings(
+        absorption=AbsorptionConfig(),
+        volume_profile=VolumeProfileConfig(price_step=DEFAULT_VOLUME_PROFILE_PRICE_STEP),
+        liquidation_hunter=LhOrderflowConfig(),
+    )
 
 
 def _resolve_amt_configs(
@@ -681,28 +753,9 @@ def _resolve_amt_configs(
     vp_config: Optional[VolumeProfileConfig],
     abs_config: Optional[AbsorptionConfig],
 ) -> tuple[VolumeProfileConfig, AbsorptionConfig]:
-    symbol_key = (symbol or "").upper()
-    registry_entry = AMT_CONFIG_REGISTRY.get(symbol_key)
+    settings = _resolve_symbol_settings(symbol)
 
-    resolved_vp = vp_config
-    resolved_abs = abs_config
-
-    if registry_entry:
-        if resolved_vp is None and registry_entry.get("volume_profile") is not None:
-            resolved_vp = replace(registry_entry["volume_profile"])
-        if resolved_abs is None and registry_entry.get("absorption") is not None:
-            resolved_abs = replace(registry_entry["absorption"])
-
-    if resolved_abs is None:
-        resolved_abs = AbsorptionConfig()
-        logger.debug("AMT config fallback: using default absorption settings for %s", symbol_key or "<unknown>")
-
-    if resolved_vp is None:
-        resolved_vp = VolumeProfileConfig(price_step=DEFAULT_VOLUME_PROFILE_PRICE_STEP)
-        logger.debug(
-            "AMT config fallback: using default volume profile price_step=%.4f for %s",
-            DEFAULT_VOLUME_PROFILE_PRICE_STEP,
-            symbol_key or "<unknown>",
-        )
+    resolved_vp = vp_config or settings.volume_profile
+    resolved_abs = abs_config or settings.absorption
 
     return resolved_vp, resolved_abs
