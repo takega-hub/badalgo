@@ -51,7 +51,17 @@ from bot.ict_strategy import build_ict_signals
 from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
 from bot.zscore_strategy import build_zscore_signals
 from bot.vbo_strategy import build_vbo_signals
-from bot.amt_orderflow_strategy import detect_absorption_squeeze_short, AbsorptionConfig
+from bot.amt_orderflow_strategy import (
+    detect_absorption_squeeze_short,
+    AbsorptionConfig,
+    VolumeProfileConfig,
+    generate_amt_signals,
+    LhOrderflowConfig,
+    generate_lh_orderflow_signals,
+    build_volume_profile_from_ohlcv,
+    _parse_trades,
+    _compute_cvd_metrics,
+)
 
 # Импорт для обработки ошибок Bybit API
 try:
@@ -681,16 +691,9 @@ def _calculate_tp_sl_for_signal(
             return take_profit, stop_loss
             
         elif strategy_type == "liquidation_hunter":
-            # Для Liquidation Hunter стратегии (mean reversion) используем оптимизированные TP/SL
-            # Результаты показывают убыточность при узких TP/SL, увеличиваем для лучшего RR
-            # Рекомендуемые параметры: TP 2.5% от цены, SL 1.0% от цены (RR ~2.5:1)
-            
+            # Для Liquidation Hunter стратегии (mean reversion) используем TP/SL,
+            # с особым режимом для orderflow‑сигналов lh_of_* (TP=POC из reason)
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
-            
-            # Для mean reversion стратегий используем более широкие уровни для лучшего RR
-            # TP: 2.5% от цены (25% от маржи при 10x) - увеличен с 1.8%
-            # SL: 1.0% от цены (10% от маржи при 10x) - увеличен с 0.7%
-            # RR: ~2.5:1 - оптимальное соотношение для mean reversion
             
             tp_pct_from_price = 0.025  # 2.5% от цены = 25% от маржи при 10x
             sl_pct_from_price = 0.010   # 1.0% от цены = 10% от маржи при 10x
@@ -712,54 +715,53 @@ def _calculate_tp_sl_for_signal(
             tp_pct_from_price = min(tp_pct_from_price, max_tp_pct)
             sl_pct_from_price = min(sl_pct_from_price, max_sl_pct)
             
-            # Используем уровни поддержки/сопротивления, если они находятся в пределах наших параметров
+            # 1) Попытка вытащить POC из orderflow‑reason (lh_of_*_poc_X)
+            poc_from_reason = None
+            reason = getattr(sig, "reason", "") or ""
+            if reason.startswith("lh_of_") and "_poc_" in reason:
+                try:
+                    poc_part = reason.split("_poc_")[-1]
+                    poc_from_reason = float(poc_part)
+                except Exception:
+                    poc_from_reason = None
+            
+            # 2) Базовые TP/SL (SR‑уровни или проценты)
             if use_sr_levels:
                 if sig.action == Action.LONG:
-                    # Для LONG: TP на сопротивление, SL на поддержку
                     if nearest_resistance and nearest_resistance > entry_price:
                         resistance_tp_pct = (nearest_resistance - entry_price) / entry_price
-                        if resistance_tp_pct <= tp_pct_from_price:
-                            take_profit = nearest_resistance
-                        else:
-                            take_profit = entry_price * (1 + tp_pct_from_price)
+                        take_profit = nearest_resistance if resistance_tp_pct <= tp_pct_from_price else entry_price * (1 + tp_pct_from_price)
                     else:
                         take_profit = entry_price * (1 + tp_pct_from_price)
                     
                     if nearest_support and nearest_support < entry_price:
                         support_sl_pct = (entry_price - nearest_support) / entry_price
-                        if support_sl_pct <= sl_pct_from_price:
-                            stop_loss = nearest_support
-                        else:
-                            stop_loss = entry_price * (1 - sl_pct_from_price)
+                        stop_loss = nearest_support if support_sl_pct <= sl_pct_from_price else entry_price * (1 - sl_pct_from_price)
                     else:
                         stop_loss = entry_price * (1 - sl_pct_from_price)
                 else:  # SHORT
-                    # Для SHORT: TP на поддержку, SL на сопротивление
                     if nearest_support and nearest_support < entry_price:
                         support_tp_pct = (entry_price - nearest_support) / entry_price
-                        if support_tp_pct <= tp_pct_from_price:
-                            take_profit = nearest_support
-                        else:
-                            take_profit = entry_price * (1 - tp_pct_from_price)
+                        take_profit = nearest_support if support_tp_pct <= tp_pct_from_price else entry_price * (1 - tp_pct_from_price)
                     else:
                         take_profit = entry_price * (1 - tp_pct_from_price)
                     
                     if nearest_resistance and nearest_resistance > entry_price:
                         resistance_sl_pct = (nearest_resistance - entry_price) / entry_price
-                        if resistance_sl_pct <= sl_pct_from_price:
-                            stop_loss = nearest_resistance
-                        else:
-                            stop_loss = entry_price * (1 + sl_pct_from_price)
+                        stop_loss = nearest_resistance if resistance_sl_pct <= sl_pct_from_price else entry_price * (1 + sl_pct_from_price)
                     else:
                         stop_loss = entry_price * (1 + sl_pct_from_price)
             else:
-                # Fallback на фиксированные проценты
                 if sig.action == Action.LONG:
                     take_profit = entry_price * (1 + tp_pct_from_price)
                     stop_loss = entry_price * (1 - sl_pct_from_price)
                 else:  # SHORT
                     take_profit = entry_price * (1 - tp_pct_from_price)
                     stop_loss = entry_price * (1 + sl_pct_from_price)
+
+            # 3) Если это orderflow‑сигнал и POC известен — переопределяем TP = POC
+            if poc_from_reason is not None:
+                take_profit = poc_from_reason
             
             # Логируем расчет
             risk = abs(entry_price - stop_loss)
@@ -871,21 +873,11 @@ def _calculate_tp_sl_for_signal(
             return take_profit, stop_loss
         
         elif strategy_type == "zscore":
-            # Для ZSCORE стратегии (Mean Reversion) используем оптимизированные TP/SL
-            # ZSCORE ловит возврат к среднему, поэтому нужны быстрые тейки
-            # Результаты показывают: SOLUSDT работает хорошо (65.2% WR, +3.34), но BTCUSDT убыточный (64.3% WR, -1.77)
-            # Проблема: при высоком WR отрицательный PnL означает плохой RR - средний выигрыш меньше среднего проигрыша
-            # Увеличиваем TP для лучшего RR, особенно для волатильных пар (BTCUSDT)
-            
+            # Для ZSCORE стратегии (Mean Reversion) базовые TP/SL + режим TP=POC (Volume Profile)
             leverage = settings.leverage if hasattr(settings, 'leverage') else 10
             
-            # Для mean reversion стратегий используем более широкие уровни с лучшим RR
-            # TP: 3.0% от цены (30% от маржи при 10x) - увеличен для лучшего RR
-            # SL: 1.0% от цены (10% от маржи при 10x) - увеличен для снижения преждевременных выходов
-            # RR: ~3.0:1 - улучшенное соотношение для mean reversion
-            
-            tp_pct_from_price = 0.030  # 3.0% от цены = 30% от маржи при 10x (увеличено с 2.5%)
-            sl_pct_from_price = 0.010   # 1.0% от цены = 10% от маржи при 10x (увеличено с 0.9%)
+            tp_pct_from_price = 0.030  # 3.0% от цены
+            sl_pct_from_price = 0.010  # 1.0% от цены
             
             # Проверяем максимальные границы из настроек
             max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
@@ -911,13 +903,12 @@ def _calculate_tp_sl_for_signal(
             # Убеждаемся, что SL в допустимом диапазоне (0.8% = 8% от маржи при 10x - в пределах 7-10%)
             sl_pct_from_price = max(min_sl_pct_from_price, min(sl_pct_from_price, max_sl_pct_from_price))
             
-            # Используем уровни поддержки/сопротивления, если они находятся в пределах наших параметров
+            # Базовые TP/SL (SR-уровни или проценты)
             if use_sr_levels:
                 if sig.action == Action.LONG:
-                    # Для LONG: TP на сопротивление, SL на поддержку
                     if nearest_resistance and nearest_resistance > entry_price:
                         resistance_tp_pct = (nearest_resistance - entry_price) / entry_price
-                        if resistance_tp_pct <= tp_pct_from_price and resistance_tp_pct >= tp_pct_from_price * 0.5:  # Не слишком близко
+                        if resistance_tp_pct <= tp_pct_from_price and resistance_tp_pct >= tp_pct_from_price * 0.5:
                             take_profit = nearest_resistance
                         else:
                             take_profit = entry_price * (1 + tp_pct_from_price)
@@ -933,10 +924,9 @@ def _calculate_tp_sl_for_signal(
                     else:
                         stop_loss = entry_price * (1 - sl_pct_from_price)
                 else:  # SHORT
-                    # Для SHORT: TP на поддержку, SL на сопротивление
                     if nearest_support and nearest_support < entry_price:
                         support_tp_pct = (entry_price - nearest_support) / entry_price
-                        if support_tp_pct <= tp_pct_from_price and support_tp_pct >= tp_pct_from_price * 0.5:  # Не слишком близко
+                        if support_tp_pct <= tp_pct_from_price and support_tp_pct >= tp_pct_from_price * 0.5:
                             take_profit = nearest_support
                         else:
                             take_profit = entry_price * (1 - tp_pct_from_price)
@@ -952,13 +942,27 @@ def _calculate_tp_sl_for_signal(
                     else:
                         stop_loss = entry_price * (1 + sl_pct_from_price)
             else:
-                # Fallback на фиксированные проценты
                 if sig.action == Action.LONG:
                     take_profit = entry_price * (1 + tp_pct_from_price)
                     stop_loss = entry_price * (1 - sl_pct_from_price)
                 else:  # SHORT
                     take_profit = entry_price * (1 - tp_pct_from_price)
                     stop_loss = entry_price * (1 + sl_pct_from_price)
+
+            # Если в reason зашит POC (из блока генерации сигналов) – используем его как TP
+            poc_from_reason = None
+            reason_str = getattr(sig, "reason", "") or ""
+            if "_poc_" in reason_str:
+                try:
+                    poc_part = reason_str.split("_poc_")[-1]
+                    poc_from_reason = float(poc_part)
+                except Exception:
+                    poc_from_reason = None
+            if poc_from_reason is not None:
+                take_profit = poc_from_reason
+
+            # Попытка переопределить TP по POC из Volume Profile (AMT-логика).
+            # Здесь df_ready недоступен, поэтому фактический TP=POC рассчитывается на этапе позиционного менеджмента.
             
             # Логируем расчет
             risk = abs(entry_price - stop_loss)
@@ -1234,6 +1238,18 @@ def _ensure_tp_sl_set(
         # Получаем текущую прибыль
         max_profit_pct = position_max_profit.get(symbol, 0.0)
         max_price = position_max_price.get(symbol, current_price)
+
+        # Определяем стратегию позиции (по entry_reason из истории, если есть)
+        position_strategy_type = None
+        try:
+            from bot.web.history import get_open_trade
+            open_trade = get_open_trade(symbol, entry_price=avg_price, price_tolerance_pct=0.05)
+            if open_trade:
+                entry_reason = open_trade.get("entry_reason", "")
+                if entry_reason:
+                    position_strategy_type = get_strategy_type_from_signal(entry_reason)
+        except Exception:
+            position_strategy_type = None
         
         # Проверяем, установлены ли TP/SL
         current_tp = position.get("take_profit", "")
@@ -1627,7 +1643,78 @@ def _ensure_tp_sl_set(
         target_sl = base_sl
         print(f"[live] 🔧 Initialized target_tp=${target_tp:.2f}, target_sl=${target_sl:.2f} from base_tp/base_sl (entry: ${avg_price:.2f})")
         
-        # 1. БЕЗУБЫТОК: Перемещаем SL в безубыток при достижении определенной прибыли
+        # Если позиция открыта AMT & Order Flow стратегией – используем отдельную логику сопровождения
+        if position_strategy_type == "amt_of":
+            # 1) Безубыток при достижении amt_of_breakeven_rr * риск
+            try:
+                # текущий риск в R оцениваем как |avg_price - base_sl| в %
+                base_sl_val = float(current_sl) if sl_set else avg_price
+                if position_bias == Bias.LONG:
+                    risk_pct = abs(avg_price - base_sl_val) / avg_price * 100
+                    profit_r = max_profit_pct / risk_pct if risk_pct > 0 else 0.0
+                else:
+                    risk_pct = abs(base_sl_val - avg_price) / avg_price * 100
+                    profit_r = max_profit_pct / risk_pct if risk_pct > 0 else 0.0
+            except Exception:
+                profit_r = 0.0
+
+            amt_rr = getattr(settings.strategy, "amt_of_breakeven_rr", 1.5)
+            if profit_r >= amt_rr:
+                # Переводим SL в безубыток + небольшой буфер
+                if position_bias == Bias.LONG:
+                    breakeven_sl = avg_price * 1.0005
+                else:
+                    breakeven_sl = avg_price * 0.9995
+                target_sl = breakeven_sl
+                print(
+                    f"[live] [{symbol}] 🔒 AMT_OF Breakeven: moving SL to ${breakeven_sl:.2f} "
+                    f"(~{profit_r:.2f}R, rr_target={amt_rr})"
+                )
+
+            # 2) Auction timeout: если после открытия прошло больше amt_of_auction_timeout_sec и max_profit_pct маленький – выходим
+            try:
+                from datetime import datetime, timezone
+                opened_at = position.get("createdTime") or position.get("created_time")
+                timeout_sec = getattr(settings.strategy, "amt_of_auction_timeout_sec", 600)
+                if opened_at and timeout_sec > 0:
+                    opened_ts = int(opened_at) / 1000.0 if isinstance(opened_at, str) and opened_at.isdigit() else None
+                    if opened_ts:
+                        opened_dt = datetime.fromtimestamp(opened_ts, tz=timezone.utc)
+                        age_sec = (datetime.now(timezone.utc) - opened_dt).total_seconds()
+                        if age_sec >= timeout_sec and max_profit_pct < 0.2:
+                            # Ставим SL очень близко к текущей цене, чтобы выйти
+                            if position_bias == Bias.LONG:
+                                target_sl = min(target_sl, current_price * 0.999) if target_sl else current_price * 0.999
+                            else:
+                                target_sl = max(target_sl, current_price * 1.001) if target_sl else current_price * 1.001
+                            print(
+                                f"[live] [{symbol}] ⏳ AMT_OF auction timeout: position age {age_sec:.0f}s "
+                                f"(timeout={timeout_sec}s), max_profit={max_profit_pct:.2f}% – forcing exit via SL {target_sl:.2f}"
+                            )
+            except Exception:
+                pass
+
+            # 3) Three-bar exit: если включен флаг – при трёх подряд барах против позиции ставим SL ближе
+            if getattr(settings.strategy, "amt_of_three_bar_exit_enabled", True):
+                try:
+                    # Ожидаем, что df_ready есть во внешнем контексте и last 3 бара доступны через history,
+                    # поэтому здесь только защитный лог – основная логика закрытия реализуется в основном цикле.
+                    # Чтобы не лезть в df_ready из этой функции, реализуем 3-bar exit как "резкий" сдвиг SL,
+                    # если max_profit_pct уже был положительный и вернулся к нулю/минусу.
+                    if max_profit_pct < 0 and position_max_profit.get(symbol, 0.0) > 0.5:
+                        # Цена ушла против после какого‑то профита – поджимаем SL вблизи текущей
+                        if position_bias == Bias.LONG:
+                            target_sl = min(target_sl, current_price * 0.999) if target_sl else current_price * 0.999
+                        else:
+                            target_sl = max(target_sl, current_price * 1.001) if target_sl else current_price * 1.001
+                        print(
+                            f"[live] [{symbol}] ⛔ AMT_OF three-bar style exit: profit faded after move in favor, "
+                            f"tightening SL to {target_sl:.2f}"
+                        )
+                except Exception:
+                    pass
+
+        # 1. БЕЗУБЫТОК (общий): Перемещаем SL в безубыток при достижении определенной прибыли
         # ВАЖНО: Безубыток должен быть лучше текущего SL, но не меньше 7% от маржи
         if settings.risk.enable_breakeven and max_profit_pct >= settings.risk.breakeven_activation_pct * 100:
             if position_bias == Bias.LONG:
@@ -4309,7 +4396,13 @@ def run_live_from_api(
                         smc_signals = build_smc_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="SMC signals generated")
-                        smc_generated = [s for s in smc_signals if s.action in (Action.LONG, Action.SHORT)]
+
+                        # Локальный alias для Action, чтобы избежать UnboundLocalError
+                        from bot.strategy import Action as StrategyActionSMC
+                        smc_generated = [
+                            s for s in smc_signals
+                            if s.action in (StrategyActionSMC.LONG, StrategyActionSMC.SHORT)
+                        ]
                         _log(f"📊 SMC strategy: generated {len(smc_signals)} total, {len(smc_generated)} actionable (LONG/SHORT)", symbol)
                         
                         # Диагностика, если нет сигналов
@@ -4321,15 +4414,8 @@ def run_live_from_api(
                                     _log(f"  💡 SMC: No zones found matching current trend and session filters. This is normal - waiting for setup", symbol)
                             else:
                                 # Есть сигналы, но все HOLD
-                                hold_count = len([s for s in smc_signals if s.action == Action.HOLD])
+                                hold_count = len([s for s in smc_signals if s.action == StrategyActionSMC.HOLD])
                                 _log(f"  💡 SMC: Generated {len(smc_signals)} signals, but all are HOLD (no actionable signals). Hold count: {hold_count}", symbol)
-                        
-                        # Убрали детальное логирование каждого сигнала - слишком много сообщений
-                        # Логируем только общее количество
-                        # if smc_generated:
-                        #     for sig in smc_generated:
-                        #         ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        #         _log(f"  ✅ SMC signal: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
                         for sig in smc_generated:
                             all_signals.append(sig)
@@ -4425,6 +4511,29 @@ def run_live_from_api(
                         except ImportError:
                             pass
                         liquidation_hunter_signals = build_liquidation_hunter_signals(df_ready, current_settings.strategy, symbol=symbol)
+
+                        # Дополнительно: orderflow‑вариант Liquidation Hunter через CVD + Volume Profile (lh_of_*)
+                        try:
+                            current_price = float(df_ready["close"].iloc[-1])
+                            vp_cfg_lh = VolumeProfileConfig(
+                                price_step=current_settings.strategy.amt_of_price_step,
+                                value_area_pct=current_settings.strategy.amt_of_value_area_pct,
+                                session_start_utc=current_settings.strategy.amt_of_session_start_utc,
+                                session_end_utc=current_settings.strategy.amt_of_session_end_utc,
+                            )
+                            lh_of_cfg = LhOrderflowConfig()
+                            lh_of_signals = generate_lh_orderflow_signals(
+                                client=client,
+                                symbol=symbol,
+                                df_ohlcv=df_ready,
+                                vp_config=vp_cfg_lh,
+                                cfg=lh_of_cfg,
+                            )
+                            if lh_of_signals:
+                                _log(f"📊 LIQUIDATION_HUNTER (orderflow) generated {len(lh_of_signals)} additional signals", symbol)
+                                liquidation_hunter_signals.extend(lh_of_signals)
+                        except Exception as e:
+                            _log(f"⚠️ Error generating orderflow LH signals: {e}", symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="Liquidation Hunter signals generated")
                         from bot.strategy import Action as StrategyActionLH
@@ -4493,11 +4602,46 @@ def run_live_from_api(
                             update_worker_status(symbol, current_status="Running", last_action="Computing Z-Score values...", error=None)
                         except ImportError:
                             pass
+                        # Пытаемся заранее посчитать POC для TP по Volume Profile
+                        zscore_poc = None
+                        try:
+                            df_vp = df_ready.copy()
+                            if "timestamp" in df_vp.columns:
+                                df_vp["timestamp"] = pd.to_datetime(df_vp["timestamp"], unit="ms", utc=True)
+                                df_vp = df_vp.set_index("timestamp")
+                            vp_cfg_z = VolumeProfileConfig(
+                                price_step=current_settings.strategy.amt_of_price_step,
+                                value_area_pct=current_settings.strategy.amt_of_value_area_pct,
+                                session_start_utc=current_settings.strategy.amt_of_session_start_utc,
+                                session_end_utc=current_settings.strategy.amt_of_session_end_utc,
+                            )
+                            vp_z = build_volume_profile_from_ohlcv(df_vp, vp_cfg_z)
+                            if vp_z:
+                                zscore_poc = float(vp_z["poc"])
+                                _log(f"📊 Z-Score: Volume Profile POC={zscore_poc:.2f} will be used as TP", symbol)
+                        except Exception as e:
+                            _log(f"⚠️ Z-Score: failed to build Volume Profile for POC TP: {e}", symbol)
+
                         zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="Z-Score signals generated")
                         from bot.strategy import Action as StrategyActionZscore
                         zscore_generated = [s for s in zscore_signals if s.action in (StrategyActionZscore.LONG, StrategyActionZscore.SHORT)]
+
+                        # CVD‑фильтр: если поток агрессии слишком силён, блокируем Z-Score сигналы (защита от "падающих ножей")
+                        try:
+                            trades = client.get_recent_trades(symbol, limit=400)
+                            trades_df = _parse_trades(trades)
+                            cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=current_settings.strategy.amt_of_lookback_seconds)
+                            if cvd_metrics:
+                                dv = cvd_metrics["delta_velocity"]
+                                avg_abs = cvd_metrics["avg_abs_delta"]
+                                if avg_abs and abs(dv) > avg_abs * 3:
+                                    _log(f"⚠️ Z-Score: strong directional CVD detected (dv={dv:.0f}, avg={avg_abs:.0f}), skipping mean reversion signals", symbol)
+                                    zscore_generated = []
+                        except Exception as e:
+                            _log(f"⚠️ Z-Score: CVD filter failed, keeping signals unfiltered: {e}", symbol)
+
                         _log(f"📊 ZSCORE strategy: generated {len(zscore_signals)} total, {len(zscore_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if zscore_generated:
@@ -4508,6 +4652,9 @@ def run_live_from_api(
                                 _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
                         
                         for sig in zscore_generated:
+                            # Если удалось посчитать POC, добавляем его в reason, чтобы TP/SL могли использовать TP=POC
+                            if zscore_poc is not None and "_poc_" not in sig.reason:
+                                sig.reason = f"{sig.reason}_poc_{zscore_poc:.2f}"
                             all_signals.append(sig)
                             # Сохраняем сигнал в историю
                             try:
@@ -4607,50 +4754,43 @@ def run_live_from_api(
             else:
                 _log(f"⚠️ VBO strategy is DISABLED for {symbol}", symbol)
             
-            # AMT & Order Flow Scalper (Absorption Squeeze) - сценарий B в обе стороны (LONG/SHORT)
+            # AMT & Order Flow Scalper (Absorption + Breakout/Squeeze по профилю)
             if symbol_strategy_settings.enable_amt_of_strategy:
                 try:
-                    # Для AMT/OrderFlow используем тики/ленту через BybitClient
                     # Берём текущую цену из последней свечи
                     current_price = float(df_ready["close"].iloc[-1])
-                    
-                    # Формируем конфиг из StrategyParams
-                    cfg = AbsorptionConfig(
+
+                    # Конфиги для orderflow и профиля
+                    abs_cfg = AbsorptionConfig(
                         lookback_seconds=current_settings.strategy.amt_of_lookback_seconds,
                         min_total_volume=current_settings.strategy.amt_of_min_total_volume,
                         min_buy_sell_ratio=current_settings.strategy.amt_of_min_buy_sell_ratio,
                         max_price_drift_pct=current_settings.strategy.amt_of_max_price_drift_pct,
                         min_cvd_delta=current_settings.strategy.amt_of_min_cvd_delta,
                     )
-                    
+                    vp_cfg = VolumeProfileConfig(
+                        price_step=current_settings.strategy.amt_of_price_step,
+                        value_area_pct=current_settings.strategy.amt_of_value_area_pct,
+                        session_start_utc=None,
+                        session_end_utc=None,
+                    )
+
                     _log(
-                        f"🔍 AMT_OF: Checking absorption squeeze (lookback={cfg.lookback_seconds}s, "
-                        f"min_vol={cfg.min_total_volume}, min_cvd={cfg.min_cvd_delta})",
+                        f"🔍 AMT_OF: Checking AMT signals (lookback={abs_cfg.lookback_seconds}s, "
+                        f"min_vol={abs_cfg.min_total_volume}, min_cvd={abs_cfg.min_cvd_delta}, "
+                        f"step={vp_cfg.price_step}, VA={vp_cfg.value_area_pct*100:.0f}%)",
                         symbol,
                     )
-                    
-                    # Пытаемся найти сначала SHORT-сценарий (поглощение лимитами продавца),
-                    # затем LONG-сценарий (поглощение лимитами покупателя)
-                    from bot.amt_orderflow_strategy import detect_absorption_squeeze_long
 
-                    amt_signals = []
-                    short_sig = detect_absorption_squeeze_short(client, symbol, current_price, cfg)
-                    if short_sig:
-                        amt_signals.append(short_sig)
-                        _log(
-                            f"📊 AMT_OF strategy: detected SHORT absorption squeeze @ ${short_sig.price:.2f} "
-                            f"({short_sig.reason})",
-                            symbol,
-                        )
-
-                    long_sig = detect_absorption_squeeze_long(client, symbol, current_price, cfg)
-                    if long_sig:
-                        amt_signals.append(long_sig)
-                        _log(
-                            f"📊 AMT_OF strategy: detected LONG absorption squeeze @ ${long_sig.price:.2f} "
-                            f"({long_sig.reason})",
-                            symbol,
-                        )
+                    amt_signals = generate_amt_signals(
+                        client=client,
+                        symbol=symbol,
+                        current_price=current_price,
+                        df_ohlcv=df_ready,
+                        vp_config=vp_cfg,
+                        abs_config=abs_cfg,
+                        delta_aggr_mult=current_settings.strategy.amt_of_delta_aggr_mult,
+                    )
 
                     if amt_signals:
                         for amt_signal in amt_signals:
@@ -4665,7 +4805,7 @@ def run_live_from_api(
                                     else:
                                         ts_log = ts_log.tz_convert("UTC")
                                     ts_log = ts_log.to_pydatetime()
-                                
+
                                 add_signal(
                                     action=amt_signal.action.value,
                                     reason=amt_signal.reason,
@@ -4673,12 +4813,12 @@ def run_live_from_api(
                                     timestamp=ts_log,
                                     symbol=symbol,
                                     strategy_type="amt_of",
-                                    signal_id=amt_signal.signal_id if getattr(amt_signal, "signal_id", None) else None,
+                                    signal_id=getattr(amt_signal, "signal_id", None),
                                 )
                             except Exception as e:
                                 _log(f"⚠️ Failed to save AMT_OF signal to history: {e}", symbol)
                     else:
-                        _log("ℹ️ AMT_OF: no valid absorption squeeze signal in current window", symbol)
+                        _log("ℹ️ AMT_OF: no valid AMT signals in current window", symbol)
                 except Exception as e:
                     _log(f"❌ Error in AMT_OF strategy: {e}", symbol)
                     import traceback

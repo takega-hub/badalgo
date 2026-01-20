@@ -33,6 +33,10 @@ class ZScoreStrategy:
         self.z_threshold_short = 2.5  # Порог для SHORT (перекупленность) - оптимальное значение
         self.exit_threshold = 0.5  # Порог для выхода (Z близок к 0)
         self.min_periods = 20  # Минимальное количество периодов для расчета
+        # Фильтр "состояния рынка": канал (balance) vs тренд
+        # Порог по наклону SMA и относительной волатильности (StdDev / Price)
+        self.trend_slope_threshold = 0.002   # чем больше, тем жёстче фильтр тренда
+        self.balance_max_ratio = 0.03       # максимально допустимая ширина канала (~3%)
         
     def calculate_z_score(self, df: pd.DataFrame) -> pd.Series:
         """
@@ -95,6 +99,12 @@ class ZScoreStrategy:
         # SMA для фильтра тренда
         if 'sma' not in df.columns:
             df['sma'] = df['close'].rolling(window=20, min_periods=1).mean()
+
+        # Дополнительно: простая оценка состояния рынка (balance vs trend)
+        df['sma_trend'] = df['close'].rolling(window=self.window, min_periods=self.min_periods).mean()
+        df['std_trend'] = df['close'].rolling(window=self.window, min_periods=self.min_periods).std()
+        df['sma_slope'] = df['sma_trend'].diff(self.window) / self.window
+        df['balance_ratio'] = df['std_trend'] / df['close']
         
         # Генерируем сигналы с фильтрами качества
         for idx, row in df.iterrows():
@@ -102,15 +112,18 @@ class ZScoreStrategy:
             
             if not np.isfinite(z):
                 continue
+
+            # Фильтр состояния рынка: торгуем Z-Score только в "балансе"
+            slope = row.get('sma_slope', 0.0)
+            balance_ratio = row.get('balance_ratio', 0.0)
+            in_trend = (abs(slope) > self.trend_slope_threshold) or (balance_ratio > self.balance_max_ratio)
+            if in_trend:
+                # Рынок в тренде / слишком широком диапазоне – пропускаем mean reversion вход
+                continue
             
             # LONG сигнал: Z < -2.5 (цена аномально низка, ожидаем возврат к среднему)
             if z < self.z_threshold_long:
-                # ФИЛЬТР 1: RSI не должен быть в экстремальной перепроданности (< 20) - может быть ложный сигнал
-                rsi = row.get('rsi', np.nan)
-                if np.isfinite(rsi) and rsi < 20:
-                    continue  # Слишком экстремальная перепроданность - пропускаем
-                
-                # ФИЛЬТР 2: Объем должен быть выше среднего (подтверждение движения)
+                # Объемный фильтр: игнорируем свечи с очень слабым объёмом
                 volume = row.get('volume', 0)
                 volume_sma = row.get('volume_sma', 0)
                 if volume_sma > 0 and volume < volume_sma * 0.8:  # Объем ниже среднего на 20%
@@ -133,12 +146,7 @@ class ZScoreStrategy:
             
             # SHORT сигнал: Z > +2.5 (цена аномально высока, ожидаем возврат к среднему)
             elif z > self.z_threshold_short:
-                # ФИЛЬТР 1: RSI не должен быть в экстремальной перекупленности (> 80) - может быть ложный сигнал
-                rsi = row.get('rsi', np.nan)
-                if np.isfinite(rsi) and rsi > 80:
-                    continue  # Слишком экстремальная перекупленность - пропускаем
-                
-                # ФИЛЬТР 2: Объем должен быть выше среднего (подтверждение движения)
+                # Объемный фильтр: игнорируем свечи с очень слабым объёмом
                 volume = row.get('volume', 0)
                 volume_sma = row.get('volume_sma', 0)
                 if volume_sma > 0 and volume < volume_sma * 0.8:  # Объем ниже среднего на 20%

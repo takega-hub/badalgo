@@ -112,6 +112,15 @@ class StrategyParams:
     amt_of_min_buy_sell_ratio: float = 2.0  # во сколько раз покупки больше продаж для bear-squeeze
     amt_of_max_price_drift_pct: float = 0.05  # максимум движения цены в % при сильном CVD
     amt_of_min_cvd_delta: float = 5_000.0  # минимальный прирост CVD за окно
+    # AMT & Order Flow Scalper (Volume Profile + Breakout/Squeeze)
+    amt_of_price_step: float = 10.0  # шаг биннинга цены для Volume Profile (например, 10 для BTCUSDT, 2 для ETHUSDT, 0.1 для SOLUSDT)
+    amt_of_value_area_pct: float = 0.70  # доля объёма в зоне стоимости (обычно 70%)
+    amt_of_delta_lookback_sec: int = 300  # окно (в секундах) для расчёта Delta Velocity (наклона CVD)
+    amt_of_delta_aggr_mult: float = 2.5  # во сколько раз всплеск Delta Velocity должен превышать среднее значение
+    # AMT & Order Flow Scalper – сопровождение позиции
+    amt_of_breakeven_rr: float = 1.5  # при достижении 1.5R переводим SL в безубыток (+комиссия)
+    amt_of_auction_timeout_sec: int = 600  # таймаут “auction”: если позиция не дала профит за N секунд, закрываем
+    amt_of_three_bar_exit_enabled: bool = True  # включить 3‑барный выход против позиции
 
 
 @dataclass

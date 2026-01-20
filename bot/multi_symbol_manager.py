@@ -7,10 +7,14 @@ import time
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 
-from bot.config import AppSettings
+import numpy as np
+import pandas as pd
+
+from bot.config import AppSettings, SymbolStrategySettings
 from bot.live import run_live_from_api
 from bot.shared_settings import get_settings, set_settings
 from bot.exchange.bybit_client import BybitClient
+from bot.amt_orderflow_strategy import VolumeProfileConfig, build_volume_profile_from_ohlcv
 
 # Глобальный словарь для обновления статуса воркеров из run_live_from_api
 # Формат: {symbol: {"last_update": timestamp, "error": error_msg}}
@@ -165,6 +169,167 @@ class MultiSymbolManager:
             traceback.print_exc()
         
         return detected_symbols
+
+    def _apply_amt_symbol_filter(self) -> None:
+        """
+        Фильтр инструментов для AMT & Order Flow:
+        - RVOL (отн. объём)
+        - Clean Range vs ATR (ширина value area / ATR)
+        - Depth стакана (суммарный объём заявок)
+        
+        AMT включается только для символов, прошедших фильтр И включённых пользователем.
+        """
+        if not getattr(self.settings, "enable_amt_of_strategy", False):
+            # Глобально AMT выключен – ничего не делаем
+            print("[MultiSymbol] [AMT] Global AMT_OF strategy is disabled – skipping instrument filter")
+            return
+
+        if not getattr(self.settings, "active_symbols", None):
+            return
+
+        try:
+            client = BybitClient(self.settings.api)
+        except Exception as e:
+            print(f"[MultiSymbol] [AMT] ⚠️ Failed to init BybitClient for AMT filter: {e}")
+            return
+
+        # Карта таймфрейма для kline
+        tf = getattr(self.settings, "timeframe", "15m")
+        tf_map = {
+            "1m": "1",
+            "3m": "3",
+            "5m": "5",
+            "15m": "15",
+            "30m": "30",
+            "1h": "60",
+            "4h": "240",
+        }
+        interval = tf_map.get(tf, "15")
+
+        # Пороговые значения фильтров (при необходимости можно вынести в настройки)
+        rvol_min = 1.5
+        clean_min = 0.5
+        clean_max = 2.5
+        depth_min_usdt = 50_000.0
+
+        print(f"[MultiSymbol] [AMT] Running instrument filter for symbols: {self.settings.active_symbols}")
+
+        for symbol in self.settings.active_symbols:
+            try:
+                # Берём уже существующие настройки стратегий для символа
+                symbol_cfg: SymbolStrategySettings = self.settings.get_strategy_settings_for_symbol(symbol)
+                user_enabled = bool(symbol_cfg.enable_amt_of_strategy)
+
+                if not user_enabled:
+                    # Пользователь не включил AMT для этого символа – не трогаем
+                    self.settings.set_strategy_settings_for_symbol(symbol, symbol_cfg)
+                    print(f"[MultiSymbol] [AMT] {symbol}: user disabled AMT_OF, skipping filter")
+                    continue
+
+                # --- OHLCV для RVOL и ATR ---
+                df = client.get_kline_df(symbol=symbol, interval=interval, limit=max(self.settings.kline_limit, 200))
+                if df is None or df.empty or len(df) < 30:
+                    print(f"[MultiSymbol] [AMT] {symbol}: not enough kline data for filter (len={len(df) if df is not None else 0})")
+                    symbol_cfg.enable_amt_of_strategy = False
+                    self.settings.set_strategy_settings_for_symbol(symbol, symbol_cfg)
+                    continue
+
+                # RVOL
+                last_vol = float(df["volume"].iloc[-1])
+                hist = df["volume"].iloc[-25:-1] if len(df) > 25 else df["volume"].iloc[:-1]
+                avg_vol = float(hist.mean()) if len(hist) > 0 else 0.0
+                rvol = last_vol / avg_vol if avg_vol > 0 else 0.0
+
+                # ATR 14
+                high = df["high"].to_numpy(dtype=float)
+                low = df["low"].to_numpy(dtype=float)
+                close = df["close"].to_numpy(dtype=float)
+                prev_close = np.concatenate(([close[0]], close[:-1]))
+                tr = np.maximum.reduce(
+                    [high - low, np.abs(high - prev_close), np.abs(low - prev_close)]
+                )
+                atr_series = pd.Series(tr).rolling(14).mean()
+                atr = float(atr_series.iloc[-1]) if not np.isnan(atr_series.iloc[-1]) else 0.0
+
+                # --- Volume Profile для Clean Range (VA width / ATR) ---
+                clean_ratio = None
+                if atr > 0:
+                    df_vp = df.copy()
+                    df_vp["timestamp"] = pd.to_datetime(df_vp["timestamp"], unit="ms", utc=True)
+                    df_vp = df_vp.set_index("timestamp")
+
+                    vp_cfg = VolumeProfileConfig(
+                        price_step=self.settings.strategy.amt_of_price_step,
+                        value_area_pct=self.settings.strategy.amt_of_value_area_pct,
+                        session_start_utc=self.settings.strategy.amt_of_session_start_utc,
+                        session_end_utc=self.settings.strategy.amt_of_session_end_utc,
+                    )
+                    vp = build_volume_profile_from_ohlcv(df_vp, vp_cfg)
+                    if vp:
+                        va_width = float(vp["vah"] - vp["val"])
+                        clean_ratio = va_width / atr if atr > 0 else None
+
+                # --- Глубина стакана ---
+                depth_usdt = 0.0
+                try:
+                    ob = client.get_orderbook(symbol, limit=50)
+                    result = ob.get("result", {}) if isinstance(ob, dict) else {}
+                    bids = result.get("b", []) or result.get("bids", [])
+                    asks = result.get("a", []) or result.get("asks", [])
+
+                    def _depth_notional(levels: List[Any]) -> float:
+                        total = 0.0
+                        for lvl in levels:
+                            try:
+                                if isinstance(lvl, dict):
+                                    price = float(lvl.get("price") or lvl.get("p") or 0)
+                                    size = float(lvl.get("size") or lvl.get("q") or lvl.get("qty") or 0)
+                                else:
+                                    # формат [price, size, ...]
+                                    price = float(lvl[0])
+                                    size = float(lvl[1])
+                                total += price * size
+                            except Exception:
+                                continue
+                        return total
+
+                    bid_notional = _depth_notional(bids)
+                    ask_notional = _depth_notional(asks)
+                    depth_usdt = float(min(bid_notional, ask_notional))
+                except Exception as e:
+                    print(f"[MultiSymbol] [AMT] {symbol}: error while reading orderbook depth: {e}")
+                    depth_usdt = 0.0
+
+                # Решение по фильтру
+                passes_rvol = rvol >= rvol_min
+                passes_clean = clean_ratio is not None and clean_min <= clean_ratio <= clean_max
+                passes_depth = depth_usdt >= depth_min_usdt
+
+                final_enable = passes_rvol and passes_clean and passes_depth
+
+                clean_str = f"{clean_ratio:.2f}" if clean_ratio is not None else "nan"
+                status_str = "PASS" if final_enable else "FAIL"
+                print(
+                    f"[MultiSymbol] [AMT] {symbol}: "
+                    f"RVOL={rvol:.2f} (min {rvol_min}), "
+                    f"Clean={clean_str} (range {clean_min}–{clean_max}), "
+                    f"Depth≈{depth_usdt:,.0f} USDT (min {depth_min_usdt:,.0f}) -> {status_str}"
+                )
+
+                symbol_cfg.enable_amt_of_strategy = final_enable
+                self.settings.set_strategy_settings_for_symbol(symbol, symbol_cfg)
+
+            except Exception as e:
+                print(f"[MultiSymbol] [AMT] ⚠️ Error applying filter for {symbol}: {e}")
+                import traceback
+                traceback.print_exc()
+                # На ошибке фильтра — подстраховка: выключаем AMT для символа
+                try:
+                    symbol_cfg = self.settings.get_strategy_settings_for_symbol(symbol)
+                    symbol_cfg.enable_amt_of_strategy = False
+                    self.settings.set_strategy_settings_for_symbol(symbol, symbol_cfg)
+                except Exception:
+                    pass
     
     def _create_settings_for_symbol(self, symbol: str) -> AppSettings:
         """
@@ -404,6 +569,12 @@ class MultiSymbolManager:
                     print(f"[MultiSymbol] ✅ Will manage {len(detected_symbols)} symbols with open positions: {detected_symbols}")
             except Exception as e:
                 print(f"[MultiSymbol] ⚠️ Position detection failed (continuing anyway): {e}")
+
+            # 🔍 Фильтр инструментов для AMT & Order Flow (RVOL / Clean Range / Depth)
+            try:
+                self._apply_amt_symbol_filter()
+            except Exception as e:
+                print(f"[MultiSymbol] [AMT] ⚠️ Instrument filter failed (continuing without AMT filter): {e}")
             
             if not self.settings.active_symbols or len(self.settings.active_symbols) == 0:
                 print("[MultiSymbol] ❌ Error: No active symbols configured and no open positions found")

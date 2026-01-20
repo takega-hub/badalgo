@@ -32,6 +32,7 @@ class ICTFVG:
     lower: float
     direction: str  # "bullish" или "bearish"
     liquidity_bar_index: int  # Индекс свечи, которая сняла ликвидность
+    active: bool = True       # FVG активен (не митигирован)
 
 
 @dataclass
@@ -51,17 +52,19 @@ class ICTStrategy:
     def __init__(self, params):
         self.params = params
         
-        # Определяем временные зоны для сессий (UTC)
-        # Лондонская сессия: 08:00 - 16:00 UTC
-        # Нью-Йоркская сессия: 13:00 - 21:00 UTC
-        self.london_start = time(8, 0)
-        self.london_end = time(16, 0)
-        self.ny_start = time(13, 0)
-        self.ny_end = time(21, 0)
+        # Таймзона Нью-Йорка для Silver Bullet окон (ICT ориентируется на NY Local Time)
+        self.ny_tz = pytz.timezone("America/New_York")
+        # Silver Bullet окна (NY local time, ET)
+        # London SB: 03:00–04:00, NY AM: 10:00–11:00, NY PM: 14:00–15:00
+        self.sb_windows_ny = [
+            (time(3, 0), time(4, 0)),   # London SB
+            (time(10, 0), time(11, 0)), # NY AM SB
+            (time(14, 0), time(15, 0)), # NY PM SB
+        ]
     
     def is_trading_session(self, timestamp: pd.Timestamp) -> bool:
         """
-        Проверяет, находится ли время в активной торговой сессии.
+        Проверяет, находится ли время в активном Silver Bullet окне (NY local time).
         
         Args:
             timestamp: Временная метка свечи
@@ -72,21 +75,19 @@ class ICTStrategy:
         if not isinstance(timestamp, pd.Timestamp):
             timestamp = pd.to_datetime(timestamp)
         
-        # Конвертируем в UTC если нужно
+        # Приводим к UTC, затем в America/New_York
         if timestamp.tzinfo is None:
-            timestamp = timestamp.tz_localize('UTC')
+            ts_utc = timestamp.tz_localize('UTC')
         else:
-            timestamp = timestamp.tz_convert('UTC')
+            ts_utc = timestamp.tz_convert('UTC')
+        ts_ny = ts_utc.astimezone(self.ny_tz)
+        current_time_ny = ts_ny.time()
         
-        current_time = timestamp.time()
-        
-        # Проверяем Лондонскую сессию
-        london_active = self.london_start <= current_time <= self.london_end
-        
-        # Проверяем Нью-Йоркскую сессию
-        ny_active = self.ny_start <= current_time <= self.ny_end
-        
-        return london_active or ny_active
+        # Silver Bullet окна в NY local time
+        for start, end in self.sb_windows_ny:
+            if start <= current_time_ny <= end:
+                return True
+        return False
     
     def calculate_williams_alligator(
         self, 
@@ -115,22 +116,12 @@ class ICTStrategy:
         """
         # Используем медианную цену (high + low) / 2
         median_price = (df['high'] + df['low']) / 2
-        
-        # Сглаженная медианная цена (SMMA)
-        def smma(series: pd.Series, period: int) -> pd.Series:
-            """Smoothed Moving Average (SMMA)."""
-            result = pd.Series(index=series.index, dtype=float)
-            result.iloc[0] = series.iloc[0]
-            
-            for i in range(1, len(series)):
-                result.iloc[i] = (result.iloc[i-1] * (period - 1) + series.iloc[i]) / period
-            
-            return result
-        
-        # Рассчитываем линии с учетом сдвига
-        jaw = smma(median_price, jaw_period).shift(jaw_shift)
-        teeth = smma(median_price, teeth_period).shift(teeth_shift)
-        lips = smma(median_price, lips_period).shift(lips_shift)
+
+        # Быстрый векторизованный SMMA через экспоненциальное сглаживание
+        # (ewm с alpha=1/period хорошо аппроксимирует SMMA и в разы быстрее циклов)
+        jaw = median_price.ewm(alpha=1 / jaw_period, adjust=False).mean().shift(jaw_shift)
+        teeth = median_price.ewm(alpha=1 / teeth_period, adjust=False).mean().shift(teeth_shift)
+        lips = median_price.ewm(alpha=1 / lips_period, adjust=False).mean().shift(lips_shift)
         
         return jaw, teeth, lips
     
@@ -217,84 +208,98 @@ class ICTStrategy:
         if len(df) < 100:
             return []
         
-        liquidity_zones = []
+        liquidity_zones: List[ICTLiquidity] = []
         
-        # Группируем по дням
+        # Копируем и приводим индекс к DatetimeIndex
         df_copy = df.copy()
         if not isinstance(df_copy.index, pd.DatetimeIndex):
             df_copy.index = pd.to_datetime(df_copy.index)
         
-        # Конвертируем в UTC
+        # Приводим к UTC, затем в NY, чтобы определить сессии
         if df_copy.index.tzinfo is None:
             df_copy.index = df_copy.index.tz_localize('UTC')
         else:
             df_copy.index = df_copy.index.tz_convert('UTC')
         
-        # Получаем уникальные дни
-        df_copy['date'] = df_copy.index.date
-        unique_dates = df_copy['date'].unique()
+        ts_ny = df_copy.index.tz_convert(self.ny_tz)
+        df_copy["date_ny"] = ts_ny.date
         
-        # Упрощенная логика: ищем свечи, которые выходят за пределы предыдущего дня
-        # или текущего дня (до этой свечи)
-        for date_idx, date in enumerate(unique_dates[-lookback_days:]):
-            day_data = df_copy[df_copy['date'] == date]
-            
-            if len(day_data) < 5:
+        # Определяем сессию по NY local time
+        def _session_for_time(t: time) -> str:
+            # Примерное деление: Азия 00:00–08:00, Лондон 08:00–13:00, NY 13:00–21:00
+            if 0 <= t.hour < 8:
+                return "asia"
+            if 8 <= t.hour < 13:
+                return "london"
+            if 13 <= t.hour < 21:
+                return "ny"
+            return "off"
+        
+        df_copy["session"] = [ _session_for_time(t.time()) for t in ts_ny ]
+        # Убираем "off"‑часы
+        df_copy = df_copy[df_copy["session"] != "off"]
+        if df_copy.empty:
+            return liquidity_zones
+        
+        # Ключ сессии: (дата, session)
+        df_copy["session_key"] = list(zip(df_copy["date_ny"], df_copy["session"]))
+        session_keys = list(dict.fromkeys(df_copy["session_key"].tolist()))  # сохраняем порядок
+        
+        # Используем последние lookback_days сессий
+        session_keys = session_keys[-max(1, lookback_days * 3):]
+        
+        session_high_low = {}
+        for sk in session_keys:
+            sess_data = df_copy[df_copy["session_key"] == sk]
+            if sess_data.empty:
+                continue
+            session_high_low[sk] = (
+                sess_data["high"].max(),
+                sess_data["low"].min(),
+            )
+        
+        # Ищем свечи, которые выносят предыдущие сессионные high/low
+        for idx_sk, sk in enumerate(session_keys):
+            sess_data = df_copy[df_copy["session_key"] == sk]
+            if sess_data.empty or len(sess_data) < 3:
                 continue
             
-            # Получаем high/low предыдущего дня
-            prev_date_high = None
-            prev_date_low = None
+            prev_sk = session_keys[idx_sk - 1] if idx_sk > 0 else None
+            if prev_sk is None or prev_sk not in session_high_low:
+                continue
             
-            if date_idx > 0:
-                # Находим индекс предыдущей даты в списке
-                prev_date_idx = len(unique_dates) - lookback_days + date_idx - 1
-                if prev_date_idx >= 0 and prev_date_idx < len(unique_dates):
-                    prev_date = unique_dates[prev_date_idx]
-                    prev_day_data = df_copy[df_copy['date'] == prev_date]
-                    if len(prev_day_data) > 0:
-                        prev_date_high = prev_day_data['high'].max()
-                        prev_date_low = prev_day_data['low'].min()
+            prev_high, prev_low = session_high_low[prev_sk]
+            if prev_high is None or prev_low is None:
+                continue
             
-            # Вычисляем high/low текущего дня (для использования как reference)
-            current_day_high = day_data['high'].max()
-            current_day_low = day_data['low'].min()
-            
-            # Используем максимум из предыдущего дня и текущего дня как reference
-            reference_high = max(prev_date_high or current_day_high, current_day_high)
-            reference_low = min(prev_date_low or current_day_low, current_day_low) if prev_date_low else current_day_low
-            
-            # Ищем свечи, которые выходят за пределы reference
-            for candle_idx, (idx, row) in enumerate(day_data.iterrows()):
-                bar_idx = df_copy.index.get_loc(idx)
+            for idx, row in sess_data.iterrows():
+                bar_idx = df.index.get_loc(idx)  # индекс в оригинальном df
                 
-                # Упрощенная логика: используем предыдущий день как reference
-                # Если предыдущего дня нет, используем текущий день
-                effective_high = prev_date_high if prev_date_high else current_day_high
-                effective_low = prev_date_low if prev_date_low else current_day_low
+                # Sweep выше high предыдущей сессии
+                if prev_high > 0 and row["high"] > prev_high * 0.999:
+                    liquidity_zones.append(
+                        ICTLiquidity(
+                            bar_index=bar_idx,
+                            timestamp=idx,
+                            price=row["high"],
+                            direction="above_high",
+                            daily_high=prev_high,
+                            daily_low=prev_low,
+                        )
+                    )
                 
-                # Проверяем снятие ликвидности выше effective_high
-                # Используем небольшой допуск для учета проскальзывания
-                if effective_high > 0 and row['high'] > effective_high * 0.999:
-                    liquidity_zones.append(ICTLiquidity(
-                        bar_index=bar_idx,
-                        timestamp=idx,
-                        price=row['high'],
-                        direction="above_high",
-                        daily_high=effective_high,
-                        daily_low=effective_low
-                    ))
-                
-                # Проверяем снятие ликвидности ниже effective_low
-                if effective_low < float('inf') and row['low'] < effective_low * 1.001:
-                    liquidity_zones.append(ICTLiquidity(
-                        bar_index=bar_idx,
-                        timestamp=idx,
-                        price=row['low'],
-                        direction="below_low",
-                        daily_high=effective_high,
-                        daily_low=effective_low
-                    ))
+                # Sweep ниже low предыдущей сессии
+                if prev_low < float("inf") and row["low"] < prev_low * 1.001:
+                    liquidity_zones.append(
+                        ICTLiquidity(
+                            bar_index=bar_idx,
+                            timestamp=idx,
+                            price=row["low"],
+                            direction="below_low",
+                            daily_high=prev_high,
+                            daily_low=prev_low,
+                        )
+                    )
         
         return liquidity_zones
     
@@ -362,14 +367,16 @@ class ICTStrategy:
                         # Проверяем возврат: текущая цена должна быть ниже уровня снятия ликвидности
                         # или хотя бы ниже максимума свечи, которая сняла ликвидность
                         if curr_close < liq.price or (i > liq.bar_index + 1 and any(closes[j] < liq.price for j in range(liq.bar_index + 1, i))):
-                            fvg_zones.append(ICTFVG(
-                                bar_index=i,
-                                timestamp=df.index[i],
-                                upper=curr_low,
-                                lower=prev_prev_high,
-                                direction="bullish",
-                                liquidity_bar_index=liq.bar_index
-                            ))
+                            fvg_zones.append(
+                                ICTFVG(
+                                    bar_index=i,
+                                    timestamp=df.index[i],
+                                    upper=curr_low,
+                                    lower=prev_prev_high,
+                                    direction="bullish",
+                                    liquidity_bar_index=liq.bar_index,
+                                )
+                            )
                 
                 # Медвежий FVG: верхняя граница текущей свечи ниже нижней границы свечи i-2
                 if curr_high < prev_prev_low:
@@ -377,14 +384,16 @@ class ICTStrategy:
                     if liq.direction == "below_low":
                         # Проверяем возврат: текущая цена должна быть выше уровня снятия ликвидности
                         if curr_close > liq.price or (i > liq.bar_index + 1 and any(closes[j] > liq.price for j in range(liq.bar_index + 1, i))):
-                            fvg_zones.append(ICTFVG(
-                                bar_index=i,
-                                timestamp=df.index[i],
-                                upper=prev_prev_low,
-                                lower=curr_high,
-                                direction="bearish",
-                                liquidity_bar_index=liq.bar_index
-                            ))
+                            fvg_zones.append(
+                                ICTFVG(
+                                    bar_index=i,
+                                    timestamp=df.index[i],
+                                    upper=prev_prev_low,
+                                    lower=curr_high,
+                                    direction="bearish",
+                                    liquidity_bar_index=liq.bar_index,
+                                )
+                            )
         
         return fvg_zones
     
@@ -451,6 +460,9 @@ class ICTStrategy:
         # else:
         #     print(f"[ICT] ✅ Найдено {len(fvg_zones)} FVG зон")
         
+        # Подготовка словаря ликвидности по bar_index для MSS / Premium/Discount фильтров
+        liq_by_bar = {liq.bar_index: liq for liq in liquidity_sweeps}
+        
         # 5. Проходим по всем свечам и генерируем сигналы
         # Начинаем с 200 для индикаторов
         candles_in_session = 0
@@ -467,9 +479,9 @@ class ICTStrategy:
             if not isinstance(current_ts, pd.Timestamp):
                 current_ts = pd.to_datetime(current_ts)
             
-            # Проверяем торговую сессию
+            # Проверяем, находимся ли в одном из Silver Bullet окон (NY local time)
             if not self.is_trading_session(current_ts):
-                continue  # Пропускаем свечи вне торговых сессий
+                continue  # Пропускаем свечи вне Silver Bullet окон
             
             candles_in_session += 1
             
@@ -481,11 +493,45 @@ class ICTStrategy:
             
             candles_with_trend += 1
             
+            # Перед проверкой FVG помечаем митигированные зоны как неактивные
+            for fvg in fvg_zones:
+                if not fvg.active:
+                    continue
+                # Зона считается полностью митигированной, если минимум и максимум цены
+                # внутри диапазона [fvg.lower, fvg.upper] встречались в истории после её формирования
+                if i > fvg.bar_index + 1:
+                    lows_since = df['low'].iloc[fvg.bar_index + 1 : i + 1].min()
+                    highs_since = df['high'].iloc[fvg.bar_index + 1 : i + 1].max()
+                    if lows_since <= fvg.lower and highs_since >= fvg.upper:
+                        fvg.active = False
+
             # Проверяем все FVG зоны на ретест
             # Используем set для отслеживания уже обработанных FVG на этой свече
             processed_fvg_ids = set()
             
             for fvg in fvg_zones:
+                if not fvg.active:
+                    continue  # Пропускаем митигированные FVG
+                
+                # Проверка MSS (Market Structure Shift) между снятием ликвидности и FVG
+                liq = liq_by_bar.get(fvg.liquidity_bar_index)
+                if liq is not None:
+                    # Простая MSS: после снятия ликвидности цена должна пробить локальный свинг
+                    lookback = 20
+                    prior_start = max(0, liq.bar_index - lookback)
+                    prior_slice = df.iloc[prior_start:liq.bar_index]
+                    mid_slice = df.iloc[liq.bar_index + 1 : fvg.bar_index + 1]
+                    if not prior_slice.empty and not mid_slice.empty:
+                        if fvg.direction == "bullish":
+                            # Для бычьего сетапа: цена после лику должна пробить предыдущий high
+                            recent_high = prior_slice["high"].max()
+                            if mid_slice["close"].max() <= recent_high:
+                                continue
+                        elif fvg.direction == "bearish":
+                            # Для медвежьего сетапа: цена после лику должна пробить предыдущий low
+                            recent_low = prior_slice["low"].min()
+                            if mid_slice["close"].min() >= recent_low:
+                                continue
                 # Проверяем возраст FVG (не старше max_age свечей)
                 max_age = getattr(self.params, 'ict_fvg_max_age_bars', 20)
                 # Увеличиваем max_age для более старых FVG (до 50 баров)
@@ -585,10 +631,19 @@ class ICTStrategy:
                         risk = current_price - sl_price
                         if risk > 0:
                             # Увеличиваем R:R до 3.0 для ICT стратегии (лучше для FVG ретестов)
-                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)  # Изменено с 2.0 на 3.0
+                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)
                             if rr_ratio < 3.0:
                                 rr_ratio = 3.0  # Минимум 3.0 для ICT
                             tp_price = current_price + risk * rr_ratio
+
+                            # Premium/Discount фильтр: входим в LONG только в discount‑зоне
+                            if liq is not None:
+                                rng_high = liq.daily_high
+                                rng_low = liq.daily_low
+                                if rng_high > rng_low:
+                                    rel = (current_price - rng_low) / (rng_high - rng_low)
+                                    if rel > 0.5:  # выше 0.5 (premium) — пропускаем LONG
+                                        continue
                             
                             # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный риск (0.7% от цены = 7% от маржи)
                             if risk < min_sl_pct_from_price * current_price:
@@ -645,10 +700,19 @@ class ICTStrategy:
                         risk = sl_price - current_price
                         if risk > 0:
                             # Увеличиваем R:R до 3.0 для ICT стратегии (лучше для FVG ретестов)
-                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)  # Изменено с 2.0 на 3.0
+                            rr_ratio = getattr(self.params, 'ict_rr_ratio', 3.0)
                             if rr_ratio < 3.0:
                                 rr_ratio = 3.0  # Минимум 3.0 для ICT
                             tp_price = current_price - risk * rr_ratio
+
+                            # Premium/Discount фильтр: входим в SHORT только в premium‑зоне
+                            if liq is not None:
+                                rng_high = liq.daily_high
+                                rng_low = liq.daily_low
+                                if rng_high > rng_low:
+                                    rel = (current_price - rng_low) / (rng_high - rng_low)
+                                    if rel < 0.5:  # ниже 0.5 (discount) — пропускаем SHORT
+                                        continue
                             
                             # ФИЛЬТР КАЧЕСТВА 3: Проверяем минимальный риск (0.7% от цены = 7% от маржи)
                             if risk < min_sl_pct_from_price * current_price:
