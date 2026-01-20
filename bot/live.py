@@ -3464,7 +3464,6 @@ def run_live_from_api(
         symbol: Торговая пара (если None, используется initial_settings.symbol для обратной совместимости)
     """
     from bot.shared_settings import get_settings
-    from bot.strategy import Action
     
     # Определяем символ для этого воркера
     # Если symbol не задан явно, используем из settings (обратная совместимость)

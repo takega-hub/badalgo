@@ -117,6 +117,8 @@ class StrategyParams:
     amt_of_value_area_pct: float = 0.70  # доля объёма в зоне стоимости (обычно 70%)
     amt_of_delta_lookback_sec: int = 300  # окно (в секундах) для расчёта Delta Velocity (наклона CVD)
     amt_of_delta_aggr_mult: float = 2.5  # во сколько раз всплеск Delta Velocity должен превышать среднее значение
+    amt_of_session_start_utc: Optional[int] = None  # Час начала торговой сессии для Volume Profile (UTC)
+    amt_of_session_end_utc: Optional[int] = None    # Час окончания торговой сессии для Volume Profile (UTC, исключительно)
     # AMT & Order Flow Scalper – сопровождение позиции
     amt_of_breakeven_rr: float = 1.5  # при достижении 1.5R переводим SL в безубыток (+комиссия)
     amt_of_auction_timeout_sec: int = 600  # таймаут “auction”: если позиция не дала профит за N секунд, закрываем
@@ -1057,4 +1059,3 @@ def save_symbol_strategy_settings(settings: AppSettings) -> None:
         print(f"[config] Saved strategy settings for {len(data)} symbol(s)")
     except Exception as e:
         print(f"[config] ⚠️ Error saving symbol strategy settings: {e}")
-
