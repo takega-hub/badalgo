@@ -5435,8 +5435,10 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional ZSCORE signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от VBO стратегии
+                # Используем локальный alias для Action из VBO стратегии
+                from bot.vbo_strategy import Action as StrategyActionVbo
                 for sig in vbo_signals_only:
-                    if sig.action in (Action.LONG, Action.SHORT):
+                    if sig.action in (StrategyActionVbo.LONG, StrategyActionVbo.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == vbo_sig_save and vbo_sig_save:
                             continue
