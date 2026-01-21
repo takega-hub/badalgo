@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import pandas as pd
 import logging
+from bot.logger_config import log as bot_log
 
 from bot.exchange.bybit_client import BybitClient
 from bot.strategy import Signal, Action
@@ -396,7 +397,7 @@ def detect_absorption_squeeze_short(
     raw_trades = client.get_recent_trades(symbol, limit=500)
     df_trades = _parse_trades(raw_trades)
     if df_trades.empty:
-        logger.debug("[AMT_OF] %s Absorption Rejected: no trades in feed", symbol)
+        bot_log(f"[AMT_OF] {symbol} Absorption Rejected: no trades in feed", category="info", level="INFO")
         return None
 
     now_utc = datetime.now(timezone.utc)
@@ -404,10 +405,10 @@ def detect_absorption_squeeze_short(
     window_df = df_trades[df_trades["time"] >= window_start]
 
     if window_df.empty:
-        logger.debug(
-            "[AMT_OF] %s Absorption Rejected: no trades in the last %ss window",
-            symbol,
-            cfg.lookback_seconds,
+        bot_log(
+            f"[AMT_OF] {symbol} Absorption Rejected: no trades in the last {cfg.lookback_seconds}s window",
+            category="info",
+            level="INFO",
         )
         return None
 
@@ -419,17 +420,10 @@ def detect_absorption_squeeze_short(
     total_volume = buy_volume + sell_volume
 
     if total_volume < cfg.min_total_volume:
-        logger.debug(
-            "[AMT_OF] %s Absorption Check: Vol %0.2f/%0.2f, CVD %0.2f/%0.2f, BuySell %0.2f/%0.2f, Drift %0.2f%%/%0.2f%%",
-            symbol,
-            total_volume,
-            cfg.min_total_volume,
-            buy_volume - sell_volume,
-            cfg.min_cvd_delta,
-            (buy_volume / max(sell_volume, 1e-6)) if sell_volume > 0 else float("inf"),
-            cfg.min_buy_sell_ratio,
-            0.0,
-            cfg.max_price_drift_pct,
+        bot_log(
+            f"[AMT_OF] {symbol} Absorption Check: Vol {total_volume:.2f}/{cfg.min_total_volume:.2f}, CVD {(buy_volume - sell_volume):.2f}/{cfg.min_cvd_delta:.2f}, BuySell {(buy_volume / max(sell_volume, 1e-6)) if sell_volume>0 else float('inf'):.2f}/{cfg.min_buy_sell_ratio:.2f}, Drift {0.0:.2f}%/{cfg.max_price_drift_pct:.2f}%",
+            category="info",
+            level="INFO",
         )
         return None
 
@@ -442,31 +436,22 @@ def detect_absorption_squeeze_short(
 
     # Условия "абсорбции" для SHORT:
     if cvd_delta < cfg.min_cvd_delta:
-        logger.debug(
-            "[AMT_OF] %s Absorption Rejected: CVD %0.2f < Min CVD %0.2f",
-            symbol,
-            cvd_delta,
-            cfg.min_cvd_delta,
-        )
+        bot_log(f"[AMT_OF] {symbol} Absorption Rejected: CVD {cvd_delta:.2f} < Min CVD {cfg.min_cvd_delta:.2f}", category="info", level="INFO")
         return None
 
     if buy_sell_ratio < cfg.min_buy_sell_ratio:
-        logger.debug(
-            "[AMT_OF] %s Absorption Rejected: Buy/Sell ratio %0.2f < Min %0.2f (Buy %0.2f / Sell %0.2f)",
-            symbol,
-            buy_sell_ratio,
-            cfg.min_buy_sell_ratio,
-            buy_volume,
-            sell_volume,
+        bot_log(
+            f"[AMT_OF] {symbol} Absorption Rejected: Buy/Sell ratio {buy_sell_ratio:.2f} < Min {cfg.min_buy_sell_ratio:.2f} (Buy {buy_volume:.2f} / Sell {sell_volume:.2f})",
+            category="info",
+            level="INFO",
         )
         return None
 
     if abs(price_change_pct) > cfg.max_price_drift_pct:
-        logger.debug(
-            "[AMT_OF] %s Absorption Rejected: Price drift %0.2f%% > Max %s%%",
-            symbol,
-            price_change_pct,
-            cfg.max_price_drift_pct,
+        bot_log(
+            f"[AMT_OF] {symbol} Absorption Rejected: Price drift {price_change_pct:.2f}% > Max {cfg.max_price_drift_pct:.2f}%",
+            category="info",
+            level="INFO",
         )
         return None
 
@@ -610,7 +595,7 @@ def generate_amt_signals(
     resolved_vp_config, resolved_abs_config = _resolve_amt_configs(symbol, vp_config, abs_config)
     # Entry diagnostics
     try:
-        logger.info("[AMT] %s AMT entry: Price=%0.4f", symbol, float(current_price))
+        bot_log(f"[AMT] {symbol} AMT entry: Price={float(current_price):0.4f}", category="info", level="INFO")
     except Exception:
         pass
 
@@ -628,13 +613,10 @@ def generate_amt_signals(
         val = vp["val"]
         # Log VP boundaries for diagnostics (safe: vp is not None)
         try:
-            logger.info(
-                "[%s] AMT Check: Price=%0.4f, VAH=%0.4f, VAL=%0.4f, POC=%0.4f",
-                symbol,
-                float(current_price),
-                float(vah),
-                float(val),
-                float(poc),
+            bot_log(
+                f"[{symbol}] AMT Check: Price={float(current_price):0.4f}, VAH={float(vah):0.4f}, VAL={float(val):0.4f}, POC={float(poc):0.4f}",
+                category="info",
+                level="INFO",
             )
         except Exception:
             pass
@@ -651,11 +633,10 @@ def generate_amt_signals(
         delta_velocity = cvd_metrics["delta_velocity"]
         avg_abs_delta = cvd_metrics["avg_abs_delta"]
         try:
-            logger.debug(
-                "[AMT] %s CVD metrics: delta_velocity=%s, avg_abs_delta=%s",
-                symbol,
-                delta_velocity,
-                avg_abs_delta,
+            bot_log(
+                f"[AMT] {symbol} CVD metrics: delta_velocity={delta_velocity}, avg_abs_delta={avg_abs_delta}",
+                category="debug",
+                level="DEBUG",
             )
         except Exception:
             pass
@@ -690,12 +671,10 @@ def generate_amt_signals(
     if vp and cvd_metrics and avg_abs_delta and avg_abs_delta > 0:
         threshold = avg_abs_delta * max(delta_aggr_mult, 1.0)
         try:
-            logger.debug(
-                "[AMT] %s CVD check: delta_velocity=%s, avg_abs_delta=%s, threshold=%s",
-                symbol,
-                delta_velocity,
-                avg_abs_delta,
-                threshold,
+            bot_log(
+                f"[AMT] {symbol} CVD check: delta_velocity={delta_velocity}, avg_abs_delta={avg_abs_delta}, threshold={threshold}",
+                category="debug",
+                level="DEBUG",
             )
         except Exception:
             pass
