@@ -3941,6 +3941,77 @@ def run_live_from_api(
                     )
                 except Exception as e:
                     print(f"[live] ⚠️ Error ensuring TP/SL for existing position: {e}")
+
+                # Дополнительный менеджер позиции для ICT: безубыток, частичное закрытие, trailing по Аллигатору
+                try:
+                    # Проверяем, применяется ли логика ICT к этой позиции
+                    strat = position_strategy.get(symbol, "unknown")
+                    # Пытаемся получить entry_reason из истории (если доступен) для определения стратегии
+                    entry_reason = None
+                    try:
+                        from bot.web.history import get_open_trade
+                        open_trade = get_open_trade(symbol, entry_price=position.get('avg_price', 0), price_tolerance_pct=0.05)
+                        if open_trade:
+                            entry_reason = open_trade.get('entry_reason', '')
+                    except Exception:
+                        entry_reason = None
+
+                    use_ict_mgr = False
+                    if strat == 'ict' or (entry_reason and str(entry_reason).startswith('ict_')):
+                        use_ict_mgr = True
+
+                    if use_ict_mgr:
+                        from bot.ict_strategy import ICTStrategy
+                        ict_mgr = ICTStrategy(current_settings.strategy)
+                        # Рассчитываем Аллигатор по df_ready (быстро) и вызываем обновление статуса позиции
+                        try:
+                            jaw, teeth, lips = ict_mgr.calculate_williams_alligator(df_ready,
+                                                                                 jaw_period=current_settings.strategy.ict_alligator_jaw_period,
+                                                                                 teeth_period=current_settings.strategy.ict_alligator_teeth_period,
+                                                                                 lips_period=current_settings.strategy.ict_alligator_lips_period,
+                                                                                 jaw_shift=current_settings.strategy.ict_alligator_jaw_shift,
+                                                                                 teeth_shift=current_settings.strategy.ict_alligator_teeth_shift,
+                                                                                 lips_shift=current_settings.strategy.ict_alligator_lips_shift)
+                        except Exception:
+                            jaw = teeth = lips = None
+
+                        idx = len(df_ready) - 1 if not df_ready.empty else None
+                        try:
+                            pos_actions = ict_mgr.update_position_status(position, current_price, jaw=jaw, teeth=teeth, lips=lips, index=idx)
+                        except Exception as e:
+                            _log(f"⚠️ ICT position manager error: {e}", symbol)
+                            pos_actions = None
+
+                        if pos_actions:
+                            # Установка нового SL если требуется
+                            new_sl = pos_actions.get('set_sl')
+                            if new_sl is not None:
+                                try:
+                                    _log(f"🔧 ICT: setting SL to {new_sl:.6f} ({pos_actions.get('reason')})", symbol)
+                                    resp = client.set_trading_stop(symbol=symbol, stop_loss=new_sl)
+                                    if resp.get('retCode') == 0:
+                                        _log(f"✅ ICT: SL updated to {new_sl:.6f}", symbol)
+                                    else:
+                                        _log(f"⚠️ ICT: failed to set SL: {resp.get('retMsg', '')}", symbol)
+                                except Exception as e:
+                                    _log(f"⚠️ ICT: error setting SL: {e}", symbol)
+
+                            # Частичное закрытие если требуется
+                            partial_qty = float(pos_actions.get('partial_close_qty', 0) or 0)
+                            if partial_qty and partial_qty > 0:
+                                try:
+                                    side = 'Sell' if current_position_bias == Bias.LONG else 'Buy'
+                                    _log(f"📊 ICT: partial close {partial_qty:.6f} via {side} ({pos_actions.get('reason')})", symbol)
+                                    resp = client.place_order(symbol=symbol, side=side, qty=partial_qty, reduce_only=True)
+                                    if resp.get('retCode') == 0:
+                                        _log(f"✅ ICT: partial close executed: {partial_qty:.6f}", symbol)
+                                        position_partial_closed[symbol] = True
+                                    else:
+                                        _log(f"⚠️ ICT: partial close failed: {resp.get('retMsg', '')}", symbol)
+                                except Exception as e:
+                                    _log(f"⚠️ ICT: error executing partial close: {e}", symbol)
+                except Exception as e:
+                    _log(f"⚠️ Error in ICT post-TPSL manager: {e}", symbol)
             
             # Обновляем статус: получение данных
             from bot.multi_symbol_manager import update_worker_status

@@ -36,6 +36,7 @@ class Signal:
     indicators_info: Optional[dict] = None  # Детальная информация о показателях для логирования
     stop_loss: Optional[float] = None  # Рекомендуемый Stop Loss
     take_profit: Optional[float] = None  # Рекомендуемый Take Profit
+    tp2: Optional[float] = None  # Дополнительный таргет (structural liquidity level)
     
     def __post_init__(self):
         """Генерирует уникальный ID сигнала, если он не задан."""

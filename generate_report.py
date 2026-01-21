@@ -47,7 +47,7 @@ class StrategyResult:
     error: Optional[str] = None
 
 
-def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -> Optional[StrategyResult]:
+def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -> Optional[StrategyResult]:
     """
     Тестирует стратегию и возвращает результаты без вывода в консоль
     """
@@ -915,7 +915,7 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
         )
 
 
-def generate_report(strategies: List[str], symbols: List[str], days: int = 30, output_file: Optional[str] = None):
+def generate_report(strategies: List[str], symbols: List[str], days: int = 10, output_file: Optional[str] = None):
     """
     Генерирует сводный отчет по всем стратегиям
     """
@@ -1037,7 +1037,7 @@ def generate_report(strategies: List[str], symbols: List[str], days: int = 30, o
     print("=" * 100)
 
 
-def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl: float = 0.0, min_win_rate: float = 0.0, progress_callback=None) -> Dict:
+def optimize_strategies_auto(symbols: List[str] = None, days: int = 10, min_pnl: float = 0.0, min_win_rate: float = 0.0, progress_callback=None) -> Dict:
     """
     Автоматически оптимизирует стратегии: тестирует все стратегии для всех символов,
     определяет лучшие (прибыльные) стратегии и возвращает рекомендации по настройкам.
@@ -1215,8 +1215,8 @@ def main():
     parser.add_argument("--symbols", type=str, nargs="+",
                        default=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
                        help="Список символов для тестирования")
-    parser.add_argument("--days", type=int, default=30,
-                       help="Количество дней для тестирования (по умолчанию: 30)")
+    parser.add_argument("--days", type=int, default=10,
+                       help="Количество дней для тестирования (по умолчанию: 10)")
     parser.add_argument("--output", type=str, default=None,
                        help="Путь к файлу для сохранения JSON отчета")
     parser.add_argument("--optimize", action="store_true",

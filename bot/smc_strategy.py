@@ -27,6 +27,7 @@ class SMCZone:
     lower: float
     direction: str  # "bullish" или "bearish"
     zone_type: str   # "FVG" или "OB"
+    ref_index: Optional[int] = None
 
 
 class SMCStrategy:
@@ -80,6 +81,9 @@ class SMCStrategy:
         is_bullish_context = close_price > curr_ema
         is_bearish_context = close_price < curr_ema
 
+        # Сохраняем ссылку на df для использования в других методах (tp2, volume и т.д.)
+        self._df = df
+
         # 2. Поиск зон
         fvg_zones = self._find_fvg(df, highs, lows, opens, closes, times)
         ob_zones = self._find_ob(df, highs, lows, opens, closes, times)
@@ -90,7 +94,11 @@ class SMCStrategy:
         # 3. Обработка зон и генерация сигналов
         for zone in all_zones:
             # А) Фильтр по возрасту
-            max_age = self.params.smc_max_fvg_age_bars if zone.zone_type == "FVG" else self.params.smc_max_ob_age_bars
+            # iFVG считается как FVG для целей возраста
+            if zone.zone_type in ("FVG", "iFVG"):
+                max_age = self.params.smc_max_fvg_age_bars
+            else:
+                max_age = self.params.smc_max_ob_age_bars
             if (current_idx - zone.bar_index) > max_age:
                 continue
 
@@ -108,6 +116,24 @@ class SMCStrategy:
             if getattr(self.params, 'smc_enable_session_filter', True):
                 if not self._is_trading_session(last_ts):
                     continue
+
+            # Д1) Фильтр Premium/Discount (локальный диапазон)
+            smc_range_lookback = getattr(self.params, 'smc_range_lookback', 50)
+            try:
+                start_idx = max(0, current_idx - smc_range_lookback + 1)
+                seg = df.iloc[start_idx: current_idx + 1]
+                local_high = seg['high'].max()
+                local_low = seg['low'].min()
+                midpoint = local_low + (local_high - local_low) * 0.5
+                if zone.direction == 'bullish' and not (close_price < midpoint):
+                    # Разрешаем LONG только в зоне Discount (ниже 0.5 от диапазона)
+                    continue
+                if zone.direction == 'bearish' and not (close_price > midpoint):
+                    # Разрешаем SHORT только в зоне Premium (выше 0.5 от диапазона)
+                    continue
+            except Exception:
+                # В случае проблем с расчетом — не блокируем сигнал
+                pass
 
             # Д) Логика входа при касании
             signal = self._check_entry(zone, last_row, close_price)
@@ -134,14 +160,41 @@ class SMCStrategy:
                     # Фильтр по импульсу (тело свечи i-1)
                     body_size = abs(closes[i-1] - opens[i-1])
                     if not use_atr or body_size >= (atrs[i-1] * atr_mult):
-                        zones.append(SMCZone(
-                            bar_index=i,
-                            timestamp=pd.Timestamp(times[i]),
-                            upper=lows[i],
-                            lower=highs[i-2],
-                            direction="bullish",
-                            zone_type="FVG"
-                        ))
+                        # Проверка объема: свеча i-1 или свеча i должна иметь объем >= 1.5 * SMA20
+                        vol_ok = True
+                        if 'volume' in df.columns:
+                            vol_series = df['volume']
+                            vol_sma = vol_series.rolling(window=20).mean()
+                            vol_ok = False
+                            try:
+                                if vol_series.iloc[i-1] >= vol_sma.iloc[i-1] * 1.5:
+                                    vol_ok = True
+                                elif vol_series.iloc[i] >= vol_sma.iloc[i] * 1.5:
+                                    vol_ok = True
+                            except Exception:
+                                vol_ok = True
+                        if vol_ok:
+                            # Найдём ближайший структурный максимум слева для tp2 (если есть)
+                            ref_idx = None
+                            try:
+                                if i > 0:
+                                    left_highs = highs[:i]
+                                    if len(left_highs) > 0:
+                                        max_val = left_highs.max()
+                                        refs = np.where(left_highs == max_val)[0]
+                                        if len(refs) > 0:
+                                            ref_idx = int(refs[-1])
+                            except Exception:
+                                ref_idx = None
+                            zones.append(SMCZone(
+                                bar_index=i,
+                                timestamp=pd.Timestamp(times[i]),
+                                upper=lows[i],
+                                lower=highs[i-2],
+                                direction="bullish",
+                                zone_type="FVG",
+                                ref_index=ref_idx
+                            ))
             
             # Bearish FVG (Разрыв между Low i-2 и High i)
             elif highs[i] < lows[i-2]:
@@ -149,14 +202,57 @@ class SMCStrategy:
                 if gap_pct >= min_gap:
                     body_size = abs(closes[i-1] - opens[i-1])
                     if not use_atr or body_size >= (atrs[i-1] * atr_mult):
-                        zones.append(SMCZone(
-                            bar_index=i,
-                            timestamp=pd.Timestamp(times[i]),
-                            upper=lows[i-2],
-                            lower=highs[i],
-                            direction="bearish",
-                            zone_type="FVG"
-                        ))
+                        vol_ok = True
+                        if 'volume' in df.columns:
+                            vol_series = df['volume']
+                            vol_sma = vol_series.rolling(window=20).mean()
+                            vol_ok = False
+                            try:
+                                if vol_series.iloc[i-1] >= vol_sma.iloc[i-1] * 1.5:
+                                    vol_ok = True
+                                elif vol_series.iloc[i] >= vol_sma.iloc[i] * 1.5:
+                                    vol_ok = True
+                            except Exception:
+                                vol_ok = True
+                        if vol_ok:
+                            # Найдём ближайший структурный минимум слева для tp2 (если есть)
+                            ref_idx = None
+                            try:
+                                if i > 0:
+                                    left_lows = lows[:i]
+                                    if len(left_lows) > 0:
+                                        min_val = left_lows.min()
+                                        refs = np.where(left_lows == min_val)[0]
+                                        if len(refs) > 0:
+                                            ref_idx = int(refs[-1])
+                            except Exception:
+                                ref_idx = None
+                            zones.append(SMCZone(
+                                bar_index=i,
+                                timestamp=pd.Timestamp(times[i]),
+                                upper=lows[i-2],
+                                lower=highs[i],
+                                direction="bearish",
+                                zone_type="FVG",
+                                ref_index=ref_idx
+                            ))
+        # Реализуем инверсию FVG (iFVG): если медвежий FVG пробит снизу вверх и закрепился — становиться бычьим iFVG
+        try:
+            if getattr(self.params, 'smc_enable_ifvg', False):
+                confirm = getattr(self.params, 'smc_ifvg_confirm_bars', 3)
+                for z in zones:
+                    if z.zone_type == 'FVG' and z.direction == 'bearish':
+                        start = z.bar_index + 1
+                        end = min(start + confirm, len(df))
+                        if start < end:
+                            closes_segment = df['close'].iloc[start:end]
+                            # Требуем, чтобы все подтверждающие бары закрылись выше верхней границы FVG
+                            if len(closes_segment) >= confirm and (closes_segment > z.upper).all():
+                                # Инвертируем зону
+                                z.direction = 'bullish'
+                                z.zone_type = 'iFVG'
+        except Exception:
+            pass
         return zones
 
     def _find_ob(self, df, highs, lows, opens, closes, times) -> List[SMCZone]:
@@ -168,13 +264,23 @@ class SMCStrategy:
         
         # Быстрый поиск экстремумов
         window = lookback * 2 + 1
-        if window >= len(df): window = 3
-        
-        is_max = df['high'] == df['high'].rolling(window, center=True).max()
-        is_min = df['low'] == df['low'].rolling(window, center=True).min()
-        
+        if window >= len(df):
+            window = 3
+
+        # Используем обычный rolling(window) без center=True чтобы исключить look-ahead
+        is_max = df['high'] == df['high'].rolling(window).max()
+        is_min = df['low'] == df['low'].rolling(window).min()
+
         max_indices = np.where(is_max)[0]
         min_indices = np.where(is_min)[0]
+
+        # Предрасчет SMA по объему (используется в нескольких местах) — вычисляем один раз
+        vol_sma = None
+        if 'volume' in df.columns:
+            try:
+                vol_sma = df['volume'].rolling(window=20).mean()
+            except Exception:
+                vol_sma = None
 
         for i in range(max(lookback, 1), len(df)):
             # BOS Up -> Ищем Bullish OB (последняя медвежья свеча перед ростом)
@@ -197,7 +303,26 @@ class SMCStrategy:
                                             has_fvg = True
                                             break
                                 if has_fvg:
-                                    zones.append(SMCZone(j, pd.Timestamp(times[j]), highs[j], lows[j], "bullish", "OB"))
+                                    # Проверка объема: свеча OB (j) или импульсная свеча (i) должна иметь объем >= 1.5 * SMA20
+                                    vol_ok = True
+                                    if 'volume' in df.columns and vol_sma is not None:
+                                        vol_ok = False
+                                        try:
+                                            if df['volume'].iloc[j] >= vol_sma.iloc[j] * 1.5:
+                                                vol_ok = True
+                                            elif df['volume'].iloc[i] >= vol_sma.iloc[i] * 1.5:
+                                                vol_ok = True
+                                        except Exception:
+                                            vol_ok = True
+                                    if vol_ok:
+                                        # Используем диапазон манипуляции (S-to-B или B-to-S) для зон OB
+                                        try:
+                                            seg_high = float(np.max(highs[j:i+1]))
+                                            seg_low = float(np.min(lows[j:i+1]))
+                                        except Exception:
+                                            seg_high = float(highs[j])
+                                            seg_low = float(lows[j])
+                                        zones.append(SMCZone(j, pd.Timestamp(times[j]), seg_high, seg_low, "bullish", "OB", ref_index=last_max_idx))
                             break
 
             # BOS Down -> Ищем Bearish OB (последняя бычья свеча перед падением)
@@ -218,7 +343,25 @@ class SMCStrategy:
                                             has_fvg = True
                                             break
                                 if has_fvg:
-                                    zones.append(SMCZone(j, pd.Timestamp(times[j]), highs[j], lows[j], "bearish", "OB"))
+                                    vol_ok = True
+                                    if 'volume' in df.columns and vol_sma is not None:
+                                        vol_ok = False
+                                        try:
+                                            if df['volume'].iloc[j] >= vol_sma.iloc[j] * 1.5:
+                                                vol_ok = True
+                                            elif df['volume'].iloc[i] >= vol_sma.iloc[i] * 1.5:
+                                                vol_ok = True
+                                        except Exception:
+                                            vol_ok = True
+                                    if vol_ok:
+                                        # Используем диапазон манипуляции (S-to-B или B-to-S) для зон OB
+                                        try:
+                                            seg_high = float(np.max(highs[j:i+1]))
+                                            seg_low = float(np.min(lows[j:i+1]))
+                                        except Exception:
+                                            seg_high = float(highs[j])
+                                            seg_low = float(lows[j])
+                                        zones.append(SMCZone(j, pd.Timestamp(times[j]), seg_high, seg_low, "bearish", "OB", ref_index=last_min_idx))
                             break
         return zones
 
@@ -227,19 +370,38 @@ class SMCStrategy:
         check_start = zone.bar_index + 1
         if check_start >= current_idx:
             return False
-            
+        # Новая логика: проверяем закрытие свечи (close) за границей зоны вместо тени
+        try:
+            closes = self._df['close'].values if hasattr(self, '_df') and 'close' in self._df.columns else None
+            if closes is not None:
+                if zone.direction == "bullish":
+                    # Бычья зона смягчена, если свеча закрылась ниже её нижней границы
+                    return np.any(closes[check_start:current_idx] <= zone.lower)
+                else:
+                    # Медвежья зона смягчена, если свеча закрылась выше её верхней границы
+                    return np.any(closes[check_start:current_idx] >= zone.upper)
+        except Exception:
+            pass
+
+        # Fallback — старая логика по тени
         if zone.direction == "bullish":
-            # Бычья зона смягчена, если цена ушла ниже её границы
             return np.any(lows[check_start:current_idx] <= zone.lower)
         else:
-            # Медвежья зона смягчена, если цена ушла выше её границы
             return np.any(highs[check_start:current_idx] >= zone.upper)
 
     def _is_trading_session(self, timestamp: pd.Timestamp) -> bool:
         """
         Проверяет, входит ли время свечи в активные торговые сессии (UTC).
         """
-        hour = timestamp.hour
+        # Приводим timestamp к UTC чтобы избежать рассинхрона часовых поясов
+        try:
+            ts_utc = pd.to_datetime(timestamp).tz_localize(None)
+            # если timestamp уже с timezone, конвертируем в UTC
+            if getattr(pd.to_datetime(timestamp), 'tzinfo', None) is not None:
+                ts_utc = pd.to_datetime(timestamp).tz_convert('UTC')
+        except Exception:
+            ts_utc = pd.to_datetime(timestamp)
+        hour = ts_utc.hour
         weekday = timestamp.weekday()
         
         # В выходные волатильность низкая, SMC работает хуже
@@ -266,40 +428,70 @@ class SMCStrategy:
         if not isinstance(last_ts, pd.Timestamp):
             last_ts = pd.to_datetime(last_ts)
 
+        spread_pct = getattr(self.params, 'smc_spread_pct', 0.0)
+        # Учитываем спред: для лонга увеличиваем цену входа на spread, для шорта уменьшаем
+        adj_price = close_price
+        if spread_pct and spread_pct > 0:
+            if zone.direction == "bullish":
+                adj_price = close_price + close_price * spread_pct
+            elif zone.direction == "bearish":
+                adj_price = close_price - close_price * spread_pct
+
         if zone.direction == "bullish":
             # Вход при касании верхней границы сверху вниз
-            if last_row['low'] <= (zone.upper + tolerance) and close_price > zone.lower:
+            if last_row['low'] <= (zone.upper + tolerance) and adj_price > zone.lower:
                 sl = zone.lower - (close_price * 0.0005)
                 # Защита от слишком узкого стопа
                 if (close_price - sl) < close_price * 0.001:
                     sl = close_price * 0.999
                 
-                tp = close_price + (close_price - sl) * rr_ratio
-                return Signal(
+                tp = adj_price + (adj_price - sl) * rr_ratio
+                sig = Signal(
                     timestamp=last_ts,
                     action=Action.LONG,
                     reason=f"SMC_{zone.zone_type}_TREND_ENTRY",
-                    price=close_price,
+                    price=round(adj_price, 8),
                     stop_loss=round(sl, 2),
                     take_profit=round(tp, 2)
                 )
+                # Добавляем tp2 как ближайший структурный максимум (если есть ref_index)
+                try:
+                    if hasattr(zone, 'ref_index') and zone.ref_index is not None and hasattr(self, '_df'):
+                        df = self._df
+                        last_max_idx = int(zone.ref_index)
+                        if 0 <= last_max_idx < len(df):
+                            last_max = df.iloc[last_max_idx]['high']
+                            sig.tp2 = round(float(last_max), 2)
+                except Exception:
+                    pass
+                return sig
         
         elif zone.direction == "bearish":
             # Вход при касании нижней границы снизу вверх
-            if last_row['high'] >= (zone.lower - tolerance) and close_price < zone.upper:
-                sl = zone.upper + (close_price * 0.0005)
+            if last_row['high'] >= (zone.lower - tolerance) and adj_price < zone.upper:
+                sl = zone.upper + (adj_price * 0.0005)
                 if (sl - close_price) < close_price * 0.001:
                     sl = close_price * 1.001
                     
-                tp = close_price - (sl - close_price) * rr_ratio
-                return Signal(
+                tp = adj_price - (sl - adj_price) * rr_ratio
+                sig = Signal(
                     timestamp=last_ts,
                     action=Action.SHORT,
                     reason=f"SMC_{zone.zone_type}_TREND_ENTRY",
-                    price=close_price,
+                    price=round(adj_price, 8),
                     stop_loss=round(sl, 2),
                     take_profit=round(tp, 2)
                 )
+                try:
+                    if hasattr(zone, 'ref_index') and zone.ref_index is not None and hasattr(self, '_df'):
+                        df = self._df
+                        last_min_idx = int(zone.ref_index)
+                        if 0 <= last_min_idx < len(df):
+                            last_min = df.iloc[last_min_idx]['low']
+                            sig.tp2 = round(float(last_min), 2)
+                except Exception:
+                    pass
+                return sig
         
         return None
     

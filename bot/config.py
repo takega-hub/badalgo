@@ -91,6 +91,15 @@ class StrategyParams:
     smc_session_london_end: int = 10
     smc_session_ny_start: int = 12
     smc_session_ny_end: int = 15
+    # Inversion FVG (iFVG): если цена пробивает FVG и закрепляется, зона инвертируется
+    smc_enable_ifvg: bool = False
+    smc_ifvg_confirm_bars: int = 3
+    # Учет спреда при входе (доля от цены, например 0.0005 = 0.05%)
+    smc_spread_pct: float = 0.0
+    # Partial close / breakeven при достижении TP1
+    smc_enable_partial_on_tp1: bool = True
+    smc_partial_close_pct: float = 0.5  # Закрывать 50% на tp1
+    smc_move_sl_to_be: bool = True  # Переводить SL в безубыток при достижении tp1
     
     # ICT Silver Bullet strategy parameters
     ict_enable_london_session: bool = True  # Торговать в Лондонскую сессию (08:00-16:00 UTC)

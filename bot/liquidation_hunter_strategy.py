@@ -27,12 +27,23 @@ class LiquidationHunterStrategy:
         # Параметры стратегии (ОПТИМИЗИРОВАНЫ - лучший вариант)
         # Результаты: BTCUSDT 64% WR +3.77 USDT, ETHUSDT 59.3% WR -2.10 USDT, SOLUSDT 79.2% WR +5.01 USDT
         # Общий PnL: +17.09 USDT за 30 дней, средний WR: 81.4%
-        self.liq_spike_multiplier = 2.0  # Множитель для определения всплеска ликвидаций
+        # Параметры всплеска объема — теперь используем Z-Score
+        self.liq_spike_multiplier = 2.0  # (legacy) fallback multiplier
+        self.z_score_threshold = 2.5  # Z-Score threshold for volume spikes
         self.lookback_short = 5  # Период для короткого окна (5 минут/свечей)
-        self.lookback_long = 30  # Период для длинного окна
-        self.shadow_ratio = 0.3  # Минимальное соотношение тени к телу свечи (30%)
+        self.lookback_long = 30  # Период для длинного окна (используется для Z-Score)
+
+        # ATR-параметры для адаптивных допусков
+        self.atr_period = 14
+        self.shadow_atr_multiplier = 0.6  # Тень считается аномальной если > ATR * multiplier
+
+        # Параметры свечных тени/теста
+        self.shadow_ratio = 0.3  # (legacy) минимальное соотношение тени к телу свечи (30%) — используем вместе с ATR
         self.ema_period = 200  # EMA для фильтра тренда
         self.support_resistance_lookback = 15  # Период для поиска зон
+
+        # Risk/Reward для TP/SL
+        self.rr_ratio = 2.0
         # RSI фильтр отключен - он слишком строгий
         # EMA фильтр сделан опциональным с допуском 2% - не блокирует сигналы строго
         
@@ -46,18 +57,18 @@ class LiquidationHunterStrategy:
         Returns:
             Series с флагами всплесков объема
         """
-        if len(df) < self.lookback_long:
+        # Используем Z-Score объема: (volume - mean)/std по длинному окну
+        if len(df) < 3:
             return pd.Series([False] * len(df), index=df.index)
-        
-        # Средний объем за длинный период (час)
-        avg_volume_long = df['volume'].rolling(window=self.lookback_long, min_periods=1).mean()
-        
-        # Средний объем за короткий период (5 минут)
-        avg_volume_short = df['volume'].rolling(window=self.lookback_short, min_periods=1).mean()
-        
-        # Всплеск: короткий период превышает длинный в N раз
-        volume_spike = avg_volume_short > (avg_volume_long * self.liq_spike_multiplier)
-        
+
+        vol_mean = df['volume'].rolling(window=self.lookback_long, min_periods=1).mean()
+        vol_std = df['volume'].rolling(window=self.lookback_long, min_periods=1).std(ddof=0).replace(0, np.nan)
+
+        z_score = (df['volume'] - vol_mean) / vol_std
+        # Заполняем NaN False
+        volume_spike = z_score > self.z_score_threshold
+        # Сохраняем z_score в DataFrame для логирования (не мутируем входной DF тут)
+        # Пользуемся Series с тем же индексом
         return volume_spike
     
     def detect_shadow_patterns(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
@@ -74,14 +85,34 @@ class LiquidationHunterStrategy:
         lower_shadow = df[['open', 'close']].min(axis=1) - df['low']
         upper_shadow = df['high'] - df[['open', 'close']].max(axis=1)
         body_size = abs(df['close'] - df['open'])
-        
-        # Длинная нижняя тень (признак разворота вверх)
-        long_lower_shadows = (lower_shadow > body_size * self.shadow_ratio) & (df['close'] > df['open'])
-        
+
+        # ATR-based check
+        if 'atr' in df.columns:
+            atr_mean = df['atr'].rolling(window=self.atr_period, min_periods=1).mean()
+        else:
+            # Простая аппроксимация ATR: rolling(high-low)
+            atr_mean = (df['high'] - df['low']).rolling(window=self.atr_period, min_periods=1).mean()
+
+        # Предыдущая свеча: тело для проверки поглощения
+        prev_body_high = df[['open', 'close']].shift(1).max(axis=1)
+        # Следующая свеча для дополнительной проверки (если доступна)
+        next_close = df['close'].shift(-1)
+
+        # Длинная нижняя тень (признак разворота вверх) - тень должна быть аномальной относительно ATR
+        long_lower_shadows = (
+            (lower_shadow > atr_mean * self.shadow_atr_multiplier) &
+            (df['close'] > df['open']) &
+            ((df['close'] > prev_body_high) | (next_close > prev_body_high))
+        )
+
         # Длинная верхняя тень (признак разворота вниз)
-        long_upper_shadows = (upper_shadow > body_size * self.shadow_ratio) & (df['close'] < df['open'])
-        
-        return long_lower_shadows, long_upper_shadows
+        long_upper_shadows = (
+            (upper_shadow > atr_mean * self.shadow_atr_multiplier) &
+            (df['close'] < df['open']) &
+            ((df['close'] < df[['open', 'close']].shift(1).min(axis=1)) | (next_close < df[['open', 'close']].shift(1).min(axis=1)))
+        )
+
+        return long_lower_shadows.fillna(False), long_upper_shadows.fillna(False)
     
     def find_support_resistance_zones(self, df: pd.DataFrame, lookback: int = 20) -> Tuple[pd.Series, pd.Series]:
         """
@@ -94,18 +125,27 @@ class LiquidationHunterStrategy:
         Returns:
             Tuple (support_zones, resistance_zones) - булевы серии
         """
-        if len(df) < lookback * 2:
+        if len(df) < lookback:
             return pd.Series([False] * len(df), index=df.index), pd.Series([False] * len(df), index=df.index)
-        
-        # Локальные минимумы (поддержка)
-        local_lows = df['low'].rolling(window=lookback, center=True, min_periods=1).min()
-        support_zones = df['low'] <= local_lows * 1.002  # Допуск 0.2%
-        
-        # Локальные максимумы (сопротивление)
-        local_highs = df['high'].rolling(window=lookback, center=True, min_periods=1).max()
-        resistance_zones = df['high'] >= local_highs * 0.998  # Допуск 0.2%
-        
-        return support_zones, resistance_zones
+
+        # Используем только исторические данные: center=False
+        # Локальные минимумы (поддержка) — минимум за предыдущие lookback свечей (включая текущую)
+        local_lows = df['low'].rolling(window=lookback, center=False, min_periods=1).min()
+        local_highs = df['high'].rolling(window=lookback, center=False, min_periods=1).max()
+
+        # ATR для динамического допуска
+        if 'atr' in df.columns:
+            atr_mean = df['atr'].rolling(window=self.atr_period, min_periods=1).mean()
+        else:
+            atr_mean = (df['high'] - df['low']).rolling(window=self.atr_period, min_periods=1).mean()
+
+        # Допуск на основе ATR — нормируем к цене
+        tol = atr_mean  # абсолютный допуск в ценах
+
+        support_zones = df['low'] <= (local_lows + tol)
+        resistance_zones = df['high'] >= (local_highs - tol)
+
+        return support_zones.fillna(False), resistance_zones.fillna(False)
     
     def get_signals(self, df: pd.DataFrame, symbol: str = "Unknown") -> List[Signal]:
         """
@@ -121,117 +161,138 @@ class LiquidationHunterStrategy:
         if len(df) < max(self.lookback_long, self.ema_period):
             return []
         
-        signals = []
-        
+        signals: List[Signal] = []
+
         # Вычисляем EMA для фильтра тренда
         df = df.copy()
         df['ema_200'] = df['close'].ewm(span=self.ema_period, adjust=False).mean()
-        
-        # Всплески объема (прокси для ликвидаций)
+
+        # Всплески объема (Z-Score)
         volume_spikes = self.calculate_volume_spike(df)
-        
+
         # Паттерны теней
         long_lower_shadows, long_upper_shadows = self.detect_shadow_patterns(df)
-        
+
         # Зоны поддержки и сопротивления
         support_zones, resistance_zones = self.find_support_resistance_zones(df, lookback=self.support_resistance_lookback)
-        
-        # Генерируем сигналы (максимально ослабленные фильтры)
-        for idx, row in df.iterrows():
-            # EMA фильтр опционален - не блокируем, если EMA недоступна или условие не выполнено
-            ema_ok_long = True
-            ema_ok_short = True
-            if np.isfinite(row.get('ema_200', np.nan)):
-                # Для LONG: предпочитаем цену ниже EMA, но не блокируем
-                ema_ok_long = row['close'] < row['ema_200'] * 1.02  # Допуск 2%
-                # Для SHORT: предпочитаем цену выше EMA, но не блокируем
-                ema_ok_short = row['close'] > row['ema_200'] * 0.98  # Допуск 2%
-            
-            # Проверяем условия для LONG и SHORT сигналов
-            long_condition = (volume_spikes.loc[idx] and 
-                            (support_zones.loc[idx] or long_lower_shadows.loc[idx]) and
-                            ema_ok_long)
-            
-            short_condition = (volume_spikes.loc[idx] and 
-                             (resistance_zones.loc[idx] or long_upper_shadows.loc[idx]) and
-                             ema_ok_short)
-            
-            # КРИТИЧЕСКИ ВАЖНО: Если оба условия выполняются одновременно, выбираем только один сигнал
-            # Приоритет: выбираем сигнал с более сильным паттерном (тень + зона > только тень > только зона)
-            if long_condition and short_condition:
-                # Вычисляем "силу" каждого паттерна
-                long_strength = 0
-                if support_zones.loc[idx]:
-                    long_strength += 1
-                if long_lower_shadows.loc[idx]:
-                    long_strength += 1
-                
-                short_strength = 0
-                if resistance_zones.loc[idx]:
-                    short_strength += 1
-                if long_upper_shadows.loc[idx]:
-                    short_strength += 1
-                
-                # Выбираем сигнал с большей силой
+
+        # Векторизированные проверки EMA
+        ema_ok_long = df['close'] < df['ema_200'] * 1.02
+        ema_ok_short = df['close'] > df['ema_200'] * 0.98
+
+        # Условие LONG/SHORT в векторной форме
+        long_condition = (volume_spikes) & (support_zones | long_lower_shadows) & (ema_ok_long.fillna(True))
+        short_condition = (volume_spikes) & (resistance_zones | long_upper_shadows) & (ema_ok_short.fillna(True))
+
+        # Индексы, где есть хоть одно условие — минимизируем итерацию
+        candidate_idx = df.index[(long_condition | short_condition)]
+
+        # Предрасчёт ATR для TP/SL
+        if 'atr' in df.columns:
+            atr_series = df['atr'].rolling(window=self.atr_period, min_periods=1).mean()
+        else:
+            atr_series = (df['high'] - df['low']).rolling(window=self.atr_period, min_periods=1).mean()
+
+        for idx in candidate_idx:
+            row = df.loc[idx]
+
+            is_long = bool(long_condition.loc[idx])
+            is_short = bool(short_condition.loc[idx])
+
+            # Если оба условия True — решаем по силе паттерна
+            if is_long and is_short:
+                long_strength = int(bool(support_zones.loc[idx])) + int(bool(long_lower_shadows.loc[idx]))
+                short_strength = int(bool(resistance_zones.loc[idx])) + int(bool(long_upper_shadows.loc[idx]))
+                # добавляем вклад z-score
+                try:
+                    z = float((row['volume'] - row['volume'].rolling(self.lookback_long).mean()) / (row['volume'].rolling(self.lookback_long).std(ddof=0)))
+                except Exception:
+                    z = 0
+                if z > self.z_score_threshold:
+                    long_strength += 1 if long_strength >= short_strength else 0
+                    short_strength += 1 if short_strength > long_strength else 0
+
                 if long_strength >= short_strength:
-                    # Генерируем LONG сигнал
-                    reason = f"liquidation_hunter_long_spike_{self.liq_spike_multiplier}x"
-                    if support_zones.loc[idx]:
-                        reason += "_support"
-                    if long_lower_shadows.loc[idx]:
-                        reason += "_shadow"
-                    signals.append(Signal(
-                        timestamp=idx,
-                        action=Action.LONG,
-                        reason=reason,
-                        price=row['close']
-                    ))
-                    # Пропускаем SHORT сигнал для этой свечи
-                    continue
+                    is_short = False
                 else:
-                    # Генерируем SHORT сигнал
-                    reason = f"liquidation_hunter_short_spike_{self.liq_spike_multiplier}x"
-                    if resistance_zones.loc[idx]:
-                        reason += "_resistance"
-                    if long_upper_shadows.loc[idx]:
-                        reason += "_shadow"
-                    signals.append(Signal(
-                        timestamp=idx,
-                        action=Action.SHORT,
-                        reason=reason,
-                        price=row['close']
-                    ))
-                    # Пропускаем LONG сигнал для этой свечи
-                    continue
-            
-            # LONG сигнал: всплеск ликвидаций + (поддержка ИЛИ длинная нижняя тень) + EMA опционально
-            if long_condition:
-                reason = f"liquidation_hunter_long_spike_{self.liq_spike_multiplier}x"
+                    is_long = False
+
+            # Генерируем LONG сигнал
+            if is_long:
+                reason = "liquidation_hunter_long_zscore"
                 if support_zones.loc[idx]:
                     reason += "_support"
                 if long_lower_shadows.loc[idx]:
                     reason += "_shadow"
+
+                # Stop Loss: локальный минимум свечи со всплеском минус небольшая подушка
+                atr = atr_series.loc[idx]
+                sl = min(row['low'], df['low'].rolling(3, min_periods=1).min().loc[idx]) - (atr * 0.3 if np.isfinite(atr) else 0)
+                tp = row['close'] + (row['close'] - sl) * self.rr_ratio
+
+                # Сила сигнала: сумма бинарных факторов + нормализованный z-score
+                try:
+                    vol_mean = df['volume'].rolling(self.lookback_long).mean().loc[idx]
+                    vol_std = df['volume'].rolling(self.lookback_long).std(ddof=0).loc[idx]
+                    zval = (row['volume'] - vol_mean) / (vol_std if vol_std != 0 else np.nan)
+                except Exception:
+                    zval = np.nan
+
+                strength = float((int(bool(support_zones.loc[idx])) + int(bool(long_lower_shadows.loc[idx]))))
+                if np.isfinite(zval):
+                    strength += max(0.0, zval - self.z_score_threshold + 1.0)
+
                 signals.append(Signal(
                     timestamp=idx,
                     action=Action.LONG,
                     reason=reason,
-                    price=row['close']
+                    price=row['close'],
+                    stop_loss=sl,
+                    take_profit=tp,
+                    indicators_info={
+                        "volume": row.get('volume'),
+                        "z_score_threshold": self.z_score_threshold,
+                        "atr": float(atr) if np.isfinite(atr) else None
+                    }
                 ))
-            
-            # SHORT сигнал: всплеск ликвидаций + (сопротивление ИЛИ длинная верхняя тень) + EMA опционально
-            elif short_condition:
-                reason = f"liquidation_hunter_short_spike_{self.liq_spike_multiplier}x"
+
+            # Генерируем SHORT сигнал
+            elif is_short:
+                reason = "liquidation_hunter_short_zscore"
                 if resistance_zones.loc[idx]:
                     reason += "_resistance"
                 if long_upper_shadows.loc[idx]:
                     reason += "_shadow"
+
+                atr = atr_series.loc[idx]
+                sl = max(row['high'], df['high'].rolling(3, min_periods=1).max().loc[idx]) + (atr * 0.3 if np.isfinite(atr) else 0)
+                tp = row['close'] - (sl - row['close']) * self.rr_ratio
+
+                try:
+                    vol_mean = df['volume'].rolling(self.lookback_long).mean().loc[idx]
+                    vol_std = df['volume'].rolling(self.lookback_long).std(ddof=0).loc[idx]
+                    zval = (row['volume'] - vol_mean) / (vol_std if vol_std != 0 else np.nan)
+                except Exception:
+                    zval = np.nan
+
+                strength = float((int(bool(resistance_zones.loc[idx])) + int(bool(long_upper_shadows.loc[idx]))))
+                if np.isfinite(zval):
+                    strength += max(0.0, zval - self.z_score_threshold + 1.0)
+
                 signals.append(Signal(
                     timestamp=idx,
                     action=Action.SHORT,
                     reason=reason,
-                    price=row['close']
+                    price=row['close'],
+                    stop_loss=sl,
+                    take_profit=tp,
+                    indicators_info={
+                        "volume": row.get('volume'),
+                        "z_score_threshold": self.z_score_threshold,
+                        "atr": float(atr) if np.isfinite(atr) else None
+                    }
                 ))
-        
+
         return signals
 
 

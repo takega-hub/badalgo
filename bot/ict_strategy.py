@@ -21,6 +21,8 @@ import pandas as pd
 import pytz
 
 from bot.strategy import Action, Signal, Bias
+import json
+from bot import logger_config
 
 
 @dataclass
@@ -44,6 +46,7 @@ class ICTLiquidity:
     direction: str  # "above_high" или "below_low"
     daily_high: float
     daily_low: float
+    is_institutional: bool = False
 
 
 class ICTStrategy:
@@ -61,6 +64,13 @@ class ICTStrategy:
             (time(10, 0), time(11, 0)), # NY AM SB
             (time(14, 0), time(15, 0)), # NY PM SB
         ]
+
+        # Параметры по умолчанию (можно переопределить через params)
+        self.zone_expansion_mult = getattr(self.params, 'ict_fvg_zone_expansion_mult', 0.15)
+        self.fvg_tolerance = getattr(self.params, 'ict_fvg_tolerance', 0.005)
+        self.mss_close_required = getattr(self.params, 'ict_mss_close_required', True)
+        self.ict_max_slippage_pct = getattr(self.params, 'ict_max_slippage_pct', 0.001)  # 0.1% default
+        self.ict_time_drift_sec = getattr(self.params, 'ict_max_time_drift_sec', 5)  # seconds
     
     def is_trading_session(self, timestamp: pd.Timestamp) -> bool:
         """
@@ -189,6 +199,195 @@ class ICTStrategy:
                 return True, "bearish"
         
         return False, None
+
+    def get_higher_tf_bias(self, df: pd.DataFrame, timeframe: str = '4H') -> Optional[str]:
+        """
+        Простой MTF bias: строим серию close на более высоком таймфрейме
+        и определяем направление по SMA/EMA или по экстремумам.
+        Возвращает 'bullish', 'bearish' или None.
+        """
+        try:
+            # Попробуем ресемплить OHLC по таймфрейму
+            if timeframe.upper() in ('4H', '4h'):
+                rule = '4H'
+            elif timeframe.upper() in ('1D', '1d', 'D'):
+                rule = '1D'
+            else:
+                # Поддержка других форматов не реализована - возвращаем None
+                return None
+
+            df_tf = df[['open', 'high', 'low', 'close']].resample(rule).agg({'open':'first','high':'max','low':'min','close':'last'})
+            if df_tf.empty or len(df_tf) < 3:
+                return None
+
+            close = df_tf['close']
+            sma_short = close.rolling(window=3).mean()
+            sma_long = close.rolling(window=8).mean()
+            if sma_short.iloc[-1] > sma_long.iloc[-1]:
+                return 'bullish'
+            if sma_short.iloc[-1] < sma_long.iloc[-1]:
+                return 'bearish'
+            return None
+        except Exception:
+            return None
+
+    def check_time_sync(self, server_ts: Optional[datetime]) -> bool:
+        """
+        Проверяет синхронизацию системного времени с временем биржи (если передано).
+        Возвращает True если синхронизация в допустимом допуске, иначе False.
+        """
+        if server_ts is None:
+            return True
+        try:
+            local = datetime.utcnow().replace(tzinfo=timezone.utc)
+            if server_ts.tzinfo is None:
+                server_ts = server_ts.replace(tzinfo=timezone.utc)
+            drift = abs((local - server_ts).total_seconds())
+            if drift > getattr(self.params, 'ict_max_time_drift_sec', 5):
+                logger_config.log(f"[ICT] ⚠️ Time drift {drift:.1f}s > allowed {self.ict_time_drift_sec}s", category='trade', level='WARNING')
+                return False
+            return True
+        except Exception:
+            return True
+
+    def update_position_status(
+        self,
+        position: dict,
+        current_price: float,
+        jaw: Optional[pd.Series] = None,
+        teeth: Optional[pd.Series] = None,
+        lips: Optional[pd.Series] = None,
+        index: Optional[int] = None,
+    ) -> dict:
+        """
+        Логика сопровождения позиции для ICT стратегии.
+
+        Параметры позиции (ожидаемые ключи в position):
+        - 'avg_price' или 'entry_price' или 'avg_entry_price'
+        - 'size' (количество контрактов/лотов)
+        - 'side' ('LONG' или 'SHORT' или Bias enum)
+        - 'sl' (текущий стоп‑лосс, опционально)
+
+        Возвращает словарь с возможными действиями:
+        - set_sl: новое значение SL или None
+        - partial_close_qty: количество для частичного закрытия или 0
+        - reason: строка с причиной
+        - apply_trailing_by: 'teeth'|'jaw'|'lips' или None
+
+        Правила:
+        - При достижении R:R >= 1.0 — перемещаем SL в безубыток (с небольшим буфером)
+        - При достижении R:R >= 2.0 — помечаем для частичного закрытия 50% объема
+        - Опционально: если переданы линии Аллигатора и params разрешают, подтягиваем SL за выбранную линию
+        """
+        out = {
+            'set_sl': None,
+            'partial_close_qty': 0.0,
+            'reason': None,
+            'apply_trailing_by': None,
+        }
+
+        if not position or current_price is None:
+            return out
+
+        # Нормализуем входные поля
+        avg_price = position.get('avg_price') or position.get('entry_price') or position.get('avg_entry_price')
+        size = float(position.get('size', 0) or 0)
+        side = position.get('side') or position.get('position_side') or position.get('bias')
+        current_sl = position.get('sl') or position.get('stop_loss') or None
+
+        if avg_price is None or size == 0 or side is None:
+            return out
+
+        # Определяем направление как 'LONG' или 'SHORT'
+        if isinstance(side, Bias):
+            side_str = 'LONG' if side == Bias.LONG else 'SHORT'
+        else:
+            side_str = str(side).upper()
+
+        # Вычисляем текущий R (profit in terms of initial risk)
+        # Если есть текущий SL — используем его как базовый риск; иначе пытаемся оценить через ATR
+        if current_sl is None:
+            # fallback: используем ATR multiplier если доступен
+            atr_mult = getattr(self.params, 'ict_atr_multiplier_sl', 2.0)
+            # Не имеем доступа к ATR здесь — не применяем правила без SL
+            return out
+
+        try:
+            if side_str == 'LONG':
+                risk = avg_price - float(current_sl)
+                pnl = float(current_price) - float(avg_price)
+            else:
+                risk = float(current_sl) - float(avg_price)
+                pnl = float(avg_price) - float(current_price)
+
+            if risk <= 0:
+                return out
+
+            profit_r = pnl / risk
+        except Exception:
+            return out
+
+        # Пороговые значения (можно переопределить в params)
+        breakeven_rr = getattr(self.params, 'ict_breakeven_rr', 1.0)
+        partial_rr = getattr(self.params, 'ict_partial_rr', 2.0)
+        partial_pct = getattr(self.params, 'ict_partial_pct', 0.5)
+
+        # Безубыток
+        if profit_r >= breakeven_rr and getattr(self.params, 'risk', None) is not None:
+            # set SL to breakeven with small buffer to avoid immediate stop (0.05% by default)
+            buffer = getattr(self.params, 'ict_breakeven_buffer_pct', 0.0005)
+            if side_str == 'LONG':
+                breakeven_price = float(avg_price) * (1.0 + buffer)
+                # Проверяем, что новый SL лучше текущего
+                if current_sl is None or breakeven_price > float(current_sl):
+                    out['set_sl'] = breakeven_price
+                    out['reason'] = f'breakeven_{profit_r:.2f}R'
+            else:
+                breakeven_price = float(avg_price) * (1.0 - buffer)
+                if current_sl is None or breakeven_price < float(current_sl):
+                    out['set_sl'] = breakeven_price
+                    out['reason'] = f'breakeven_{profit_r:.2f}R'
+
+        # Частичное закрытие
+        if profit_r >= partial_rr and size > 0 and getattr(self.params, 'risk', None) is not None:
+            close_qty = size * float(partial_pct)
+            out['partial_close_qty'] = close_qty
+            out['reason'] = (out['reason'] + ';' if out['reason'] else '') + f'partial_{partial_pct*100:.0f}%_{profit_r:.2f}R'
+
+        # Trailing by Alligator (опционально)
+        if getattr(self.params, 'risk', None) is not None and getattr(self.params.risk, 'enable_trailing_stop', False):
+            use_alligator_trailing = getattr(self.params, 'ict_enable_alligator_trailing', False)
+            if use_alligator_trailing and jaw is not None and teeth is not None and index is not None:
+                try:
+                    # Выбираем линию для trailing: teeth (зубы) предпочтительнее, затем jaw
+                    trail_line = None
+                    if pd.notna(teeth.iloc[index]):
+                        trail_line = float(teeth.iloc[index])
+                        out['apply_trailing_by'] = 'teeth'
+                    elif pd.notna(jaw.iloc[index]):
+                        trail_line = float(jaw.iloc[index])
+                        out['apply_trailing_by'] = 'jaw'
+
+                    if trail_line is not None:
+                        # Для LONG: ставим SL чуть ниже trail_line
+                        trail_buffer = getattr(self.params, 'ict_trailing_buffer_pct', 0.0005)
+                        if side_str == 'LONG':
+                            new_sl = trail_line * (1.0 - trail_buffer)
+                            # Меняем SL только если он лучше текущего
+                            if out['set_sl'] is None:
+                                if new_sl > float(current_sl):
+                                    out['set_sl'] = new_sl
+                                    out['reason'] = (out['reason'] + ';' if out['reason'] else '') + 'trailing_alligator'
+                        else:
+                            new_sl = trail_line * (1.0 + trail_buffer)
+                            if out['set_sl'] is None:
+                                if new_sl < float(current_sl):
+                                    out['set_sl'] = new_sl
+                                    out['reason'] = (out['reason'] + ';' if out['reason'] else '') + 'trailing_alligator'
+                except Exception:
+                    pass
+
+        return out
     
     def find_liquidity_sweeps(
         self,
@@ -259,6 +458,24 @@ class ICTStrategy:
             )
         
         # Ищем свечи, которые выносят предыдущие сессионные high/low
+        def _is_round_number(price: float) -> bool:
+            # Простая проверка: цена близка к целому или к половине/кратному шагу
+            try:
+                step = getattr(self.params, 'ict_round_number_step', None)
+            except Exception:
+                step = None
+            if step is None:
+                # Попробуем определить шаг: если цена > 1000 используем 100, >100 ->10, else 1
+                if df['close'].iloc[-1] > 1000:
+                    step = 100
+                elif df['close'].iloc[-1] > 100:
+                    step = 10
+                else:
+                    step = 1
+            tol = getattr(self.params, 'ict_round_number_tol', 0.002)  # 0.2%
+            rem = abs(price / step - round(price / step))
+            return (rem * step) / max(price, 1e-8) < tol
+
         for idx_sk, sk in enumerate(session_keys):
             sess_data = df_copy[df_copy["session_key"] == sk]
             if sess_data.empty or len(sess_data) < 3:
@@ -288,27 +505,42 @@ class ICTStrategy:
                 
                 # Sweep выше high предыдущей сессии
                 if prev_high > 0 and row["high"] > prev_high * 0.999:
+                    price = row["high"]
+                    inst = False
+                    # Проверяем, снятие лику прошло с Round Number или близко к PDH/PDL
+                    if _is_round_number(price):
+                        inst = True
+                    if abs(price - prev_high) / max(prev_high, 1e-8) < getattr(self.params, 'ict_pdh_pdl_tol', 0.002):
+                        inst = True
                     liquidity_zones.append(
                         ICTLiquidity(
                             bar_index=bar_idx,
                             timestamp=idx,
-                            price=row["high"],
+                            price=price,
                             direction="above_high",
                             daily_high=prev_high,
                             daily_low=prev_low,
+                            is_institutional=inst,
                         )
                     )
                 
                 # Sweep ниже low предыдущей сессии
                 if prev_low < float("inf") and row["low"] < prev_low * 1.001:
+                    price = row["low"]
+                    inst = False
+                    if _is_round_number(price):
+                        inst = True
+                    if abs(price - prev_low) / max(prev_low, 1e-8) < getattr(self.params, 'ict_pdh_pdl_tol', 0.002):
+                        inst = True
                     liquidity_zones.append(
                         ICTLiquidity(
                             bar_index=bar_idx,
                             timestamp=idx,
-                            price=row["low"],
+                            price=price,
                             direction="below_low",
                             daily_high=prev_high,
                             daily_low=prev_low,
+                            is_institutional=inst,
                         )
                     )
         
@@ -451,8 +683,8 @@ class ICTStrategy:
         
         # Диагностика: логируем количество найденных снятий ликвидности
         if len(liquidity_sweeps) == 0:
-            print(f"[ICT] ⚠️  Не найдено снятий ликвидности за последние {lookback_days} дней")
-            print(f"[ICT] 💡 Пробуем альтернативный метод поиска ликвидности...")
+            logger_config.log(f"[ICT] ⚠️  Не найдено снятий ликвидности за последние {lookback_days} дней", category="signal", level="INFO")
+            logger_config.log(f"[ICT] 💡 Пробуем альтернативный метод поиска ликвидности...", category="signal", level="INFO")
             # Альтернативный метод: ищем свечи, которые выходят за пределы предыдущих N свечей
             liquidity_sweeps = self.find_liquidity_sweeps_alternative(df, lookback_bars=50)
             # Убрали избыточное логирование - слишком много сообщений

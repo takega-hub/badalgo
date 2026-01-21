@@ -1,190 +1,99 @@
+"""Compatibility wrapper for the new vectorized Z-Score strategy.
+
+Этот модуль адаптирует новую векторизованную реализацию
+[`bot/zscore_strategy_v2.py`](bot/zscore_strategy_v2.py:1) к устаревшему интерфейсу,
+используемому в `live.py` — функцию `build_zscore_signals(df, params, symbol)`,
+а также экспортирует `Action` и `Signal`, чтобы старый код мог импортировать их
+как раньше.
 """
-Стратегия Z-Score (Статистический возврат к среднему)
+from __future__ import annotations
 
-Z-Score показывает, на сколько стандартных отклонений текущая цена удалилась от средней.
-Это идеальный фильтр, чтобы не покупать "на хаях".
+from typing import List, Optional
 
-Формула: Z = (Price_current - SMA(n)) / StdDev(n)
-
-Уровни сигналов:
-- Z > +2.5: Цена аномально высока. Ищем Short.
-- Z < -2.5: Цена аномально низка. Ищем Long.
-- Z = 0: Цена находится на "справедливом" уровне. Выход из сделки.
-"""
-from typing import List
-import numpy as np
 import pandas as pd
 
 from bot.strategy import Action, Signal
-from bot.config import StrategyParams
+from bot.config import StrategyParams as ConfigStrategyParams
+
+# Импортируем векторизированную реализацию
+from bot.zscore_strategy_v2 import generate_signals as v2_generate_signals, StrategyParams as V2StrategyParams
 
 
-class ZScoreStrategy:
-    """Стратегия Z-Score (статистический возврат к среднему)."""
-    
-    def __init__(self, params: StrategyParams):
-        self.params = params
-        # Параметры стратегии (ОПТИМИЗИРОВАНЫ - лучший вариант)
-        # Результаты: BTCUSDT 83.3% WR +4.23 USDT, ETHUSDT 88.2% WR +2.90 USDT, SOLUSDT 93.3% WR +4.53 USDT
-        # Общий PnL: +17.09 USDT за 30 дней, средний WR: 81.4%
-        # Z-Score показывает стабильно лучшие результаты среди всех стратегий
-        self.window = 20  # Период для расчета SMA и StdDev
-        self.z_threshold_long = -2.5  # Порог для LONG (перепроданность) - оптимальное значение
-        self.z_threshold_short = 2.5  # Порог для SHORT (перекупленность) - оптимальное значение
-        self.exit_threshold = 0.5  # Порог для выхода (Z близок к 0)
-        self.min_periods = 20  # Минимальное количество периодов для расчета
-        # Фильтр "состояния рынка": канал (balance) vs тренд
-        # Порог по наклону SMA и относительной волатильности (StdDev / Price)
-        self.trend_slope_threshold = 0.002   # чем больше, тем жёстче фильтр тренда
-        self.balance_max_ratio = 0.03       # максимально допустимая ширина канала (~3%)
-        
-    def calculate_z_score(self, df: pd.DataFrame) -> pd.Series:
-        """
-        Рассчитывает Z-Score для каждой свечи.
-        
-        Args:
-            df: DataFrame с данными OHLCV
-            
-        Returns:
-            Series с значениями Z-Score
-        """
-        if len(df) < self.min_periods:
-            return pd.Series([0.0] * len(df), index=df.index)
-        
-        # Простая скользящая средняя
-        sma = df['close'].rolling(window=self.window, min_periods=self.min_periods).mean()
-        
-        # Стандартное отклонение
-        std = df['close'].rolling(window=self.window, min_periods=self.min_periods).std()
-        
-        # Z-Score: (цена - средняя) / стандартное отклонение
-        z_score = (df['close'] - sma) / std
-        
-        # Заменяем NaN и Inf на 0
-        z_score = z_score.replace([np.inf, -np.inf], 0).fillna(0)
-        
-        return z_score
-    
-    def get_signals(self, df: pd.DataFrame, symbol: str = "Unknown") -> List[Signal]:
-        """
-        Генерирует сигналы на основе Z-Score с дополнительными фильтрами качества.
-        
-        Args:
-            df: DataFrame с данными OHLCV
-            symbol: Торговая пара для логирования
-            
-        Returns:
-            Список сигналов
-        """
-        if len(df) < self.min_periods:
-            return []
-        
-        signals = []
-        z_scores = self.calculate_z_score(df)
-        
-        # Вычисляем дополнительные индикаторы для фильтров
-        df = df.copy()
-        
-        # RSI для фильтра перекупленности/перепроданности
-        if 'rsi' not in df.columns:
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
-            rs = gain / loss.replace(0, np.nan)
-            df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # Объемный фильтр: средний объем за последние 20 свечей
-        df['volume_sma'] = df['volume'].rolling(window=20, min_periods=1).mean()
-        
-        # SMA для фильтра тренда
-        if 'sma' not in df.columns:
-            df['sma'] = df['close'].rolling(window=20, min_periods=1).mean()
-
-        # Дополнительно: простая оценка состояния рынка (balance vs trend)
-        df['sma_trend'] = df['close'].rolling(window=self.window, min_periods=self.min_periods).mean()
-        df['std_trend'] = df['close'].rolling(window=self.window, min_periods=self.min_periods).std()
-        df['sma_slope'] = df['sma_trend'].diff(self.window) / self.window
-        df['balance_ratio'] = df['std_trend'] / df['close']
-        
-        # Генерируем сигналы с фильтрами качества
-        for idx, row in df.iterrows():
-            z = z_scores.loc[idx]
-            
-            if not np.isfinite(z):
-                continue
-
-            # Фильтр состояния рынка: торгуем Z-Score только в "балансе"
-            slope = row.get('sma_slope', 0.0)
-            balance_ratio = row.get('balance_ratio', 0.0)
-            in_trend = (abs(slope) > self.trend_slope_threshold) or (balance_ratio > self.balance_max_ratio)
-            if in_trend:
-                # Рынок в тренде / слишком широком диапазоне – пропускаем mean reversion вход
-                continue
-            
-            # LONG сигнал: Z < -2.5 (цена аномально низка, ожидаем возврат к среднему)
-            if z < self.z_threshold_long:
-                # Объемный фильтр: игнорируем свечи с очень слабым объёмом
-                volume = row.get('volume', 0)
-                volume_sma = row.get('volume_sma', 0)
-                if volume_sma > 0 and volume < volume_sma * 0.8:  # Объем ниже среднего на 20%
-                    continue  # Низкий объем - пропускаем
-                
-                # ФИЛЬТР 3: Цена должна быть близко к SMA (не слишком далеко от среднего)
-                sma = row.get('sma', np.nan)
-                if np.isfinite(sma):
-                    price_deviation = abs(row['close'] - sma) / sma
-                    if price_deviation > 0.05:  # Отклонение больше 5% от SMA
-                        continue  # Слишком большое отклонение - пропускаем
-                
-                reason = f"zscore_long_z_{z:.2f}_below_{self.z_threshold_long}"
-                signals.append(Signal(
-                    timestamp=idx,
-                    action=Action.LONG,
-                    reason=reason,
-                    price=row['close']
-                ))
-            
-            # SHORT сигнал: Z > +2.5 (цена аномально высока, ожидаем возврат к среднему)
-            elif z > self.z_threshold_short:
-                # Объемный фильтр: игнорируем свечи с очень слабым объёмом
-                volume = row.get('volume', 0)
-                volume_sma = row.get('volume_sma', 0)
-                if volume_sma > 0 and volume < volume_sma * 0.8:  # Объем ниже среднего на 20%
-                    continue  # Низкий объем - пропускаем
-                
-                # ФИЛЬТР 3: Цена должна быть близко к SMA (не слишком далеко от среднего)
-                sma = row.get('sma', np.nan)
-                if np.isfinite(sma):
-                    price_deviation = abs(row['close'] - sma) / sma
-                    if price_deviation > 0.05:  # Отклонение больше 5% от SMA
-                        continue  # Слишком большое отклонение - пропускаем
-                
-                reason = f"zscore_short_z_{z:.2f}_above_{self.z_threshold_short}"
-                signals.append(Signal(
-                    timestamp=idx,
-                    action=Action.SHORT,
-                    reason=reason,
-                    price=row['close']
-                ))
-        
-        return signals
+def _map_config_to_v2(params: ConfigStrategyParams) -> V2StrategyParams:
+    """Map existing config StrategyParams to V2StrategyParams with safe fallbacks."""
+    # Берём значения, если они есть, иначе используем значения по умолчанию из V2
+    v2 = V2StrategyParams()
+    # window / sma length
+    v2.window = int(getattr(params, "sma_length", getattr(params, "window", v2.window)))
+    # thresholds (try multiple possible field names)
+    v2.z_long = float(getattr(params, "z_long", getattr(params, "z_threshold_long", v2.z_long)))
+    v2.z_short = float(getattr(params, "z_short", getattr(params, "z_threshold_short", v2.z_short)))
+    v2.z_exit = float(getattr(params, "z_exit", v2.z_exit))
+    v2.vol_factor = float(getattr(params, "vol_factor", v2.vol_factor))
+    v2.adx_threshold = float(getattr(params, "adx_threshold", getattr(params, "adx_length", v2.adx_threshold)))
+    v2.epsilon = float(getattr(params, "epsilon", v2.epsilon))
+    # RSI options
+    v2.rsi_enabled = bool(getattr(params, "rsi_enabled", True))
+    v2.rsi_long_threshold = float(getattr(params, "rsi_long_threshold", getattr(params, "range_rsi_oversold", v2.rsi_long_threshold)))
+    v2.rsi_short_threshold = float(getattr(params, "rsi_short_threshold", getattr(params, "range_rsi_overbought", v2.rsi_short_threshold)))
+    # SMA slope / volatility windows
+    v2.sma_slope_threshold = float(getattr(params, "sma_slope_threshold", getattr(params, "trend_slope_threshold", v2.sma_slope_threshold)))
+    v2.atr_window = int(getattr(params, "atr_window", getattr(params, "atr_length", v2.atr_window)))
+    v2.adx_window = int(getattr(params, "adx_window", getattr(params, "adx_length", v2.adx_window)))
+    # risk related mapped to ATR multipliers (if present)
+    v2.stop_loss_atr = float(getattr(params, "zscore_stop_loss_atr", getattr(params, "stop_loss_atr", v2.stop_loss_atr)))
+    v2.take_profit_atr = float(getattr(params, "zscore_take_profit_atr", getattr(params, "take_profit_atr", v2.take_profit_atr)))
+    return v2
 
 
-def build_zscore_signals(
-    df: pd.DataFrame,
-    params: StrategyParams,
-    symbol: str = "Unknown"
-) -> List[Signal]:
+def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams], symbol: str = "Unknown") -> List[Signal]:
+    """Compatibility function used by live.py.
+
+    Принимает привычный DataFrame и параметры стратегии из `bot.config` и возвращает
+    список объектов `bot.strategy.Signal` (LONG/SHORT). Возвращаем только входные сигналы
+    (LONG/SHORT). Причина и цена заполняются из столбцов, сгенерированных v2.
     """
-    Строит сигналы стратегии Z-Score для всего DataFrame.
-    
-    Args:
-        df: DataFrame с данными (должен содержать OHLCV)
-        params: Параметры стратегии
-        symbol: Торговая пара для логирования
-    
-    Returns:
-        Список Signal объектов
-    """
-    strategy = ZScoreStrategy(params)
-    return strategy.get_signals(df, symbol=symbol)
+    if params is None:
+        # Если параметров нет — используем дефолтные параметры v2
+        v2_params = V2StrategyParams()
+    else:
+        v2_params = _map_config_to_v2(params)
+
+    try:
+        df_signals = v2_generate_signals(df, v2_params)
+    except Exception as e:
+        # В случае ошибки в v2 не рушим систему — логируем и возвращаем пустой список
+        import logging
+
+        logging.getLogger(__name__).exception("ZScore v2 failed: %s", e)
+        return []
+
+    results: List[Signal] = []
+
+    if df_signals is None or df_signals.empty:
+        return results
+
+    # df_signals содержит колонку 'signal' с значениями "LONG"/"SHORT"/"EXIT_*"
+    for idx, row in df_signals.iterrows():
+        sig = str(row.get("signal", "")).upper()
+        if sig == "LONG":
+            action = Action.LONG
+        elif sig == "SHORT":
+            action = Action.SHORT
+        else:
+            continue
+
+        reason = row.get("reason") or f"zscore_{sig.lower()}"
+        price = float(row.get("close", row.get("price", float('nan'))))
+
+        try:
+            ts = pd.Timestamp(idx) if not isinstance(idx, pd.Timestamp) else idx
+        except Exception:
+            ts = pd.Timestamp.now()
+
+        results.append(Signal(timestamp=ts, action=action, reason=str(reason), price=price))
+
+    return results
+
+
+__all__ = ["build_zscore_signals", "Action", "Signal"]
