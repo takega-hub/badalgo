@@ -364,6 +364,31 @@ class BybitClient:
             take_profit: Цена Take Profit (опционально)
             stop_loss: Цена Stop Loss (опционально)
         """
+        # Защита от отправки reduce_only ордера, если по символу нет открытой позиции.
+        # Это предотвращает ошибку Bybit: "current position is zero, cannot fix reduce-only order qty (ErrCode: 110017)".
+        if reduce_only:
+            try:
+                pos_info = self.get_position_info(symbol=symbol)
+                list_data = pos_info.get("result", {}).get("list", []) if isinstance(pos_info, dict) else []
+                has_open = False
+                for p in list_data:
+                    try:
+                        size = float(p.get("size", "0") or "0")
+                    except Exception:
+                        size = 0.0
+                    if size > 0:
+                        has_open = True
+                        break
+
+                if not has_open:
+                    print(f"[bybit] ⚠️ Skipping reduce_only order for {symbol}: no open position (avoids ErrCode 110017)")
+                    return {"retCode": 110017, "retMsg": "No open position to reduce; skipped reduce_only order", "result": {}}
+            except Exception as e:
+                # Если при проверке позиции произошла ошибка, логируем и пробуем отправить ордер —
+                # в большинстве случаев get_position_info вернёт корректный ответ, но на всякий случай
+                # не хотим ломать основной поток выполнения.
+                print(f"[bybit] ⚠️ Warning checking position before reduce_only order for {symbol}: {e}. Proceeding with order.")
+
         payload = {
             "category": "linear",
             "symbol": symbol,
@@ -589,4 +614,3 @@ class BybitClient:
         except AttributeError:
             # Если get_executions не доступен, используем get_execution_list
             return self._retry_request(self.session.get_execution_list, **params)
-
