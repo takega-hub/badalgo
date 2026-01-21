@@ -306,6 +306,14 @@ def generate_lh_orderflow_signals(
 
     rvol = volume / vol_sma if vol_sma > 0 else 0.0
     if rvol < cfg.min_rvol:
+        logger.debug(
+            "[AMT_LH] %s RVOL Rejected: rvol=%0.2f < min_rvol=%0.2f (vol=%0.2f, vol_sma=%0.2f)",
+            symbol,
+            rvol,
+            cfg.min_rvol,
+            volume,
+            vol_sma,
+        )
         return signals
 
     # --- CVD / Delta Velocity ---
@@ -388,6 +396,7 @@ def detect_absorption_squeeze_short(
     raw_trades = client.get_recent_trades(symbol, limit=500)
     df_trades = _parse_trades(raw_trades)
     if df_trades.empty:
+        logger.debug("[AMT_OF] %s Absorption Rejected: no trades in feed", symbol)
         return None
 
     now_utc = datetime.now(timezone.utc)
@@ -395,6 +404,11 @@ def detect_absorption_squeeze_short(
     window_df = df_trades[df_trades["time"] >= window_start]
 
     if window_df.empty:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: no trades in the last %ss window",
+            symbol,
+            cfg.lookback_seconds,
+        )
         return None
 
     buy_mask = window_df["side"].str.upper() == "BUY"
@@ -405,6 +419,18 @@ def detect_absorption_squeeze_short(
     total_volume = buy_volume + sell_volume
 
     if total_volume < cfg.min_total_volume:
+        logger.debug(
+            "[AMT_OF] %s Absorption Check: Vol %0.2f/%0.2f, CVD %0.2f/%0.2f, BuySell %0.2f/%0.2f, Drift %0.2f%%/%0.2f%%",
+            symbol,
+            total_volume,
+            cfg.min_total_volume,
+            buy_volume - sell_volume,
+            cfg.min_cvd_delta,
+            (buy_volume / max(sell_volume, 1e-6)) if sell_volume > 0 else float("inf"),
+            cfg.min_buy_sell_ratio,
+            0.0,
+            cfg.max_price_drift_pct,
+        )
         return None
 
     cvd_delta = buy_volume - sell_volume  # положительный → агрессивные покупки
@@ -416,12 +442,32 @@ def detect_absorption_squeeze_short(
 
     # Условия "абсорбции" для SHORT:
     if cvd_delta < cfg.min_cvd_delta:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: CVD %0.2f < Min CVD %0.2f",
+            symbol,
+            cvd_delta,
+            cfg.min_cvd_delta,
+        )
         return None
 
     if buy_sell_ratio < cfg.min_buy_sell_ratio:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: Buy/Sell ratio %0.2f < Min %0.2f (Buy %0.2f / Sell %0.2f)",
+            symbol,
+            buy_sell_ratio,
+            cfg.min_buy_sell_ratio,
+            buy_volume,
+            sell_volume,
+        )
         return None
 
     if abs(price_change_pct) > cfg.max_price_drift_pct:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: Price drift %0.2f%% > Max %s%%",
+            symbol,
+            price_change_pct,
+            cfg.max_price_drift_pct,
+        )
         return None
 
     ts = pd.Timestamp(now_utc)
@@ -453,6 +499,7 @@ def detect_absorption_squeeze_long(
     raw_trades = client.get_recent_trades(symbol, limit=500)
     df_trades = _parse_trades(raw_trades)
     if df_trades.empty:
+        logger.debug("[AMT_OF] %s Absorption Rejected: no trades in feed", symbol)
         return None
 
     now_utc = datetime.now(timezone.utc)
@@ -460,6 +507,11 @@ def detect_absorption_squeeze_long(
     window_df = df_trades[df_trades["time"] >= window_start]
 
     if window_df.empty:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: no trades in the last %ss window",
+            symbol,
+            cfg.lookback_seconds,
+        )
         return None
 
     buy_mask = window_df["side"].str.upper() == "BUY"
@@ -470,6 +522,18 @@ def detect_absorption_squeeze_long(
     total_volume = buy_volume + sell_volume
 
     if total_volume < cfg.min_total_volume:
+        logger.debug(
+            "[AMT_OF] %s Absorption Check: Vol %0.2f/%0.2f, CVD %0.2f/%0.2f, BuySell %0.2f/%0.2f, Drift %0.2f%%/%0.2f%%",
+            symbol,
+            total_volume,
+            cfg.min_total_volume,
+            buy_volume - sell_volume,
+            cfg.min_cvd_delta,
+            (buy_volume / max(sell_volume, 1e-6)) if sell_volume > 0 else float("inf"),
+            cfg.min_buy_sell_ratio,
+            0.0,
+            cfg.max_price_drift_pct,
+        )
         return None
 
     cvd_delta = buy_volume - sell_volume  # отрицательный → агрессивные продажи
@@ -481,12 +545,32 @@ def detect_absorption_squeeze_long(
 
     # Условия "абсорбции" для LONG:
     if -cvd_delta < cfg.min_cvd_delta:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: CVD %0.2f < Min CVD %0.2f",
+            symbol,
+            -cvd_delta,
+            cfg.min_cvd_delta,
+        )
         return None
 
     if sell_buy_ratio < cfg.min_buy_sell_ratio:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: Sell/Buy ratio %0.2f < Min %0.2f (Sell %0.2f / Buy %0.2f)",
+            symbol,
+            sell_buy_ratio,
+            cfg.min_buy_sell_ratio,
+            sell_volume,
+            buy_volume,
+        )
         return None
 
     if abs(price_change_pct) > cfg.max_price_drift_pct:
+        logger.debug(
+            "[AMT_OF] %s Absorption Rejected: Price drift %0.2f%% > Max %s%%",
+            symbol,
+            price_change_pct,
+            cfg.max_price_drift_pct,
+        )
         return None
 
     ts = pd.Timestamp(now_utc)
@@ -524,6 +608,11 @@ def generate_amt_signals(
 
     # Resolve per-symbol configs
     resolved_vp_config, resolved_abs_config = _resolve_amt_configs(symbol, vp_config, abs_config)
+    # Entry diagnostics
+    try:
+        logger.info("[AMT] %s AMT entry: Price=%0.4f", symbol, float(current_price))
+    except Exception:
+        pass
 
     # --- Volume Profile ---
     vp = None
@@ -537,6 +626,18 @@ def generate_amt_signals(
         poc = vp["poc"]
         vah = vp["vah"]
         val = vp["val"]
+        # Log VP boundaries for diagnostics (safe: vp is not None)
+        try:
+            logger.info(
+                "[%s] AMT Check: Price=%0.4f, VAH=%0.4f, VAL=%0.4f, POC=%0.4f",
+                symbol,
+                float(current_price),
+                float(vah),
+                float(val),
+                float(poc),
+            )
+        except Exception:
+            pass
 
     # --- Order flow / CVD ---
     trades = client.get_recent_trades(symbol, limit=500)
@@ -549,6 +650,15 @@ def generate_amt_signals(
     if cvd_metrics:
         delta_velocity = cvd_metrics["delta_velocity"]
         avg_abs_delta = cvd_metrics["avg_abs_delta"]
+        try:
+            logger.debug(
+                "[AMT] %s CVD metrics: delta_velocity=%s, avg_abs_delta=%s",
+                symbol,
+                delta_velocity,
+                avg_abs_delta,
+            )
+        except Exception:
+            pass
 
     # Diagnostics for volume and delta within the absorption window
     if not trades_df.empty:
@@ -579,6 +689,16 @@ def generate_amt_signals(
     # --- Breakout / Squeeze сценарии ---
     if vp and cvd_metrics and avg_abs_delta and avg_abs_delta > 0:
         threshold = avg_abs_delta * max(delta_aggr_mult, 1.0)
+        try:
+            logger.debug(
+                "[AMT] %s CVD check: delta_velocity=%s, avg_abs_delta=%s, threshold=%s",
+                symbol,
+                delta_velocity,
+                avg_abs_delta,
+                threshold,
+            )
+        except Exception:
+            pass
         last_row = df_ohlcv.iloc[-1]
         prev_row = df_ohlcv.iloc[-2] if len(df_ohlcv) >= 2 else None
 
