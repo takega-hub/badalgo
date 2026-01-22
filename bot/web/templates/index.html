@@ -1891,24 +1891,23 @@
                 // --- НАЧАЛО БЛОКА ФАЗЫ РЫНКА ---
                 // 1. Извлекаем данные из собранного объекта botStatus
                 // Внутри функции updateStatus
-                const bRaw = botStatus.current_bias; 
-                const pRaw = botStatus.current_phase || '-';
+                // Внутри функции updateStatus, где работаем с символом
+                const bRaw = symbolStatus.current_bias; 
+                const pRaw = symbolStatus.current_phase || '-';
 
                 const bLower = bRaw ? bRaw.toString().toLowerCase() : '';
                 const pLower = pRaw.toString().toLowerCase();
 
-                let phaseColor = '#aaa'; 
+                let phaseColor = '#aaa'; // Серый по умолчанию
 
                 if (bLower === 'long' || bLower === 'bullish') {
-                    phaseColor = '#00ff88'; // Зеленый для лонга
+                    phaseColor = '#00ff88'; // Зеленый
                 } else if (bLower === 'short' || bLower === 'bearish') {
-                    phaseColor = '#ff4444'; // Ярко-красный для шорта
+                    phaseColor = '#ff4444'; // КРАСНЫЙ
                 } else if (pLower === 'trend') {
-                    // Если Bias == null, но фаза TREND - красим в нейтральный голубой
-                    // Это даст вам понять, что бот видит силу, но не определил сторону
-                    phaseColor = '#00d4ff'; 
+                    phaseColor = '#00d4ff'; // Голубой (Тренд есть, направление ищем)
                 } else if (pLower === 'flat') {
-                    phaseColor = '#ffaa00'; // Оранжевый для флета
+                    phaseColor = '#ffaa00'; // Оранжевый
                 }
                 // --- КОНЕЦ БЛОКА ФАЗЫ РЫНКА ---
                 

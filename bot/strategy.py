@@ -230,19 +230,19 @@ def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_na
 
 
 def detect_market_bias(row: pd.Series) -> Optional[Bias]:
-    # Пытаемся найти DI по любым возможным именам
-    plus_di = row.get('plus_di') or row.get('DMP_14') or row.get('ADX_14_pos')
-    minus_di = row.get('minus_di') or row.get('DMN_14') or row.get('ADX_14_neg')
+    # Ищем DI под любыми именами
+    p_di = row.get('plus_di') or row.get('DMP_14') or row.get('ADX_14_pos')
+    m_di = row.get('minus_di') or row.get('DMN_14') or row.get('ADX_14_neg')
 
-    if pd.notnull(plus_di) and pd.notnull(minus_di):
-        return Bias.LONG if float(plus_di) > float(minus_di) else Bias.SHORT
-
-    # ЖЕСТКИЙ FALLBACK: если DI нет, смотрим цену относительно SMA
-    price = row.get('close')
+    if pd.notnull(p_di) and pd.notnull(m_di):
+        return Bias.LONG if float(p_di) > float(m_di) else Bias.SHORT
+    
+    # Если DI нет, смотрим на SMA (обязательно!)
+    close = row.get('close')
     sma = row.get('sma') or row.get('sma_200')
-    if pd.notnull(price) and pd.notnull(sma):
-        return Bias.LONG if float(price) > float(sma) else Bias.SHORT
-
+    if pd.notnull(close) and pd.notnull(sma):
+        return Bias.LONG if float(close) > float(sma) else Bias.SHORT
+    
     return None
 
 
