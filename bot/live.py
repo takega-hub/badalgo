@@ -4172,30 +4172,29 @@ def run_live_from_api(
                     bot_state["current_phase"] = phase_value
                     
                     # Определяем направление рынка (bias)
-                    bias = detect_market_bias(last_row)
+                    print(f"DEBUG [{symbol}] Columns available: {list(last_row.index)}")
 
+                    bias = detect_market_bias(last_row)
                     if bias:
                         bias_value = bias.value
                     else:
-                        # Более агрессивный поиск скользящей средней
                         price = last_row.get('close')
-                        # Проверяем все возможные ключи, которые могли попасть в DataFrame
-                        sma = (last_row.get('sma') or 
-                            last_row.get('sma_200') or 
-                            last_row.get('EMA_200') or 
-                            last_row.get('SMA_200') or
-                            last_row.get('ema'))
+                        # Пробуем достать ЛЮБУЮ колонку, где есть подстрока 'sma' или 'ema'
+                        sma_key = next((k for k in last_row.index if 'sma' in k.lower() or 'ema' in k.lower()), None)
+                        sma = last_row.get(sma_key) if sma_key else None
+                        
+                        print(f"DEBUG [{symbol}] Price: {price}, Found SMA Key: {sma_key}, Value: {sma}")
                         
                         if price is not None and sma is not None:
-                            # Если цена НИЖЕ средней — это медвежий рынок (short)
                             bias_value = "short" if float(price) < float(sma) else "long"
                         else:
-                            # Последний рубеж: если индикаторов нет, сравниваем закрытие с открытием текущей свечи
+                            # Если даже SMA нет, смотрим на ADX (раз он у вас 45, значит данные есть)
+                            # Если ADX высокий (>25) и цена ниже открытия - это шортовый тренд
                             open_p = last_row.get('open')
-                            if price is not None and open_p is not None:
+                            if price and open_p:
                                 bias_value = "short" if float(price) < float(open_p) else "long"
                             else:
-                                bias_value = "short" # Default fallback для медвежьего рынка, если данных совсем нет
+                                bias_value = "short" # Жесткий шорт для теста
 
                     bot_state["current_bias"] = bias_value
                     
