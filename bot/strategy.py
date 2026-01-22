@@ -231,35 +231,24 @@ def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_na
 
 def detect_market_bias(row: pd.Series) -> Optional[Bias]:
     try:
-        # Проверяем все возможные варианты названий DI
-        plus_di = row.get('plus_di') or row.get('DMP_14') or row.get('plus_di_14')
-        minus_di = row.get('minus_di') or row.get('DMN_14') or row.get('minus_di_14')
+        # Проверяем все возможные варианты названий DI, которые может выдать библиотека
+        plus_di = row.get('plus_di') or row.get('DMP_14') or row.get('ADX_14_pos')
+        minus_di = row.get('minus_di') or row.get('DMN_14') or row.get('ADX_14_neg')
 
         if pd.notnull(plus_di) and pd.notnull(minus_di):
             if float(plus_di) > float(minus_di):
                 return Bias.LONG
             if float(minus_di) > float(plus_di):
                 return Bias.SHORT
-
-        # 2. Пробуем по SMA
+        
+        # Если DI не найдены, обязательно используем SMA как запасной вариант
         price = row.get('close')
-        sma = row.get('sma')
+        sma = row.get('sma') or row.get('sma_200')
         if pd.notnull(price) and pd.notnull(sma):
             return Bias.LONG if float(price) > float(sma) else Bias.SHORT
 
-        # 3. Дополнительный Fallback: Цена против EMA (часто EMA есть, когда SMA нет)
-        ema = row.get('ema_200') or row.get('ema')
-        if pd.notnull(price) and pd.notnull(ema):
-            return Bias.LONG if float(price) > float(ema) else Bias.SHORT
-
-        # 4. Если совсем ничего нет - смотрим на изменение цены (последний шанс)
-        open_price = row.get('open')
-        if pd.notnull(price) and pd.notnull(open_price):
-             return Bias.LONG if float(price) >= float(open_price) else Bias.SHORT
-
         return None
-    except Exception as e:
-        print(f"Error in detect_market_bias: {e}")
+    except:
         return None
 
 
