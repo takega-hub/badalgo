@@ -1890,35 +1890,42 @@
                 }
                 
                 // Фаза рынка (для выбранного символа, используем из bot_status)
-                const b = bias ? bias.toString().toLowerCase() : '';
-                const p = phaseValue ? phaseValue.toString().toLowerCase() : '';
+                // --- НАЧАЛО БЛОКА ФАЗЫ РЫНКА ---
+                // 1. Извлекаем данные из собранного объекта botStatus
+                const phaseRaw = botStatus.current_phase || '-';
+                const biasRaw = botStatus.current_bias || ''; // Если bias нет, будет пустая строка
 
-                let phaseColor = '#aaa'; // Цвет по умолчанию (серый)
+                // 2. Подготавливаем значения для сравнения (в нижнем регистре)
+                const phaseValue = String(phaseRaw).toLowerCase();
+                const biasLower = String(biasRaw).toLowerCase();
 
-                // 2. Сначала проверяем направление (Bias) — это самое важное
-                if (b === 'long') {
+                // 3. Логика выбора цвета
+                let phaseColor = '#aaa'; // По умолчанию серый
+
+                if (biasLower === 'long') {
                     phaseColor = '#00ff88'; // Зеленый для лонга
-                } else if (b === 'short') {
-                    phaseColor = '#ff4444'; // Ярко-красный для шорта
+                } else if (biasLower === 'short') {
+                    phaseColor = '#ff4444'; // Красный для шорта
                 } else {
-                    // 3. Если bias нейтральный (или его нет), красим по фазе
-                    if (p === 'trend') {
-                        phaseColor = '#00ff88'; // Тренд обычно зеленый
-                    } else if (p === 'flat') {
-                        phaseColor = '#ffaa00'; // Флэт — оранжевый
-                    }
+                    // Если направление нейтральное, красим по типу фазы
+                    if (phaseValue === 'trend') phaseColor = '#00ff88';
+                    else if (phaseValue === 'flat') phaseColor = '#ffaa00';
                 }
 
-                // 4. Применяем цвет к элементу
+                // 4. Отрисовка в интерфейс
+                const marketPhaseEl = document.getElementById('market-phase');
                 if (marketPhaseEl) {
-                    let displayText = phaseValue !== '-' ? phaseValue.toUpperCase() : '-';
-                    if (bias) {
-                        // Добавляем понятную приписку
-                        const biasText = b === 'long' ? 'BULLISH' : 'BEARISH';
-                        displayText += ` (${biasText})`;
+                    let displayText = phaseRaw !== '-' ? String(phaseRaw).toUpperCase() : '-';
+                    
+                    // Проверяем наличие bias через biasRaw, чтобы не было ошибки ReferenceError
+                    if (biasRaw && biasRaw !== '-') {
+                        const sideText = biasLower === 'long' ? 'BULLISH' : 'BEARISH';
+                        displayText += ` (${sideText})`;
                     }
+                    
                     marketPhaseEl.innerHTML = `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>`;
                 }
+                // --- КОНЕЦ БЛОКА ФАЗЫ РЫНКА ---
                 
                 // ADX (для выбранного символа, используем из bot_status)
                 const adxEl = document.getElementById('current-adx');
