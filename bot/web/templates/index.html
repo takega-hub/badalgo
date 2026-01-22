@@ -1896,22 +1896,25 @@
                     phaseValue = String(phase).toLowerCase();
                 }
                 
-                // Определяем цвет на основе bias (бычий/медвежий)
+               // Приводим к нижнему регистру перед сравнением, чтобы избежать проблем с LONG vs long
+                const biasLower = bias ? bias.toLowerCase() : null;
+
                 let phaseColor = '#aaa';
-                if (bias === 'long') {
+                if (biasLower === 'long') {
                     phaseColor = '#00ff88'; // Зеленый для бычьего
-                } else if (bias === 'short') {
+                } else if (biasLower === 'short') {
                     phaseColor = '#ff4444'; // Красный для медвежьего
                 } else {
-                    // Fallback на старую логику, если bias нет
+                    // Если направление нейтральное (flat), используем оранжевый или серый
                     phaseColor = phaseValue === 'trend' ? '#00ff88' : phaseValue === 'flat' ? '#ffaa00' : '#aaa';
                 }
-                
+
                 const marketPhaseEl = document.getElementById('market-phase');
                 if (marketPhaseEl) {
                     let displayText = phaseValue !== '-' ? phaseValue.toUpperCase() : '-';
                     if (bias) {
-                        displayText += ` (${bias === 'long' ? 'BULLISH' : 'BEARISH'})`;
+                        // Оставляем красивое отображение BULLISH/BEARISH
+                        displayText += ` (${biasLower === 'long' ? 'BULLISH' : 'BEARISH'})`;
                     }
                     marketPhaseEl.innerHTML = phaseValue !== '-' ? `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>` : '-';
                 }
