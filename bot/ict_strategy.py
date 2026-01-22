@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import pytz
 import logging
+import os
 
 from bot.strategy import Action, Signal, Bias
 import json
@@ -222,11 +223,11 @@ class ICTStrategy:
         try:
             # Попробуем ресемплить OHLC по таймфрейму
             if timeframe.upper() in ('4H', '4h'):
-                rule = '4H'
+                rule = '4h'
             elif timeframe.upper() in ('1D', '1d', 'D'):
-                rule = '1D'
+                rule = '1d'
             else:
-                rule = timeframe.upper()
+                rule = timeframe.lower()
 
             # Ресемплинг требует DatetimeIndex
             df_res = df.copy()
