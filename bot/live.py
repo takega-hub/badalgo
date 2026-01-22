@@ -4172,48 +4172,27 @@ def run_live_from_api(
                     bot_state["current_phase"] = phase_value
                     
                     # Определяем направление рынка (bias)
-                    print(f"DEBUG [{symbol}] Columns available: {list(last_row.index)}")
-
-                    # --- В файле live.py ---
-
-                    # 1. Пытаемся определить через индикаторы (DMI)
-                    # --- ВРЕМЕННЫЙ ТЕСТ В live.py ---
-
-                    phase_value = "flat"
-                    bias_value = "short"  # Форсируем SHORT для теста, потом вернем detect_market_bias
-                    adx_value = None
-
-                    # 2. Определяем фазу
-                    phase = detect_market_phase(last_row, current_settings.strategy)
-                    phase_value = phase.value if phase else "flat"
+                    bias = detect_market_bias(last_row)
+                    bias_value = bias.value if bias else None
+                    bot_state["current_bias"] = bias_value
                     
-                    # 3. Извлекаем ADX (безопасно)
+                    # Извлекаем ADX из последнего бара
+                    adx_value = None
                     try:
                         if "adx" in df_ready.columns:
                             adx_raw = last_row["adx"]
                             if pd.notna(adx_raw):
                                 adx_value = float(adx_raw)
-                    except:
-                        pass
-
-                    # 4. Обновляем локальное состояние bot_state
-                    bot_state["current_phase"] = phase_value
-                    bot_state["current_bias"] = bias_value
-                    bot_state["current_adx"] = adx_value
-
-                    # 5. ОТПРАВЛЯЕМ В API (update_worker_status должен быть на том же уровне!)
-                    try:
-                        from bot.multi_symbol_manager import update_worker_status
-                        update_worker_status(
-                            symbol, 
-                            current_phase=phase_value, 
-                            current_adx=adx_value, 
-                            current_bias=bias_value,
-                            current_status="Running"
-                        )
-                    except ImportError:
+                            else:
+                                # Если ADX NaN в последней строке, пробуем найти последнее валидное значение
+                                valid_adx = df_ready["adx"].dropna()
+                                if not valid_adx.empty:
+                                    adx_value = float(valid_adx.iloc[-1])
+                    except (KeyError, ValueError, TypeError, IndexError):
+                        # Если ADX не найден или ошибка преобразования, оставляем None
                         pass
                     
+                    bot_state["current_adx"] = adx_value
                     # Обновляем статус воркера с фазой рынка и ADX (всегда, даже если None)
                     update_worker_status(symbol, current_phase=phase_value, current_adx=adx_value, current_bias=bias_value)
             except Exception as e:
