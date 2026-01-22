@@ -1852,20 +1852,18 @@
                 
                 let botStatus = data.bot_status || {};
                 if (data.symbols_status && data.symbols_status[activeSymbol]) {
-                    // Используем статус из symbols_status для выбранного символа
                     const symbolStatus = data.symbols_status[activeSymbol];
                     botStatus = {
                         is_running: symbolStatus.is_running || botStatus.is_running || false,
                         current_status: symbolStatus.status || symbolStatus.current_status || botStatus.current_status || 'Stopped',
-                        current_phase: symbolStatus.current_phase || botStatus.current_phase || '-',  // Фаза рынка для выбранного символа
-                        current_bias: symbolStatus.current_bias || symbolStatus.bias || botStatus.current_bias || '-',
-                        current_adx: symbolStatus.current_adx !== undefined && symbolStatus.current_adx !== null ? symbolStatus.current_adx : (botStatus.current_adx || '-'),  // ADX для выбранного символа
+                        current_phase: symbolStatus.current_phase || botStatus.current_phase || '-',
+                        // ОБЯЗАТЕЛЬНО ДОБАВЛЯЕМ ЭТУ СТРОКУ:
+                        current_bias: symbolStatus.current_bias || symbolStatus.bias || botStatus.current_bias || '', 
+                        current_adx: symbolStatus.current_adx !== undefined ? symbolStatus.current_adx : (botStatus.current_adx || '-'),
                         last_action: symbolStatus.last_action || botStatus.last_action || '-',
                         last_action_time: symbolStatus.last_action_time || botStatus.last_action_time,
                         last_signal: symbolStatus.last_signal || botStatus.last_signal || '-',
                         last_signal_time: symbolStatus.last_signal_time || botStatus.last_signal_time,
-                        last_error: symbolStatus.last_error || botStatus.last_error,
-                        last_error_time: symbolStatus.last_error_time || botStatus.last_error_time,
                         last_update: botStatus.last_update || new Date().toISOString()
                     };
                 }
@@ -1893,36 +1891,28 @@
                 // --- НАЧАЛО БЛОКА ФАЗЫ РЫНКА ---
                 // 1. Извлекаем данные из собранного объекта botStatus
                 const phaseRaw = botStatus.current_phase || '-';
-                const biasRaw = botStatus.current_bias || ''; // Если bias нет, будет пустая строка
-
-                // 2. Подготавливаем значения для сравнения (в нижнем регистре)
-                const phaseValue = String(phaseRaw).toLowerCase();
-                const biasLower = String(biasRaw).toLowerCase();
-
+                const biasRaw = botStatus.current_bias || ''; 
+                const bLower = biasRaw.toString().toLowerCase();
+                const pLower = phaseRaw.toString().toLowerCase();
                 // 3. Логика выбора цвета
-                let phaseColor = '#aaa'; // По умолчанию серый
-
-                if (biasLower === 'long') {
-                    phaseColor = '#00ff88'; // Зеленый для лонга
-                } else if (biasLower === 'short') {
-                    phaseColor = '#ff4444'; // Красный для шорта
+                let phaseColor = '#aaa';
+                if (bLower === 'long') {
+                    phaseColor = '#00ff88'; // Зеленый
+                } else if (bLower === 'short') {
+                    phaseColor = '#ff4444'; // Красный
                 } else {
-                    // Если направление нейтральное, красим по типу фазы
-                    if (phaseValue === 'trend') phaseColor = '#00ff88';
-                    else if (phaseValue === 'flat') phaseColor = '#ffaa00';
+                    if (pLower === 'trend') phaseColor = '#00ff88';
+                    else if (pLower === 'flat') phaseColor = '#ffaa00';
                 }
 
                 // 4. Отрисовка в интерфейс
                 const marketPhaseEl = document.getElementById('market-phase');
                 if (marketPhaseEl) {
-                    let displayText = phaseRaw !== '-' ? String(phaseRaw).toUpperCase() : '-';
-                    
-                    // Проверяем наличие bias через biasRaw, чтобы не было ошибки ReferenceError
+                    let displayText = phaseRaw !== '-' ? phaseRaw.toUpperCase() : '-';
                     if (biasRaw && biasRaw !== '-') {
-                        const sideText = biasLower === 'long' ? 'BULLISH' : 'BEARISH';
+                        const sideText = bLower === 'long' ? 'BULLISH' : 'BEARISH';
                         displayText += ` (${sideText})`;
                     }
-                    
                     marketPhaseEl.innerHTML = `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>`;
                 }
                 // --- КОНЕЦ БЛОКА ФАЗЫ РЫНКА ---
