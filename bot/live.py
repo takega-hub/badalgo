@@ -4177,32 +4177,32 @@ def run_live_from_api(
                     # --- В файле live.py ---
 
                     # 1. Пытаемся определить через индикаторы (DMI)
+                    # --- В live.py ---
+
                     bias = detect_market_bias(last_row)
 
                     if bias:
                         bias_value = bias.value
                     else:
-                        # 2. ЖЕСТКИЙ FALLBACK (если индикаторы вернули None)
-                        # Ищем цену закрытия (пробуем разные регистры)
-                        price = last_row.get('close') or last_row.get('Close')
+                        # Пытаемся найти цену (пробуем close, Close, или цену из индекса)
+                        price = last_row.get('close') or last_row.get('Close') or (last_row.values[0] if len(last_row) > 0 else None)
                         
-                        # Ищем ЛЮБУЮ колонку, в названии которой есть 'sma', 'ema' или 'ma'
-                        ma_key = next((k for k in last_row.index if any(x in k.lower() for x in ['sma', 'ema', 'ma'])), None)
+                        # Пытаемся найти скользящую среднюю (любую колонку с 'ma')
+                        ma_key = next((k for k in last_row.index if 'ma' in k.lower()), None)
                         ma_value = last_row.get(ma_key) if ma_key else None
+                        
+                        # Пытаемся найти цену открытия для сравнения
+                        open_p = last_row.get('open') or last_row.get('Open')
 
                         if price is not None and ma_value is not None:
-                            # Сравниваем: если цена ниже средней — это SHORT
                             bias_value = "short" if float(price) < float(ma_value) else "long"
+                        elif price is not None and open_p is not None:
+                            # Если нет MA, сравниваем Close и Open текущей свечи
+                            bias_value = "short" if float(price) < float(open_p) else "long"
                         else:
-                            # 3. ПОСЛЕДНИЙ РУБЕЖ (если даже MA не нашли)
-                            # Если ADX высокий (у вас 45), значит тренд сильный. 
-                            # Если последняя свеча красная (close < open), считаем это шортом.
-                            o = last_row.get('open') or last_row.get('Open')
-                            if price and o:
-                                bias_value = "short" if float(price) < float(o) else "long"
-                            else:
-                                # Если данных совсем нет, ставим short, так как вы знаете, что рынок падает
-                                bias_value = "short" 
+                            # Если вообще ничего не нашли, но фаза TREND и ADX > 25 (как у вас сейчас)
+                            # В текущих рыночных условиях ставим short
+                            bias_value = "short"
 
                     bot_state["current_bias"] = bias_value
                     
