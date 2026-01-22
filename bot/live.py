@@ -4172,20 +4172,30 @@ def run_live_from_api(
                     bot_state["current_phase"] = phase_value
                     
                     # Определяем направление рынка (bias)
-                    # Определяем направление рынка (bias)
                     bias = detect_market_bias(last_row)
 
                     if bias:
                         bias_value = bias.value
                     else:
-                        # ГАРАНТИРОВАННЫЙ ЗАПАСНОЙ ВАРИАНТ (если detect_market_bias вернул None)
+                        # Более агрессивный поиск скользящей средней
                         price = last_row.get('close')
-                        sma = last_row.get('sma') or last_row.get('sma_200')
+                        # Проверяем все возможные ключи, которые могли попасть в DataFrame
+                        sma = (last_row.get('sma') or 
+                            last_row.get('sma_200') or 
+                            last_row.get('EMA_200') or 
+                            last_row.get('SMA_200') or
+                            last_row.get('ema'))
                         
-                        if price and sma:
-                            bias_value = "long" if price > sma else "short"
+                        if price is not None and sma is not None:
+                            # Если цена НИЖЕ средней — это медвежий рынок (short)
+                            bias_value = "short" if float(price) < float(sma) else "long"
                         else:
-                            bias_value = None # Совсем нет данных
+                            # Последний рубеж: если индикаторов нет, сравниваем закрытие с открытием текущей свечи
+                            open_p = last_row.get('open')
+                            if price is not None and open_p is not None:
+                                bias_value = "short" if float(price) < float(open_p) else "long"
+                            else:
+                                bias_value = "short" # Default fallback для медвежьего рынка, если данных совсем нет
 
                     bot_state["current_bias"] = bias_value
                     
