@@ -1858,6 +1858,7 @@
                         is_running: symbolStatus.is_running || botStatus.is_running || false,
                         current_status: symbolStatus.status || symbolStatus.current_status || botStatus.current_status || 'Stopped',
                         current_phase: symbolStatus.current_phase || botStatus.current_phase || '-',  // Фаза рынка для выбранного символа
+                        current_bias: symbolStatus.current_bias || symbolStatus.bias || botStatus.current_bias || '-',
                         current_adx: symbolStatus.current_adx !== undefined && symbolStatus.current_adx !== null ? symbolStatus.current_adx : (botStatus.current_adx || '-'),  // ADX для выбранного символа
                         last_action: symbolStatus.last_action || botStatus.last_action || '-',
                         last_action_time: symbolStatus.last_action_time || botStatus.last_action_time,
