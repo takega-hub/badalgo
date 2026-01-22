@@ -1890,30 +1890,25 @@
                 // Фаза рынка (для выбранного символа, используем из bot_status)
                 // --- НАЧАЛО БЛОКА ФАЗЫ РЫНКА ---
                 // 1. Извлекаем данные из собранного объекта botStatus
-                const phaseRaw = botStatus.current_phase || '-';
-                const biasRaw = botStatus.current_bias || ''; 
-                const bLower = biasRaw.toString().toLowerCase();
-                const pLower = phaseRaw.toString().toLowerCase();
-                // 3. Логика выбора цвета
-                let phaseColor = '#aaa';
-                if (bLower === 'long') {
-                    phaseColor = '#00ff88'; // Зеленый
-                } else if (bLower === 'short') {
-                    phaseColor = '#ff4444'; // Красный
-                } else {
-                    if (pLower === 'trend') phaseColor = '#00ff88';
-                    else if (pLower === 'flat') phaseColor = '#ffaa00';
-                }
+                // Внутри функции updateStatus
+                const bRaw = botStatus.current_bias; 
+                const pRaw = botStatus.current_phase || '-';
 
-                // 4. Отрисовка в интерфейс
-                const marketPhaseEl = document.getElementById('market-phase');
-                if (marketPhaseEl) {
-                    let displayText = phaseRaw !== '-' ? phaseRaw.toUpperCase() : '-';
-                    if (biasRaw && biasRaw !== '-') {
-                        const sideText = bLower === 'long' ? 'BULLISH' : 'BEARISH';
-                        displayText += ` (${sideText})`;
-                    }
-                    marketPhaseEl.innerHTML = `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>`;
+                const bLower = bRaw ? bRaw.toString().toLowerCase() : '';
+                const pLower = pRaw.toString().toLowerCase();
+
+                let phaseColor = '#aaa'; 
+
+                if (bLower === 'long' || bLower === 'bullish') {
+                    phaseColor = '#00ff88'; // Зеленый для лонга
+                } else if (bLower === 'short' || bLower === 'bearish') {
+                    phaseColor = '#ff4444'; // Ярко-красный для шорта
+                } else if (pLower === 'trend') {
+                    // Если Bias == null, но фаза TREND - красим в нейтральный голубой
+                    // Это даст вам понять, что бот видит силу, но не определил сторону
+                    phaseColor = '#00d4ff'; 
+                } else if (pLower === 'flat') {
+                    phaseColor = '#ffaa00'; // Оранжевый для флета
                 }
                 // --- КОНЕЦ БЛОКА ФАЗЫ РЫНКА ---
                 

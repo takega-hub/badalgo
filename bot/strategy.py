@@ -230,26 +230,20 @@ def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_na
 
 
 def detect_market_bias(row: pd.Series) -> Optional[Bias]:
-    try:
-        # Проверяем все возможные варианты названий DI, которые может выдать библиотека
-        plus_di = row.get('plus_di') or row.get('DMP_14') or row.get('ADX_14_pos')
-        minus_di = row.get('minus_di') or row.get('DMN_14') or row.get('ADX_14_neg')
+    # Пытаемся найти DI по любым возможным именам
+    plus_di = row.get('plus_di') or row.get('DMP_14') or row.get('ADX_14_pos')
+    minus_di = row.get('minus_di') or row.get('DMN_14') or row.get('ADX_14_neg')
 
-        if pd.notnull(plus_di) and pd.notnull(minus_di):
-            if float(plus_di) > float(minus_di):
-                return Bias.LONG
-            if float(minus_di) > float(plus_di):
-                return Bias.SHORT
-        
-        # Если DI не найдены, обязательно используем SMA как запасной вариант
-        price = row.get('close')
-        sma = row.get('sma') or row.get('sma_200')
-        if pd.notnull(price) and pd.notnull(sma):
-            return Bias.LONG if float(price) > float(sma) else Bias.SHORT
+    if pd.notnull(plus_di) and pd.notnull(minus_di):
+        return Bias.LONG if float(plus_di) > float(minus_di) else Bias.SHORT
 
-        return None
-    except:
-        return None
+    # ЖЕСТКИЙ FALLBACK: если DI нет, смотрим цену относительно SMA
+    price = row.get('close')
+    sma = row.get('sma') or row.get('sma_200')
+    if pd.notnull(price) and pd.notnull(sma):
+        return Bias.LONG if float(price) > float(sma) else Bias.SHORT
+
+    return None
 
 
 def generate_range_signal(row: pd.Series, position_bias: Optional[Bias], settings: t.Any) -> Signal:
