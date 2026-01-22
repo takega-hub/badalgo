@@ -4145,27 +4145,36 @@ def run_live_from_api(
                 # Определяем текущую фазу рынка из последнего бара (bot_state всегда инициализирован)
                 if not df_ready.empty:
                     last_row = df_ready.iloc[-1]
-                    from bot.strategy import detect_market_phase, MarketPhase
+                    from bot.strategy import detect_market_phase, MarketPhase, detect_market_bias
                     
                     # Всегда вычисляем phase через detect_market_phase для актуальности
                     phase = detect_market_phase(last_row, current_settings.strategy)
-                    phase_value = phase.value if phase else "flat"
                     
-                    # Также пробуем взять market_phase из обогащенного DataFrame для проверки
-                    if "market_phase" in df_ready.columns:
+                    # Если фаза не определена по ADX/ATR, пробуем взять из DataFrame (если там есть)
+                    if phase is None and "market_phase" in df_ready.columns:
                         try:
                             market_phase_obj = last_row["market_phase"]
                             if market_phase_obj:
                                 if hasattr(market_phase_obj, "value"):
-                                    # Это объект MarketPhase
                                     phase_value = market_phase_obj.value
                                 elif isinstance(market_phase_obj, str):
-                                    # Это строка
                                     phase_value = market_phase_obj
-                        except (KeyError, AttributeError, TypeError):
+                                else:
+                                    phase_value = None
+                                
+                                if phase_value:
+                                    from bot.strategy import MarketPhase
+                                    phase = MarketPhase(phase_value)
+                        except (KeyError, AttributeError, TypeError, ValueError):
                             pass
                     
+                    phase_value = phase.value if phase else "flat"
                     bot_state["current_phase"] = phase_value
+                    
+                    # Определяем направление рынка (bias)
+                    bias = detect_market_bias(last_row)
+                    bias_value = bias.value if bias else None
+                    bot_state["current_bias"] = bias_value
                     
                     # Извлекаем ADX из последнего бара
                     adx_value = None
@@ -4185,7 +4194,7 @@ def run_live_from_api(
                     
                     bot_state["current_adx"] = adx_value
                     # Обновляем статус воркера с фазой рынка и ADX (всегда, даже если None)
-                    update_worker_status(symbol, current_phase=phase_value, current_adx=adx_value)
+                    update_worker_status(symbol, current_phase=phase_value, current_adx=adx_value, current_bias=bias_value)
             except Exception as e:
                 print(f"[live] Error computing indicators/strategy: {e}")
                 if bot_state:

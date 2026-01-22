@@ -1909,14 +1909,30 @@
                 
                 // Фаза рынка (для выбранного символа, используем из bot_status)
                 const phase = botStatus.current_phase;
+                const bias = botStatus.current_bias; // Получаем bias
                 let phaseValue = '-';
                 if (phase && phase !== '-' && phase !== null && phase !== undefined) {
                     phaseValue = String(phase).toLowerCase();
                 }
-                const phaseColor = phaseValue === 'trend' ? '#00ff88' : phaseValue === 'flat' ? '#ffaa00' : '#aaa';
+                
+                // Определяем цвет на основе bias (бычий/медвежий)
+                let phaseColor = '#aaa';
+                if (bias === 'long') {
+                    phaseColor = '#00ff88'; // Зеленый для бычьего
+                } else if (bias === 'short') {
+                    phaseColor = '#ff4444'; // Красный для медвежьего
+                } else {
+                    // Fallback на старую логику, если bias нет
+                    phaseColor = phaseValue === 'trend' ? '#00ff88' : phaseValue === 'flat' ? '#ffaa00' : '#aaa';
+                }
+                
                 const marketPhaseEl = document.getElementById('market-phase');
                 if (marketPhaseEl) {
-                    marketPhaseEl.innerHTML = phaseValue !== '-' ? `<span style="color: ${phaseColor};">${phaseValue.toUpperCase()}</span>` : '-';
+                    let displayText = phaseValue !== '-' ? phaseValue.toUpperCase() : '-';
+                    if (bias) {
+                        displayText += ` (${bias === 'long' ? 'BULLISH' : 'BEARISH'})`;
+                    }
+                    marketPhaseEl.innerHTML = phaseValue !== '-' ? `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>` : '-';
                 }
                 
                 // ADX (для выбранного символа, используем из bot_status)

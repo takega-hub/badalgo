@@ -178,11 +178,26 @@ def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_na
             row = row_or_df
 
         # Prefer explicit strategy_name hints
-        if strategy_name and strategy_name.upper() == 'TREND':
+        name_hint = None
+        if isinstance(strategy_name, str):
+            name_hint = strategy_name.upper()
+        elif strategy_name is not None:
+            # try common attributes if it's a settings object
+            for attr in ('strategy', 'name', 'strategy_name'):
+                if hasattr(strategy_name, attr):
+                    try:
+                        val = getattr(strategy_name, attr)
+                        if isinstance(val, str):
+                            name_hint = val.upper()
+                            break
+                    except Exception:
+                        pass
+
+        if name_hint == 'TREND':
             return MarketPhase.TREND
-        if strategy_name and strategy_name.upper() == 'FLAT':
+        if name_hint == 'FLAT':
             return MarketPhase.FLAT
-        if strategy_name and strategy_name.upper() == 'MOMENTUM':
+        if name_hint == 'MOMENTUM':
             return MarketPhase.MOMENTUM
 
         # ADX-based heuristic if available
@@ -192,7 +207,7 @@ def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_na
                 adx_v = float(adx)
                 if adx_v > 25:
                     return MarketPhase.TREND
-                if adx_v < 15:
+                if adx_v < 20:
                     return MarketPhase.FLAT
             except Exception:
                 pass
@@ -208,6 +223,33 @@ def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_na
                 return MarketPhase.FLAT
             except Exception:
                 pass
+
+        return None
+    except Exception:
+        return None
+
+
+def detect_market_bias(row: pd.Series) -> Optional[Bias]:
+    """
+    Определяет направление рынка (бычий/медвежий) на основе PlusDI/MinusDI или SMA.
+    """
+    try:
+        plus_di = row.get('plus_di')
+        minus_di = row.get('minus_di')
+
+        if plus_di is not None and minus_di is not None:
+            if float(plus_di) > float(minus_di):
+                return Bias.LONG
+            if float(minus_di) > float(plus_di):
+                return Bias.SHORT
+
+        # Fallback to price vs SMA
+        price = row.get('close')
+        sma = row.get('sma')
+        if price is not None and sma is not None:
+            if float(price) > float(sma):
+                return Bias.LONG
+            return Bias.SHORT
 
         return None
     except Exception:
