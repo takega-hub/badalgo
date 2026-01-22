@@ -4168,54 +4168,64 @@ def run_live_from_api(
                         except (KeyError, AttributeError, TypeError, ValueError):
                             pass
                     
+                    phase_value = phase.value if phase else "flat"
+                    bot_state["current_phase"] = phase_value
+                    
+                    # Определяем направление рынка (bias)
+                    print(f"DEBUG [{symbol}] Columns available: {list(last_row.index)}")
+
+                    # --- В файле live.py ---
+
+                    # 1. Пытаемся определить через индикаторы (DMI)
+                    # --- ВРЕМЕННЫЙ ТЕСТ В live.py ---
+
+                    phase_value = "flat"
+                    bias_value = "short"  # Форсируем SHORT для теста, потом вернем detect_market_bias
+                    adx_value = None
+
+                    # 2. Определяем фазу
+                    phase = detect_market_phase(last_row, current_settings.strategy)
+                    phase_value = phase.value if phase else "flat"
+                    
+                    # 3. Извлекаем ADX (безопасно)
                     try:
-    # 1. Сначала объявляем переменные со значениями по умолчанию
-                        phase_value = "flat"
-                        bias_value = None
-                        adx_value = None
+                        if "adx" in df_ready.columns:
+                            adx_raw = last_row["adx"]
+                            if pd.notna(adx_raw):
+                                adx_value = float(adx_raw)
+                    except:
+                        pass
 
-                        if not df_ready.empty:
-                            last_row = df_ready.iloc[-1]
-                            from bot.strategy import detect_market_phase, MarketPhase, detect_market_bias
-                            
-                            # 2. Определяем фазу
-                            phase = detect_market_phase(last_row, current_settings.strategy)
-                            phase_value = phase.value if phase else "flat"
-                            
-                            # 3. Определяем направление (Bias) - Наш принудительный ТЕСТ
-                            bias = detect_market_bias(last_row)
-                            if bias:
-                                bias_value = bias.value
-                            else:
-                                # Если индикаторы молчат, заставляем его быть "short" для теста UI
-                                bias_value = "short" 
-                            
-                            # 4. Извлекаем ADX
-                            try:
-                                if "adx" in df_ready.columns:
-                                    adx_raw = last_row["adx"]
-                                    if pd.notna(adx_raw):
-                                        adx_value = float(adx_raw)
-                            except:
-                                pass
+                    # 4. Обновляем локальное состояние bot_state
+                    bot_state["current_phase"] = phase_value
+                    bot_state["current_bias"] = bias_value
+                    bot_state["current_adx"] = adx_value
 
-                            # Сохраняем в локальный словарь
-                            bot_state["current_phase"] = phase_value
-                            bot_state["current_bias"] = bias_value
-                            bot_state["current_adx"] = adx_value
-
-                            # 5. ОТПРАВЛЯЕМ ОБНОВЛЕНИЕ (теперь все переменные точно существуют)
-                            update_worker_status(
-                                symbol, 
-                                current_phase=phase_value, 
-                                current_adx=adx_value, 
-                                current_bias=bias_value,
-                                current_status="Running"
-                            )
-
-                    except Exception as e:
-                        print(f"[live] Error: {e}")
-                        update_worker_status(symbol, current_status="Error", error=str(e))
+                    # 5. ОТПРАВЛЯЕМ В API (update_worker_status должен быть на том же уровне!)
+                    try:
+                        from bot.multi_symbol_manager import update_worker_status
+                        update_worker_status(
+                            symbol, 
+                            current_phase=phase_value, 
+                            current_adx=adx_value, 
+                            current_bias=bias_value,
+                            current_status="Running"
+                        )
+                    except ImportError:
+                        pass
+                    
+                    # Обновляем статус воркера с фазой рынка и ADX (всегда, даже если None)
+                    update_worker_status(symbol, current_phase=phase_value, current_adx=adx_value, current_bias=bias_value)
+            except Exception as e:
+                print(f"[live] Error computing indicators/strategy: {e}")
+                if bot_state:
+                    bot_state["current_status"] = "Error"
+                    bot_state["last_error"] = f"Error computing indicators: {e}"
+                    bot_state["last_error_time"] = datetime.now(timezone.utc).isoformat()
+                update_worker_status(symbol, current_status="Error", error=f"Error computing indicators: {e}")
+                if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                    break
+                continue
             
             # Обновляем статус: генерация сигналов
             if bot_state:
