@@ -1892,25 +1892,33 @@
                 // 1. Извлекаем данные из собранного объекта botStatus
                 // Внутри функции updateStatus
                 // Внутри функции updateStatus, где работаем с символом
-                const bRaw = symbolStatus.current_bias; 
+                const bRaw = symbolStatus.current_bias || ''; 
                 const pRaw = symbolStatus.current_phase || '-';
+                const adxRaw = symbolStatus.current_adx !== undefined ? symbolStatus.current_adx : '-';
 
-                const bLower = bRaw ? bRaw.toString().toLowerCase() : '';
+                const bLower = bRaw.toString().toLowerCase();
                 const pLower = pRaw.toString().toLowerCase();
 
-                let phaseColor = '#aaa'; // Серый по умолчанию
-
+                let phaseColor = '#aaa'; 
                 if (bLower === 'long' || bLower === 'bullish') {
                     phaseColor = '#00ff88'; // Зеленый
                 } else if (bLower === 'short' || bLower === 'bearish') {
                     phaseColor = '#ff4444'; // КРАСНЫЙ
                 } else if (pLower === 'trend') {
-                    phaseColor = '#00d4ff'; // Голубой (Тренд есть, направление ищем)
-                } else if (pLower === 'flat') {
-                    phaseColor = '#ffaa00'; // Оранжевый
+                    phaseColor = '#00d4ff'; // Голубой (если направление null)
                 }
                 // --- КОНЕЦ БЛОКА ФАЗЫ РЫНКА ---
-                
+                const marketPhaseEl = document.getElementById('market-phase');
+                if (marketPhaseEl) {
+                    let displayText = pRaw !== '-' ? pRaw.toUpperCase() : '-';
+                    if (bRaw && bRaw !== 'null' && bRaw !== '-') {
+                        const sideText = (bLower === 'long' || bLower === 'bullish') ? 'BULLISH' : 'BEARISH';
+                        displayText += ` (${sideText})`;
+                    }
+                    marketPhaseEl.innerHTML = `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>`;
+                }
+
+
                 // ADX (для выбранного символа, используем из bot_status)
                 const adxEl = document.getElementById('current-adx');
                 if (adxEl) {
