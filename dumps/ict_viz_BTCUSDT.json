@@ -1,0 +1,1391 @@
+{
+  "fvg": [
+    {
+      "bar_index": 136,
+      "timestamp": "2026-01-21T05:45:00",
+      "upper": 89852.4,
+      "lower": 89580.5,
+      "direction": "bullish",
+      "liquidity_bar_index": 135,
+      "active": false
+    },
+    {
+      "bar_index": 150,
+      "timestamp": "2026-01-21T09:15:00",
+      "upper": 89247.4,
+      "lower": 89206.8,
+      "direction": "bullish",
+      "liquidity_bar_index": 135,
+      "active": false
+    },
+    {
+      "bar_index": 151,
+      "timestamp": "2026-01-21T09:30:00",
+      "upper": 89306.4,
+      "lower": 89277.0,
+      "direction": "bullish",
+      "liquidity_bar_index": 135,
+      "active": false
+    },
+    {
+      "bar_index": 174,
+      "timestamp": "2026-01-21T15:15:00",
+      "upper": 89923.7,
+      "lower": 89900.0,
+      "direction": "bullish",
+      "liquidity_bar_index": 173,
+      "active": false
+    },
+    {
+      "bar_index": 188,
+      "timestamp": "2026-01-21T18:45:00",
+      "upper": 88068.1,
+      "lower": 88000.0,
+      "direction": "bullish",
+      "liquidity_bar_index": 173,
+      "active": true
+    },
+    {
+      "bar_index": 189,
+      "timestamp": "2026-01-21T19:00:00",
+      "upper": 88240.9,
+      "lower": 88200.4,
+      "direction": "bullish",
+      "liquidity_bar_index": 173,
+      "active": true
+    },
+    {
+      "bar_index": 191,
+      "timestamp": "2026-01-21T19:30:00",
+      "upper": 89479.0,
+      "lower": 88614.0,
+      "direction": "bullish",
+      "liquidity_bar_index": 173,
+      "active": false
+    },
+    {
+      "bar_index": 192,
+      "timestamp": "2026-01-21T19:45:00",
+      "upper": 89873.0,
+      "lower": 89722.3,
+      "direction": "bullish",
+      "liquidity_bar_index": 173,
+      "active": false
+    },
+    {
+      "bar_index": 281,
+      "timestamp": "2026-01-22T18:00:00",
+      "upper": 89329.7,
+      "lower": 89250.2,
+      "direction": "bullish",
+      "liquidity_bar_index": 262,
+      "active": false
+    },
+    {
+      "bar_index": 38,
+      "timestamp": "2026-01-20T05:15:00",
+      "upper": 91950.0,
+      "lower": 91706.2,
+      "direction": "bearish",
+      "liquidity_bar_index": 37,
+      "active": true
+    },
+    {
+      "bar_index": 42,
+      "timestamp": "2026-01-20T06:15:00",
+      "upper": 91569.7,
+      "lower": 91467.5,
+      "direction": "bearish",
+      "liquidity_bar_index": 37,
+      "active": true
+    },
+    {
+      "bar_index": 43,
+      "timestamp": "2026-01-20T06:30:00",
+      "upper": 91408.0,
+      "lower": 91248.0,
+      "direction": "bearish",
+      "liquidity_bar_index": 37,
+      "active": false
+    },
+    {
+      "bar_index": 70,
+      "timestamp": "2026-01-20T13:15:00",
+      "upper": 91120.0,
+      "lower": 91014.4,
+      "direction": "bearish",
+      "liquidity_bar_index": 50,
+      "active": false
+    },
+    {
+      "bar_index": 77,
+      "timestamp": "2026-01-20T15:00:00",
+      "upper": 90621.0,
+      "lower": 90552.3,
+      "direction": "bearish",
+      "liquidity_bar_index": 57,
+      "active": false
+    },
+    {
+      "bar_index": 84,
+      "timestamp": "2026-01-20T16:45:00",
+      "upper": 90505.2,
+      "lower": 90193.9,
+      "direction": "bearish",
+      "liquidity_bar_index": 64,
+      "active": false
+    },
+    {
+      "bar_index": 88,
+      "timestamp": "2026-01-20T17:45:00",
+      "upper": 90137.4,
+      "lower": 89803.6,
+      "direction": "bearish",
+      "liquidity_bar_index": 68,
+      "active": false
+    },
+    {
+      "bar_index": 92,
+      "timestamp": "2026-01-20T18:45:00",
+      "upper": 89604.0,
+      "lower": 89587.4,
+      "direction": "bearish",
+      "liquidity_bar_index": 74,
+      "active": false
+    },
+    {
+      "bar_index": 103,
+      "timestamp": "2026-01-20T21:30:00",
+      "upper": 89580.0,
+      "lower": 89575.5,
+      "direction": "bearish",
+      "liquidity_bar_index": 83,
+      "active": false
+    },
+    {
+      "bar_index": 108,
+      "timestamp": "2026-01-20T22:45:00",
+      "upper": 89411.6,
+      "lower": 88636.9,
+      "direction": "bearish",
+      "liquidity_bar_index": 88,
+      "active": false
+    },
+    {
+      "bar_index": 140,
+      "timestamp": "2026-01-21T06:45:00",
+      "upper": 89772.7,
+      "lower": 89613.4,
+      "direction": "bearish",
+      "liquidity_bar_index": 120,
+      "active": false
+    },
+    {
+      "bar_index": 180,
+      "timestamp": "2026-01-21T16:45:00",
+      "upper": 89203.1,
+      "lower": 88641.5,
+      "direction": "bearish",
+      "liquidity_bar_index": 179,
+      "active": false
+    },
+    {
+      "bar_index": 203,
+      "timestamp": "2026-01-21T22:30:00",
+      "upper": 90162.1,
+      "lower": 90065.3,
+      "direction": "bearish",
+      "liquidity_bar_index": 183,
+      "active": false
+    },
+    {
+      "bar_index": 264,
+      "timestamp": "2026-01-22T13:45:00",
+      "upper": 90007.7,
+      "lower": 89685.5,
+      "direction": "bearish",
+      "liquidity_bar_index": 263,
+      "active": true
+    },
+    {
+      "bar_index": 285,
+      "timestamp": "2026-01-22T19:00:00",
+      "upper": 89542.4,
+      "lower": 89428.7,
+      "direction": "bearish",
+      "liquidity_bar_index": 265,
+      "active": true
+    }
+  ],
+  "liquidity": [
+    {
+      "bar_index": 37,
+      "timestamp": "2026-01-20T05:00:00+00:00",
+      "price": 91274.4,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 38,
+      "timestamp": "2026-01-20T05:15:00+00:00",
+      "price": 91235.8,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 39,
+      "timestamp": "2026-01-20T05:30:00+00:00",
+      "price": 91466.9,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 40,
+      "timestamp": "2026-01-20T05:45:00+00:00",
+      "price": 91569.7,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 41,
+      "timestamp": "2026-01-20T06:00:00+00:00",
+      "price": 91408.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 42,
+      "timestamp": "2026-01-20T06:15:00+00:00",
+      "price": 90777.7,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 43,
+      "timestamp": "2026-01-20T06:30:00+00:00",
+      "price": 90763.6,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 44,
+      "timestamp": "2026-01-20T06:45:00+00:00",
+      "price": 90720.5,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 45,
+      "timestamp": "2026-01-20T07:00:00+00:00",
+      "price": 90809.7,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 46,
+      "timestamp": "2026-01-20T07:15:00+00:00",
+      "price": 90878.2,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 47,
+      "timestamp": "2026-01-20T07:30:00+00:00",
+      "price": 90928.1,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 48,
+      "timestamp": "2026-01-20T07:45:00+00:00",
+      "price": 91091.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 49,
+      "timestamp": "2026-01-20T08:00:00+00:00",
+      "price": 90750.4,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 50,
+      "timestamp": "2026-01-20T08:15:00+00:00",
+      "price": 90843.3,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 51,
+      "timestamp": "2026-01-20T08:30:00+00:00",
+      "price": 90610.1,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 52,
+      "timestamp": "2026-01-20T08:45:00+00:00",
+      "price": 90743.5,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 53,
+      "timestamp": "2026-01-20T09:00:00+00:00",
+      "price": 90921.3,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 54,
+      "timestamp": "2026-01-20T09:15:00+00:00",
+      "price": 90882.4,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 55,
+      "timestamp": "2026-01-20T09:30:00+00:00",
+      "price": 90833.5,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 56,
+      "timestamp": "2026-01-20T09:45:00+00:00",
+      "price": 90886.6,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 57,
+      "timestamp": "2026-01-20T10:00:00+00:00",
+      "price": 90947.2,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 58,
+      "timestamp": "2026-01-20T10:15:00+00:00",
+      "price": 91104.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 59,
+      "timestamp": "2026-01-20T10:30:00+00:00",
+      "price": 91100.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 60,
+      "timestamp": "2026-01-20T10:45:00+00:00",
+      "price": 91160.7,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 61,
+      "timestamp": "2026-01-20T11:00:00+00:00",
+      "price": 91212.2,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 62,
+      "timestamp": "2026-01-20T11:15:00+00:00",
+      "price": 91270.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 63,
+      "timestamp": "2026-01-20T11:30:00+00:00",
+      "price": 91212.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 64,
+      "timestamp": "2026-01-20T11:45:00+00:00",
+      "price": 91160.7,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 65,
+      "timestamp": "2026-01-20T12:00:00+00:00",
+      "price": 91139.7,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 66,
+      "timestamp": "2026-01-20T12:15:00+00:00",
+      "price": 91005.9,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 67,
+      "timestamp": "2026-01-20T12:30:00+00:00",
+      "price": 91098.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 68,
+      "timestamp": "2026-01-20T12:45:00+00:00",
+      "price": 91120.0,
+      "direction": "below_low",
+      "daily_high": 93299.9,
+      "daily_low": 92111.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 74,
+      "timestamp": "2026-01-20T14:15:00+00:00",
+      "price": 90662.0,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 75,
+      "timestamp": "2026-01-20T14:30:00+00:00",
+      "price": 90621.0,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 76,
+      "timestamp": "2026-01-20T14:45:00+00:00",
+      "price": 90200.0,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 77,
+      "timestamp": "2026-01-20T15:00:00+00:00",
+      "price": 89800.5,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 78,
+      "timestamp": "2026-01-20T15:15:00+00:00",
+      "price": 89958.4,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 79,
+      "timestamp": "2026-01-20T15:30:00+00:00",
+      "price": 90476.7,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 80,
+      "timestamp": "2026-01-20T15:45:00+00:00",
+      "price": 90304.7,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 81,
+      "timestamp": "2026-01-20T16:00:00+00:00",
+      "price": 90457.4,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 82,
+      "timestamp": "2026-01-20T16:15:00+00:00",
+      "price": 90505.2,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 83,
+      "timestamp": "2026-01-20T16:30:00+00:00",
+      "price": 90025.0,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 84,
+      "timestamp": "2026-01-20T16:45:00+00:00",
+      "price": 89957.7,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 85,
+      "timestamp": "2026-01-20T17:00:00+00:00",
+      "price": 89997.8,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 86,
+      "timestamp": "2026-01-20T17:15:00+00:00",
+      "price": 90137.4,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 87,
+      "timestamp": "2026-01-20T17:30:00+00:00",
+      "price": 89630.0,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 88,
+      "timestamp": "2026-01-20T17:45:00+00:00",
+      "price": 89374.4,
+      "direction": "below_low",
+      "daily_high": 92041.4,
+      "daily_low": 90610.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 91,
+      "timestamp": "2026-01-20T18:30:00+00:00",
+      "price": 89400.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 92,
+      "timestamp": "2026-01-20T18:45:00+00:00",
+      "price": 89350.5,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 93,
+      "timestamp": "2026-01-20T19:00:00+00:00",
+      "price": 89390.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 94,
+      "timestamp": "2026-01-20T19:15:00+00:00",
+      "price": 89445.3,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 95,
+      "timestamp": "2026-01-20T19:30:00+00:00",
+      "price": 89228.2,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 96,
+      "timestamp": "2026-01-20T19:45:00+00:00",
+      "price": 89324.4,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 97,
+      "timestamp": "2026-01-20T20:00:00+00:00",
+      "price": 89357.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 98,
+      "timestamp": "2026-01-20T20:15:00+00:00",
+      "price": 89357.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 103,
+      "timestamp": "2026-01-20T21:30:00+00:00",
+      "price": 89422.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 104,
+      "timestamp": "2026-01-20T21:45:00+00:00",
+      "price": 89374.3,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 105,
+      "timestamp": "2026-01-20T22:00:00+00:00",
+      "price": 89395.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 106,
+      "timestamp": "2026-01-20T22:15:00+00:00",
+      "price": 89411.6,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 107,
+      "timestamp": "2026-01-20T22:30:00+00:00",
+      "price": 87773.1,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 108,
+      "timestamp": "2026-01-20T22:45:00+00:00",
+      "price": 88151.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 109,
+      "timestamp": "2026-01-20T23:00:00+00:00",
+      "price": 88059.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 110,
+      "timestamp": "2026-01-20T23:15:00+00:00",
+      "price": 87822.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 111,
+      "timestamp": "2026-01-20T23:30:00+00:00",
+      "price": 88067.2,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 112,
+      "timestamp": "2026-01-20T23:45:00+00:00",
+      "price": 88286.5,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 113,
+      "timestamp": "2026-01-21T00:00:00+00:00",
+      "price": 88318.7,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 114,
+      "timestamp": "2026-01-21T00:15:00+00:00",
+      "price": 88202.2,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 115,
+      "timestamp": "2026-01-21T00:30:00+00:00",
+      "price": 88452.1,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 116,
+      "timestamp": "2026-01-21T00:45:00+00:00",
+      "price": 88773.9,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 117,
+      "timestamp": "2026-01-21T01:00:00+00:00",
+      "price": 88800.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 118,
+      "timestamp": "2026-01-21T01:15:00+00:00",
+      "price": 88868.8,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 119,
+      "timestamp": "2026-01-21T01:30:00+00:00",
+      "price": 88931.0,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 120,
+      "timestamp": "2026-01-21T01:45:00+00:00",
+      "price": 88922.7,
+      "direction": "below_low",
+      "daily_high": 91339.0,
+      "daily_low": 89374.4,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 135,
+      "timestamp": "2026-01-21T05:30:00+00:00",
+      "price": 89899.3,
+      "direction": "above_high",
+      "daily_high": 89914.7,
+      "daily_low": 87773.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 136,
+      "timestamp": "2026-01-21T05:45:00+00:00",
+      "price": 90099.6,
+      "direction": "above_high",
+      "daily_high": 89914.7,
+      "daily_low": 87773.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 137,
+      "timestamp": "2026-01-21T06:00:00+00:00",
+      "price": 89917.2,
+      "direction": "above_high",
+      "daily_high": 89914.7,
+      "daily_low": 87773.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 138,
+      "timestamp": "2026-01-21T06:15:00+00:00",
+      "price": 89887.9,
+      "direction": "above_high",
+      "daily_high": 89914.7,
+      "daily_low": 87773.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 139,
+      "timestamp": "2026-01-21T06:30:00+00:00",
+      "price": 89847.5,
+      "direction": "above_high",
+      "daily_high": 89914.7,
+      "daily_low": 87773.1,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 173,
+      "timestamp": "2026-01-21T15:00:00+00:00",
+      "price": 90395.0,
+      "direction": "above_high",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 174,
+      "timestamp": "2026-01-21T15:15:00+00:00",
+      "price": 90542.2,
+      "direction": "above_high",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 175,
+      "timestamp": "2026-01-21T15:30:00+00:00",
+      "price": 90163.5,
+      "direction": "above_high",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 176,
+      "timestamp": "2026-01-21T15:45:00+00:00",
+      "price": 90333.4,
+      "direction": "above_high",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 177,
+      "timestamp": "2026-01-21T16:00:00+00:00",
+      "price": 90314.8,
+      "direction": "above_high",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 179,
+      "timestamp": "2026-01-21T16:30:00+00:00",
+      "price": 88057.1,
+      "direction": "below_low",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 180,
+      "timestamp": "2026-01-21T16:45:00+00:00",
+      "price": 87524.7,
+      "direction": "below_low",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 181,
+      "timestamp": "2026-01-21T17:00:00+00:00",
+      "price": 87214.0,
+      "direction": "below_low",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 182,
+      "timestamp": "2026-01-21T17:15:00+00:00",
+      "price": 87212.0,
+      "direction": "below_low",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 183,
+      "timestamp": "2026-01-21T17:30:00+00:00",
+      "price": 87448.1,
+      "direction": "below_low",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 184,
+      "timestamp": "2026-01-21T17:45:00+00:00",
+      "price": 87800.0,
+      "direction": "below_low",
+      "daily_high": 90099.6,
+      "daily_low": 88145.2,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 262,
+      "timestamp": "2026-01-22T13:15:00+00:00",
+      "price": 90149.0,
+      "direction": "above_high",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 263,
+      "timestamp": "2026-01-22T13:30:00+00:00",
+      "price": 90296.8,
+      "direction": "above_high",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 263,
+      "timestamp": "2026-01-22T13:30:00+00:00",
+      "price": 89502.6,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 264,
+      "timestamp": "2026-01-22T13:45:00+00:00",
+      "price": 89432.5,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 265,
+      "timestamp": "2026-01-22T14:00:00+00:00",
+      "price": 89365.3,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 266,
+      "timestamp": "2026-01-22T14:15:00+00:00",
+      "price": 89303.7,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 267,
+      "timestamp": "2026-01-22T14:30:00+00:00",
+      "price": 89101.9,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 268,
+      "timestamp": "2026-01-22T14:45:00+00:00",
+      "price": 89000.0,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 269,
+      "timestamp": "2026-01-22T15:00:00+00:00",
+      "price": 88932.7,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 270,
+      "timestamp": "2026-01-22T15:15:00+00:00",
+      "price": 88559.4,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 271,
+      "timestamp": "2026-01-22T15:30:00+00:00",
+      "price": 88462.3,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 272,
+      "timestamp": "2026-01-22T15:45:00+00:00",
+      "price": 88890.0,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 273,
+      "timestamp": "2026-01-22T16:00:00+00:00",
+      "price": 88703.9,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 274,
+      "timestamp": "2026-01-22T16:15:00+00:00",
+      "price": 88621.0,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 275,
+      "timestamp": "2026-01-22T16:30:00+00:00",
+      "price": 88717.0,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 276,
+      "timestamp": "2026-01-22T16:45:00+00:00",
+      "price": 88842.4,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 277,
+      "timestamp": "2026-01-22T17:00:00+00:00",
+      "price": 88963.3,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 278,
+      "timestamp": "2026-01-22T17:15:00+00:00",
+      "price": 89007.9,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 279,
+      "timestamp": "2026-01-22T17:30:00+00:00",
+      "price": 89032.0,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    },
+    {
+      "bar_index": 280,
+      "timestamp": "2026-01-22T17:45:00+00:00",
+      "price": 89179.1,
+      "direction": "below_low",
+      "daily_high": 90174.1,
+      "daily_low": 89701.9,
+      "is_institutional": true
+    }
+  ],
+  "mss": [
+    {
+      "index": 269,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 269,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 269,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 269,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 269,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 269,
+      "price": 89742.7,
+      "type": "bearish"
+    },
+    {
+      "index": 269,
+      "price": 89432.5,
+      "type": "bearish"
+    },
+    {
+      "index": 270,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 270,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 270,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 270,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 270,
+      "price": 89742.7,
+      "type": "bearish"
+    },
+    {
+      "index": 270,
+      "price": 89432.5,
+      "type": "bearish"
+    },
+    {
+      "index": 271,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 271,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 271,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 271,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 271,
+      "price": 89742.7,
+      "type": "bearish"
+    },
+    {
+      "index": 271,
+      "price": 89432.5,
+      "type": "bearish"
+    },
+    {
+      "index": 272,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 272,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 272,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 272,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 272,
+      "price": 89742.7,
+      "type": "bearish"
+    },
+    {
+      "index": 272,
+      "price": 89432.5,
+      "type": "bearish"
+    },
+    {
+      "index": 273,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 273,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 273,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 273,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 273,
+      "price": 89742.7,
+      "type": "bearish"
+    },
+    {
+      "index": 273,
+      "price": 89432.5,
+      "type": "bearish"
+    },
+    {
+      "index": 285,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 285,
+      "price": 89959.8,
+      "type": "bullish"
+    },
+    {
+      "index": 285,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 285,
+      "price": 91950.0,
+      "type": "bearish"
+    },
+    {
+      "index": 285,
+      "price": 89742.7,
+      "type": "bearish"
+    },
+    {
+      "index": 285,
+      "price": 89432.5,
+      "type": "bearish"
+    }
+  ],
+  "signals": []
+}
