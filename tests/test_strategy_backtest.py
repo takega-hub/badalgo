@@ -18,7 +18,7 @@ from bot.strategy import (
 from bot.simulation import Simulator
 from bot.config import AppSettings
 
-def generate_synthetic_data(periods=500, type='trend_up'):
+def generate_synthetic_data(periods=1000, type='trend_up'):
     """Генерирует синтетические данные для тестов."""
     idx = pd.date_range(end=pd.Timestamp.now(), periods=periods, freq='15min')
     

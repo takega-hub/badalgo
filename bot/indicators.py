@@ -248,9 +248,9 @@ def compute_15m_features(
         df["bb_lower"] = mid - bb_std * std
 
     # Ensure BB columns have no NaN by backfilling and using mid as fallback
-    df["bb_middle"] = df["bb_middle"].fillna(method='bfill').fillna(df["close"].rolling(window=bb_length, min_periods=1).mean())
-    df["bb_upper"] = df["bb_upper"].fillna(method='bfill').fillna(df["bb_middle"])
-    df["bb_lower"] = df["bb_lower"].fillna(method='bfill').fillna(df["bb_middle"])
+    df["bb_middle"] = df["bb_middle"].bfill().fillna(df["close"].rolling(window=bb_length, min_periods=1).mean())
+    df["bb_upper"] = df["bb_upper"].bfill().fillna(df["bb_middle"])
+    df["bb_lower"] = df["bb_lower"].bfill().fillna(df["bb_middle"])
 
     # Bollinger Band width (relative) — used by flat/range strategies
     # Protect against division by zero by replacing zeros in middle with NaN
