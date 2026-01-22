@@ -4278,7 +4278,8 @@ def run_live_from_api(
             if symbol_strategy_settings.enable_trend_strategy or symbol_strategy_settings.enable_momentum_strategy:
                 use_momentum = symbol_strategy_settings.enable_momentum_strategy
                 strategy_name = "MOMENTUM" if use_momentum else "TREND"
-                trend_signals = build_signals(df_ready, current_settings.strategy, use_momentum=use_momentum, use_liquidity=False)
+                # Pass the whole settings object so new build_signals can extract strategy name/params
+                trend_signals = build_signals(df_ready, current_settings, use_momentum=use_momentum, use_liquidity=False, params=getattr(current_settings, 'strategy', {}))
                 # Фильтруем сигналы по префиксу reason
                 from bot.strategy import Action as StrategyAction
                 if use_momentum:
@@ -4351,7 +4352,7 @@ def run_live_from_api(
             
             # Flat стратегия
             if symbol_strategy_settings.enable_flat_strategy:
-                flat_signals = build_signals(df_ready, current_settings.strategy, use_momentum=False, use_liquidity=False)
+                flat_signals = build_signals(df_ready, current_settings, use_momentum=False, use_liquidity=False, params=getattr(current_settings, 'strategy', {}))
                 from bot.strategy import Action as StrategyActionFlat
                 flat_generated = [
                     s for s in flat_signals

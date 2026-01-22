@@ -5,6 +5,7 @@
 
 import sys
 import argparse
+import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass
@@ -14,17 +15,120 @@ from datetime import datetime
 # Добавляем путь к проекту
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Ensure stdout encoding supports utf-8 on Windows consoles to avoid UnicodeEncodeError
+try:
+    # Python 3.7+ supports reconfigure
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    try:
+        # Fallback: wrap stdout buffer with TextIOWrapper set to utf-8
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        # If even that fails, continue without raising — prints may replace unsupported chars
+        pass
+
 from bot.config import load_settings
 from bot.exchange.bybit_client import BybitClient
 from bot.indicators import prepare_with_indicators
 from bot.strategy import enrich_for_strategy, generate_trend_signal, generate_range_signal, generate_momentum_breakout_signal, detect_market_phase, MarketPhase, Bias, Action, Signal, build_signals
 from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
-from bot.ml.strategy_ml import build_ml_signals
+try:
+    from bot.ml.strategy_ml import build_ml_signals
+except Exception:
+    build_ml_signals = None
 from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
 from bot.zscore_strategy import build_zscore_signals
 from bot.vbo_strategy import build_vbo_signals
 from bot.simulation import Simulator
+
+def simulate_trading(df: pd.DataFrame, signals: List[Signal], fee: float = 0.05) -> List[float]:
+    if not signals:
+        return []
+
+    results = []
+    active_pos = None
+    cooldown_until_idx = -1
+    
+    # Индексируем сигналы по времени для быстрого поиска
+    sig_map = {sig.timestamp: sig for sig in signals}
+    
+    # Итерируемся по каждой свече
+    for idx, (ts, candle) in enumerate(df.iterrows()):
+        # 1. Если есть открытая позиция - проверяем её
+        if active_pos:
+            is_closed = False
+            # Проверяем LONG
+            if active_pos['type'] == Action.LONG:
+                if candle['low'] <= active_pos['sl']:
+                    results.append(((active_pos['sl'] - active_pos['entry']) / active_pos['entry']) * 100 - fee)
+                    is_closed = True
+                elif candle['high'] >= active_pos['tp']:
+                    results.append(((active_pos['tp'] - active_pos['entry']) / active_pos['entry']) * 100 - fee)
+                    is_closed = True
+            # Проверяем SHORT
+            elif active_pos['type'] == Action.SHORT:
+                if candle['high'] >= active_pos['sl']:
+                    results.append(((active_pos['entry'] - active_pos['sl']) / active_pos['entry']) * 100 - fee)
+                    is_closed = True
+                elif candle['low'] <= active_pos['tp']:
+                    results.append(((active_pos['entry'] - active_pos['tp']) / active_pos['entry']) * 100 - fee)
+                    is_closed = True
+            
+            if is_closed:
+                active_pos = None
+                cooldown_until_idx = idx + 6 # Остывание 6 свечей после выхода
+                continue
+
+        # 2. Если позиции нет и нет остывания - ищем сигнал
+        if not active_pos and idx > cooldown_until_idx and ts in sig_map:
+            sig = sig_map[ts]
+            # Важно: берем SL/TP из сигнала, если их нет - ставим дефолт 1%
+            sl = sig.stop_loss if sig.stop_loss else sig.price * 0.99 if sig.action == Action.LONG else sig.price * 1.01
+            tp = sig.take_profit if sig.take_profit else sig.price * 1.02 if sig.action == Action.LONG else sig.price * 0.98
+            
+            if sig.action in [Action.LONG, Action.SHORT]:
+                active_pos = {
+                    'entry': sig.price,
+                    'sl': sl,
+                    'tp': tp,
+                    'type': sig.action
+                }
+    return results
+
+# Debug flags: enable/disable per-strategy diagnostic prints
+DEBUG_TREND = False
+DEBUG_FLAT = False
+DEBUG_MOMENTUM = False
+
+
+def _check_bar_tp_sl(position_side, high, low, current_price, tp_price, sl_price):
+    """
+    Проверяет, были ли на свече исполнены TP или SL.
+
+    Возвращает кортеж (event_type, price) где event_type в ('tp','sl','sl_gap') или None если ничего не сработало.
+    Логика: для LONG проверяем сначала TP по high, затем SL по low, затем SL по gap (current_price <= sl).
+           для SHORT проверяем сначала TP по low, затем SL по high, затем SL по gap (current_price >= sl).
+    """
+    try:
+        if position_side.value == "long":
+            if tp_price and high >= tp_price:
+                return ("tp", tp_price)
+            if sl_price and low <= sl_price:
+                return ("sl", sl_price)
+            if sl_price and current_price <= sl_price:
+                return ("sl_gap", current_price)
+        else:  # SHORT
+            if tp_price and low <= tp_price:
+                return ("tp", tp_price)
+            if sl_price and high >= sl_price:
+                return ("sl", sl_price)
+            if sl_price and current_price >= sl_price:
+                return ("sl_gap", current_price)
+    except Exception:
+        return None
+    return None
 
 
 @dataclass
@@ -47,7 +151,7 @@ class StrategyResult:
     error: Optional[str] = None
 
 
-def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -> Optional[StrategyResult]:
+def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -> Optional[StrategyResult]:
     """
     Тестирует стратегию и возвращает результаты без вывода в консоль
     """
@@ -101,47 +205,125 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -
         # Генерируем сигналы в зависимости от стратегии
         signals = []
         position_bias = None
+        state = {} # Состояние для Cooldown и других параметров
         
         if strategy_name == "flat":
             signals = []
             position_bias = None
             for idx, (timestamp, row) in enumerate(df.iterrows()):
-                market_phase = detect_market_phase(row, settings.strategy)
+                # Pass explicit strategy hint so detect_market_phase returns the expected phase
+                market_phase = detect_market_phase(row, 'FLAT')
                 if market_phase == MarketPhase.FLAT:
+                    # Используем generate_flat_signal через обертку или напрямую, если нужно
+                    # Но в generate_report используется generate_range_signal (row-based)
+                    # Для поддержки Cooldown в row-based версии, нам нужно передать state
                     sig = generate_range_signal(row, position_bias, settings.strategy)
+                    
+                    # Ручной Cooldown для row-based стратегий в отчете
+                    last_idx = state.get('last_signal_idx', -100)
+                    if idx - last_idx < 10:
+                        sig = Signal(timestamp=row.name, action=Action.HOLD, reason="cooldown", price=row["close"])
+                    # debug indicators_info
+                    ind = getattr(sig, 'indicators_info', None) if sig is not None else None
+                    if ind is None and isinstance(sig, dict):
+                        ind = sig.get('indicators_info')
+                    # Print debug even if indicators dict is empty (check is not truthy)
+                    if ind is not None and DEBUG_FLAT:
+                        print(f"[debug][FLAT] {timestamp} indicators: atr={ind.get('atr') if isinstance(ind, dict) else ind}, rsi={ind.get('rsi') if isinstance(ind, dict) else None}, vol_avg5={ind.get('vol_avg5') if isinstance(ind, dict) else None}, bb_width={ind.get('bb_width') if isinstance(ind, dict) else None}")
                 else:
                     sig = Signal(timestamp=row.name, action=Action.HOLD, reason="flat_not_in_flat_phase", price=row["close"])
                 signals.append(sig)
-                if sig.action == Action.LONG:
-                    if position_bias is None:
-                        position_bias = Bias.LONG
-                    elif position_bias == Bias.SHORT:
-                        position_bias = Bias.LONG
-                elif sig.action == Action.SHORT:
-                    if position_bias is None:
-                        position_bias = Bias.SHORT
-                    elif position_bias == Bias.LONG:
-                        position_bias = Bias.SHORT
+                if sig.action in (Action.LONG, Action.SHORT):
+                    state['last_signal_idx'] = idx
+                    if sig.action == Action.LONG:
+                        if position_bias is None:
+                            position_bias = Bias.LONG
+                        elif position_bias == Bias.SHORT:
+                            position_bias = Bias.LONG
+                    elif sig.action == Action.SHORT:
+                        if position_bias is None:
+                            position_bias = Bias.SHORT
+                        elif position_bias == Bias.LONG:
+                            position_bias = Bias.SHORT
         elif strategy_name == "trend":
             signals = []
             position_bias = None
             for idx, (timestamp, row) in enumerate(df.iterrows()):
-                market_phase = detect_market_phase(row, settings.strategy)
+                # Pass explicit strategy hint so detect_market_phase returns the expected phase
+                market_phase = detect_market_phase(row, 'TREND')
                 if market_phase == MarketPhase.TREND:
-                    sig = generate_trend_signal(row, position_bias, settings.strategy)
+                    # Diagnostic: print key row indicators that generate_trend_signal expects
+                    if DEBUG_TREND:
+                        try:
+                            print(f"[debug][TREND] {timestamp} row indicators: sma={row.get('sma')}, sma_prev={row.get('sma_prev')}, atr={row.get('atr')}, close={row.get('close')}")
+                        except Exception:
+                            print(f"[debug][TREND] {timestamp} row indicators: <could not read row>")
+
+                    # Ручной Cooldown для TREND
+                    last_idx = state.get('last_signal_idx', -100)
+                    if idx - last_idx < 10:
+                        sig = {"signal": None, "reason": "cooldown"}
+                    else:
+                        sig = generate_trend_signal(row, position_bias, settings.strategy)
+                    
+                    # normalize legacy dict response to Signal object for downstream processing
+                    try:
+                        if isinstance(sig, dict):
+                            res = sig
+                            sig_action = res.get('signal')
+                            if sig_action == 'LONG':
+                                action_obj = Action.LONG
+                            elif sig_action == 'SHORT':
+                                action_obj = Action.SHORT
+                            else:
+                                action_obj = Action.HOLD
+
+                            reason = res.get('reason', '')
+                            price = float(row.get('close', 0.0))
+                            indicators = res.get('indicators_info', {})
+                            sig = Signal(
+                                timestamp=row.name,
+                                action=action_obj,
+                                reason=reason,
+                                price=price,
+                                stop_loss=res.get('stop_loss'),
+                                take_profit=res.get('take_profit'),
+                                indicators_info=indicators
+                            )
+                    except Exception:
+                        # if normalization fails, fall back to a HOLD Signal to avoid crashing
+                        sig = Signal(timestamp=row.name, action=Action.HOLD, reason=f"trend_normalization_error", price=float(row.get('close', 0.0)))
+                    ind = getattr(sig, 'indicators_info', None) if sig is not None else None
+                    if ind is None and isinstance(sig, dict):
+                        ind = sig.get('indicators_info')
+                    # Additional diagnostic output to catch all cases where indicators are missing
+                    if DEBUG_TREND:
+                        try:
+                            sig_type = type(sig).__name__
+                            if isinstance(sig, dict):
+                                reason = sig.get('reason')
+                                has_ind = 'indicators_info' in sig
+                            else:
+                                reason = getattr(sig, 'reason', None)
+                                has_ind = getattr(sig, 'indicators_info', None) is not None
+                            print(f"[debug][TREND] {timestamp} sig_type={sig_type} reason={reason} has_indicators={has_ind} indicators={ind}")
+                        except Exception as _:
+                            print(f"[debug][TREND] {timestamp} sig={sig}")
                 else:
                     sig = Signal(timestamp=row.name, action=Action.HOLD, reason="trend_not_in_trend_phase", price=row["close"])
                 signals.append(sig)
-                if sig.action == Action.LONG:
-                    if position_bias is None:
-                        position_bias = Bias.LONG
-                    elif position_bias == Bias.SHORT:
-                        position_bias = Bias.LONG
-                elif sig.action == Action.SHORT:
-                    if position_bias is None:
-                        position_bias = Bias.SHORT
-                    elif position_bias == Bias.LONG:
-                        position_bias = Bias.SHORT
+                if sig.action in (Action.LONG, Action.SHORT):
+                    state['last_signal_idx'] = idx
+                    if sig.action == Action.LONG:
+                        if position_bias is None:
+                            position_bias = Bias.LONG
+                        elif position_bias == Bias.SHORT:
+                            position_bias = Bias.LONG
+                    elif sig.action == Action.SHORT:
+                        if position_bias is None:
+                            position_bias = Bias.SHORT
+                        elif position_bias == Bias.LONG:
+                            position_bias = Bias.SHORT
         elif strategy_name == "smc":
             signals = build_smc_signals(df, settings.strategy, symbol=symbol)
         elif strategy_name == "ict":
@@ -169,6 +351,11 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -
                     if (ema_cross_up or (ema_already_bullish and position_bias is None)) or \
                        (ema_cross_down or (ema_already_bearish and position_bias is None)):
                         sig = generate_momentum_breakout_signal(row, position_bias, settings.strategy)
+                        ind = getattr(sig, 'indicators_info', None) if sig is not None else None
+                        if ind is None and isinstance(sig, dict):
+                            ind = sig.get('indicators_info')
+                        if ind and DEBUG_MOMENTUM:
+                            print(f"[debug][MOMENTUM] {timestamp} indicators: ema20={ind.get('ema_short') or ind.get('ema20')}, ema50={ind.get('ema_long') or ind.get('ema50')}, rsi={ind.get('rsi')}, vol_current={ind.get('vol_current')}, vol_avg5={ind.get('vol_avg5')}")
                     else:
                         sig = Signal(timestamp=row.name, action=Action.HOLD, reason="momentum_no_ema_setup", price=row["close"])
                 else:
@@ -411,439 +598,53 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -
                 error="Нет actionable сигналов"
             )
         
-        # Симулируем торговлю (упрощенная версия без TP/SL из reason для отчета)
-        simulator = Simulator(settings)
-        signal_dict = {s.timestamp: s for s in signals}
-        position_tp_sl = {}
-        
-        for idx, (timestamp, row) in enumerate(df.iterrows()):
-            # Определяем цены свечи в начале итерации (нужны для всех проверок)
-            current_price = row['close']
-            high = row.get('high', current_price)
-            low = row.get('low', current_price)
-            
-            if simulator.position:
-                # Сохраняем данные позиции перед проверками (на случай закрытия)
-                position_side = simulator.position.side
-                entry_price = simulator.position.avg_price
-                entry_reason = simulator.position.entry_reason
-                
-                tp_price = None
-                sl_price = None
-                
-                if (strategy_name == "ict" or strategy_name == "ml") and entry_reason in position_tp_sl:
-                    tp_price = position_tp_sl[entry_reason]["tp"]
-                    sl_price = position_tp_sl[entry_reason]["sl"]
-                else:
+        # Подготавливаем TP/SL для сигналов, если они не заполнены
+        for s in signals:
+            if s.action in (Action.LONG, Action.SHORT):
+                # Парсим TP/SL для ICT и ML из reason, если они там есть
+                if "ict_" in s.reason:
+                    import re
+                    sl_match = re.search(r'sl_([\d.]+)', s.reason)
+                    tp_match = re.search(r'tp_([\d.]+)', s.reason)
+                    if sl_match: s.stop_loss = float(sl_match.group(1))
+                    if tp_match: s.take_profit = float(tp_match.group(1))
+                elif "ml_" in s.reason:
+                    import re
+                    tp_match = re.search(r'TP_([\d.]+)%', s.reason)
+                    sl_match = re.search(r'SL_([\d.]+)%', s.reason)
+                    if tp_match: s.take_profit = s.price * (1 + float(tp_match.group(1))/100.0) if s.action == Action.LONG else s.price * (1 - float(tp_match.group(1))/100.0)
+                    if sl_match: s.stop_loss = s.price * (1 - float(sl_match.group(1))/100.0) if s.action == Action.LONG else s.price * (1 + float(sl_match.group(1))/100.0)
+
+                # Если все еще None, используем дефолтные значения
+                if s.stop_loss is None or s.take_profit is None:
                     if strategy_name == "flat":
                         sl_pct = settings.strategy.range_stop_loss_pct
                         tp_pct = settings.risk.take_profit_pct
                     elif strategy_name == "vbo":
-                        # Для VBO используем сбалансированные TP/SL: TP=3.2%, SL=1.1% от цены
-                        # Пробои волатильности требуют баланса: достаточно широкий TP, но не слишком
-                        # чтобы не терять сделки по SL до достижения TP
-                        tp_pct = 0.032  # 3.2% от цены (32% от маржи при 10x)
-                        sl_pct = 0.011  # 1.1% от цены (11% от маржи при 10x) - RR ~2.9:1
+                        tp_pct = 0.032
+                        sl_pct = 0.011
                     elif strategy_name == "liquidation_hunter":
-                        # Для Liquidation Hunter используем оптимизированные TP/SL: TP=2.5%, SL=1.0% от цены
-                        # Увеличены уровни для лучшего RR и снижения убыточности
-                        tp_pct = 0.025  # 2.5% от цены (25% от маржи при 10x)
-                        sl_pct = 0.010  # 1.0% от цены (10% от маржи при 10x) - RR ~2.5:1
+                        tp_pct = 0.025
+                        sl_pct = 0.010
                     elif strategy_name == "zscore":
-                        # Для ZSCORE используем оптимизированные TP/SL: TP=3.0%, SL=1.0% от цены
-                        # ZSCORE - mean reversion стратегия, нужны быстрые тейки с хорошим RR
-                        # Увеличены уровни для лучшей работы на волатильных парах (BTCUSDT, ETHUSDT)
-                        # Проблема: при высоком WR (64.3%) отрицательный PnL означает плохой RR
-                        # Увеличиваем TP для улучшения RR и снижения убыточности
-                        tp_pct = 0.030  # 3.0% от цены (30% от маржи при 10x) - увеличено с 2.5%
-                        sl_pct = 0.010  # 1.0% от цены (10% от маржи при 10x) - увеличено с 0.9%, RR ~3.0:1
+                        tp_pct = 0.030
+                        sl_pct = 0.010
                     else:
                         sl_pct = settings.risk.stop_loss_pct
                         tp_pct = settings.risk.take_profit_pct
-                    
-                    if position_side.value == "long":
-                        tp_price = entry_price * (1 + tp_pct)
-                        sl_price = entry_price * (1 - sl_pct)
+
+                    if s.action == Action.LONG:
+                        if s.stop_loss is None: s.stop_loss = s.price * (1 - sl_pct)
+                        if s.take_profit is None: s.take_profit = s.price * (1 + tp_pct)
                     else:
-                        tp_price = entry_price * (1 - tp_pct)
-                        sl_price = entry_price * (1 + sl_pct)
-                
-                # Проверяем, что позиция все еще открыта после расчетов
-                if not simulator.position:
-                    if timestamp in signal_dict:
-                        sig = signal_dict[timestamp]
-                        simulator.on_signal(sig)
-                    continue
-                
-                if position_side.value == "long":
-                    # TP: проверяем high свечи
-                    if tp_price and high >= tp_price:
-                        simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                        if timestamp in signal_dict:
-                            continue
-                        # Позиция закрыта, проверяем наличие перед продолжением
-                        if not simulator.position:
-                            if timestamp in signal_dict:
-                                sig = signal_dict[timestamp]
-                                simulator.on_signal(sig)
-                            continue
-                    # SL: проверяем low свечи и current_price (для учета gap)
-                    if sl_price:
-                        # Если low достиг SL, закрываем по SL
-                        if low <= sl_price:
-                            simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                            if timestamp in signal_dict:
-                                continue
-                            if not simulator.position:
-                                if timestamp in signal_dict:
-                                    sig = signal_dict[timestamp]
-                                    simulator.on_signal(sig)
-                                continue
-                        # Если current_price уже за SL (gap), закрываем немедленно
-                        elif current_price <= sl_price:
-                            simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
-                            if timestamp in signal_dict:
-                                continue
-                            if not simulator.position:
-                                if timestamp in signal_dict:
-                                    sig = signal_dict[timestamp]
-                                    simulator.on_signal(sig)
-                                continue
-                    # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку (только для не-ICT и не-ML стратегий)
-                    # Momentum использует свой trailing stop на основе EMA50, поэтому пропускаем стандартный trailing stop
-                    if strategy_name not in ("ict", "ml", "momentum") and simulator.position:
-                        profit_pct = (current_price - entry_price) / entry_price
-                        if profit_pct > 0.005:
-                            breakeven_sl = entry_price * 1.001
-                            if low <= breakeven_sl:
-                                simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
-                                if timestamp in signal_dict:
-                                    continue
-                                if not simulator.position:
-                                    if timestamp in signal_dict:
-                                        sig = signal_dict[timestamp]
-                                        simulator.on_signal(sig)
-                                    continue
-                else:  # SHORT
-                    # TP: проверяем low свечи
-                    if tp_price and low <= tp_price:
-                        simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                        if timestamp in signal_dict:
-                            continue
-                        if not simulator.position:
-                            if timestamp in signal_dict:
-                                sig = signal_dict[timestamp]
-                                simulator.on_signal(sig)
-                            continue
-                    # SL: проверяем high свечи и current_price (для учета gap)
-                    if sl_price:
-                        # Если high достиг SL, закрываем по SL
-                        if high >= sl_price:
-                            simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                            if timestamp in signal_dict:
-                                continue
-                            if not simulator.position:
-                                if timestamp in signal_dict:
-                                    sig = signal_dict[timestamp]
-                                    simulator.on_signal(sig)
-                                continue
-                        # Если current_price уже за SL (gap), закрываем немедленно
-                        elif current_price >= sl_price:
-                            simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
-                            if timestamp in signal_dict:
-                                continue
-                            if not simulator.position:
-                                if timestamp in signal_dict:
-                                    sig = signal_dict[timestamp]
-                                    simulator.on_signal(sig)
-                                continue
-                    # Trailing Stop: если прибыль > 0.5%, подтягиваем SL к безубытку (только для не-ICT и не-ML стратегий)
-                    # Momentum использует свой trailing stop на основе EMA50, поэтому пропускаем стандартный trailing stop
-                    if strategy_name not in ("ict", "ml", "momentum") and simulator.position:
-                        profit_pct = (entry_price - current_price) / entry_price
-                        if profit_pct > 0.005:
-                            breakeven_sl = entry_price * 0.999
-                            if high >= breakeven_sl:
-                                simulator._close(breakeven_sl, f"{strategy_name}_trailing_stop", timestamp)
-                                if timestamp in signal_dict:
-                                    continue
-                                if not simulator.position:
-                                    if timestamp in signal_dict:
-                                        sig = signal_dict[timestamp]
-                                        simulator.on_signal(sig)
-                                    continue
-            
-            if timestamp in signal_dict:
-                sig = signal_dict[timestamp]
-                # Обработка специальных сигналов HOLD для закрытия позиций
-                if sig.reason == "range_sl_fixed" and simulator.position:
-                    simulator._close(sig.price, f"{strategy_name}_sl_hit", timestamp)
-                elif sig.reason in ("momentum_long_exit_trailing_stop", "momentum_short_exit_trailing_stop") and simulator.position:
-                    # Momentum trailing stop: закрываем позицию по EMA50
-                    simulator._close(sig.price, f"{strategy_name}_trailing_stop_ema", timestamp)
-                elif sig.reason in ("momentum_long_exit_ema_reversal", "momentum_short_exit_ema_reversal") and simulator.position:
-                    # Momentum exit signals: Action.SHORT для закрытия LONG, Action.LONG для закрытия SHORT
-                    # Эти сигналы обрабатываются через simulator.on_signal, который должен закрыть позицию
-                    was_position_open = simulator.position is not None
-                    simulator.on_signal(sig)
-                    # После обработки сигнала выхода, позиция должна быть закрыта
-                    # Если позиция все еще открыта, закрываем её явно
-                    if simulator.position and was_position_open:
-                        simulator._close(sig.price, f"{strategy_name}_exit_ema_reversal", timestamp)
-                elif sig.action != Action.HOLD or sig.reason != "range_sl_fixed":
-                    was_position_open = simulator.position is not None
-                    simulator.on_signal(sig)
-                    
-                    # Парсим TP/SL для ICT и ML
-                    if sig.action in (Action.LONG, Action.SHORT) and sig.reason.startswith("ict_"):
-                        import re
-                        sl_match = re.search(r'sl_([\d.]+)', sig.reason)
-                        tp_match = re.search(r'tp_([\d.]+)', sig.reason)
-                        if sl_match and tp_match and simulator.position:
-                            sl_price = float(sl_match.group(1))
-                            tp_price = float(tp_match.group(1))
-                            
-                            # ВАЛИДАЦИЯ И ПЕРЕСЧЕТ TP/SL для ICT
-                            # Проверяем, что SL соответствует требованиям (7-10% от маржи)
-                            entry_price = simulator.position.avg_price
-                            position_side = simulator.position.side
-                            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
-                            
-                            min_sl_pct_from_margin = 0.07  # Минимум 7% от маржи
-                            max_sl_pct_from_margin = 0.10   # Максимум 10% от маржи
-                            min_sl_pct_from_price = min_sl_pct_from_margin / leverage  # 0.7% от цены при 10x
-                            max_sl_pct_from_price = max_sl_pct_from_margin / leverage  # 1.0% от цены при 10x
-                            
-                            # Проверяем SL
-                            if position_side.value == "long":
-                                sl_distance_pct = (entry_price - sl_price) / entry_price
-                                if sl_distance_pct < min_sl_pct_from_price:
-                                    # SL слишком близко - используем минимальный SL
-                                    sl_price = entry_price * (1 - min_sl_pct_from_price)
-                                    sl_distance_pct = min_sl_pct_from_price
-                                elif sl_distance_pct > max_sl_pct_from_price:
-                                    # SL слишком далеко - используем максимальный SL
-                                    sl_price = entry_price * (1 - max_sl_pct_from_price)
-                                    sl_distance_pct = max_sl_pct_from_price
-                                
-                                # Пересчитываем TP с R:R = 3.0 (улучшенное соотношение)
-                                risk = entry_price - sl_price
-                                rr_ratio = 3.0  # Улучшенный R:R для ICT
-                                tp_price = entry_price + risk * rr_ratio
-                            else:  # SHORT
-                                sl_distance_pct = (sl_price - entry_price) / entry_price
-                                if sl_distance_pct < min_sl_pct_from_price:
-                                    # SL слишком близко - используем минимальный SL
-                                    sl_price = entry_price * (1 + min_sl_pct_from_price)
-                                    sl_distance_pct = min_sl_pct_from_price
-                                elif sl_distance_pct > max_sl_pct_from_price:
-                                    # SL слишком далеко - используем максимальный SL
-                                    sl_price = entry_price * (1 + max_sl_pct_from_price)
-                                    sl_distance_pct = max_sl_pct_from_price
-                                
-                                # Пересчитываем TP с R:R = 3.0 (улучшенное соотношение)
-                                risk = sl_price - entry_price
-                                rr_ratio = 3.0  # Улучшенный R:R для ICT
-                                tp_price = entry_price - risk * rr_ratio
-                            
-                            position_tp_sl[simulator.position.entry_reason] = {"tp": tp_price, "sl": sl_price}
-                    elif sig.action in (Action.LONG, Action.SHORT) and sig.reason.startswith("ml_"):
-                        import re
-                        tp_match = re.search(r'TP_([\d.]+)%', sig.reason)
-                        sl_match = re.search(r'SL_([\d.]+)%', sig.reason)
-                        if tp_match and sl_match and simulator.position:
-                            tp_pct = float(tp_match.group(1)) / 100.0
-                            sl_pct = float(sl_match.group(1)) / 100.0
-                            # ВАЖНО: Используем реальную цену входа позиции, а не цену сигнала
-                            # Сохраняем данные позиции перед использованием
-                            if not simulator.position:
-                                continue
-                            entry_price = simulator.position.avg_price
-                            position_side_ml = simulator.position.side
-                            entry_reason_ml = simulator.position.entry_reason
-                            # Вычисляем абсолютные цены TP/SL
-                            if position_side_ml.value == "long":
-                                tp_price = entry_price * (1 + tp_pct)
-                                sl_price = entry_price * (1 - sl_pct)
-                            else:  # SHORT
-                                tp_price = entry_price * (1 - tp_pct)
-                                sl_price = entry_price * (1 + sl_pct)
-                            position_tp_sl[entry_reason_ml] = {"tp": tp_price, "sl": sl_price}
-                    
-                    # ВАЖНО: Если позиция была только что открыта на этой свече, проверяем SL сразу
-                    if not was_position_open and simulator.position:
-                        # Сохраняем данные позиции перед использованием
-                        position_side_new = simulator.position.side
-                        entry_price = simulator.position.avg_price
-                        entry_reason = simulator.position.entry_reason
-                        
-                        # Для Momentum стратегии: не открываем позиции слишком близко к концу данных
-                        # (минимум 10 свечей до конца, чтобы было время для выхода)
-                        if strategy_name == "momentum":
-                            # Находим индекс текущей свечи в df
-                            try:
-                                current_idx = df.index.get_loc(timestamp)
-                                remaining_candles = len(df) - current_idx - 1
-                                if remaining_candles < 10:
-                                    # Закрываем позицию сразу, если осталось мало свечей
-                                    simulator._close(current_price, f"{strategy_name}_too_close_to_end", timestamp)
-                                    continue
-                            except:
-                                pass  # Если не удалось найти индекс, пропускаем проверку
-                        
-                        # Проверяем, что позиция все еще открыта
-                        if not simulator.position:
-                            continue
-                        
-                        # Определяем TP/SL для новой позиции
-                        tp_price = None
-                        sl_price = None
-                        
-                        if (strategy_name == "ict" or strategy_name == "ml") and entry_reason in position_tp_sl:
-                            tp_price = position_tp_sl[entry_reason]["tp"]
-                            sl_price = position_tp_sl[entry_reason]["sl"]
-                        else:
-                            if strategy_name == "flat":
-                                sl_pct = settings.strategy.range_stop_loss_pct
-                                tp_pct = settings.risk.take_profit_pct
-                            elif strategy_name == "vbo":
-                                # Для VBO используем сбалансированные TP/SL: TP=3.2%, SL=1.1% от цены
-                                tp_pct = 0.032  # 3.2% от цены (32% от маржи при 10x)
-                                sl_pct = 0.011  # 1.1% от цены (11% от маржи при 10x) - RR ~2.9:1
-                            elif strategy_name == "liquidation_hunter":
-                                # Для Liquidation Hunter используем специальные TP/SL: TP=1.8%, SL=0.7% от цены
-                                tp_pct = 0.018  # 1.8% от цены
-                                sl_pct = 0.007  # 0.7% от цены
-                            elif strategy_name == "zscore":
-                                # Для ZSCORE используем оптимизированные TP/SL: TP=2.0%, SL=0.8% от цены
-                                # ZSCORE - mean reversion стратегия, нужны быстрые тейки с хорошим RR
-                                tp_pct = 0.020  # 2.0% от цены (20% от маржи при 10x)
-                                sl_pct = 0.008  # 0.8% от цены (8% от маржи при 10x) - RR ~2.5:1
-                            else:
-                                sl_pct = settings.risk.stop_loss_pct
-                                tp_pct = settings.risk.take_profit_pct
-                            
-                            if position_side_new.value == "long":
-                                tp_price = entry_price * (1 + tp_pct)
-                                sl_price = entry_price * (1 - sl_pct)
-                            else:
-                                tp_price = entry_price * (1 - tp_pct)
-                                sl_price = entry_price * (1 + sl_pct)
-                        
-                        # Проверяем SL/TP сразу на этой свече
-                        # Проверяем, что позиция все еще открыта
-                        if not simulator.position:
-                            continue
-                        if position_side_new.value == "long":
-                            # Если цена входа уже за SL, закрываем сразу
-                            if sl_price and entry_price <= sl_price:
-                                simulator._close(entry_price, f"{strategy_name}_sl_hit_on_entry", timestamp)
-                                if not simulator.position:
-                                    continue
-                            if tp_price and high >= tp_price:
-                                simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                                if not simulator.position:
-                                    continue
-                            if sl_price:
-                                if low <= sl_price:
-                                    simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                                    if not simulator.position:
-                                        continue
-                                elif current_price <= sl_price:
-                                    simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
-                                    if not simulator.position:
-                                        continue
-                        else:  # SHORT
-                            # Если цена входа уже за SL, закрываем сразу
-                            if sl_price and entry_price >= sl_price:
-                                simulator._close(entry_price, f"{strategy_name}_sl_hit_on_entry", timestamp)
-                                if not simulator.position:
-                                    continue
-                            if tp_price and low <= tp_price:
-                                simulator._close(tp_price, f"{strategy_name}_tp_hit", timestamp)
-                                if not simulator.position:
-                                    continue
-                            if sl_price:
-                                if high >= sl_price:
-                                    simulator._close(sl_price, f"{strategy_name}_sl_hit", timestamp)
-                                    if not simulator.position:
-                                        continue
-                                elif current_price >= sl_price:
-                                    simulator._close(current_price, f"{strategy_name}_sl_hit_gap", timestamp)
-                                    if not simulator.position:
-                                        continue
+                        if s.stop_loss is None: s.stop_loss = s.price * (1 + sl_pct)
+                        if s.take_profit is None: s.take_profit = s.price * (1 - tp_pct)
+
+        # Симулируем торговлю с использованием новой функции
+        fee = 0.05
+        pnl_list = simulate_trading(df, signals, fee=fee)
         
-        # Закрываем последнюю позицию, если она открыта
-        if simulator.position:
-            last_row = df.iloc[-1]
-            last_price = last_row['close']
-            last_high = last_row.get('high', last_price)
-            last_low = last_row.get('low', last_price)
-            last_timestamp = df.index[-1]
-            # Сохраняем данные позиции перед использованием
-            position_side_end = simulator.position.side
-            entry_price = simulator.position.avg_price
-            entry_reason = simulator.position.entry_reason
-            
-            # Определяем TP/SL для последней позиции
-            tp_price = None
-            sl_price = None
-            
-            if (strategy_name == "ict" or strategy_name == "ml") and entry_reason in position_tp_sl:
-                tp_price = position_tp_sl[entry_reason]["tp"]
-                sl_price = position_tp_sl[entry_reason]["sl"]
-            else:
-                if strategy_name == "flat":
-                    sl_pct = settings.strategy.range_stop_loss_pct
-                    tp_pct = settings.risk.take_profit_pct
-                elif strategy_name == "vbo":
-                    # Для VBO используем сбалансированные TP/SL: TP=3.2%, SL=1.1% от цены
-                    tp_pct = 0.032  # 3.2% от цены (32% от маржи при 10x)
-                    sl_pct = 0.011  # 1.1% от цены (11% от маржи при 10x) - RR ~2.9:1
-                elif strategy_name == "liquidation_hunter":
-                    # Для Liquidation Hunter используем специальные TP/SL: TP=1.8%, SL=0.7% от цены
-                    tp_pct = 0.018  # 1.8% от цены
-                    sl_pct = 0.007  # 0.7% от цены
-                elif strategy_name == "zscore":
-                    # Для ZSCORE используем оптимизированные TP/SL: TP=2.0%, SL=0.8% от цены
-                    # ZSCORE - mean reversion стратегия, нужны быстрые тейки с хорошим RR
-                    tp_pct = 0.020  # 2.0% от цены (20% от маржи при 10x)
-                    sl_pct = 0.008  # 0.8% от цены (8% от маржи при 10x) - RR ~2.5:1
-                else:
-                    sl_pct = settings.risk.stop_loss_pct
-                    tp_pct = settings.risk.take_profit_pct
-                
-                if position_side_end.value == "long":
-                    tp_price = entry_price * (1 + tp_pct)
-                    sl_price = entry_price * (1 - sl_pct)
-                else:
-                    tp_price = entry_price * (1 - tp_pct)
-                    sl_price = entry_price * (1 + sl_pct)
-            
-            # Проверяем TP/SL перед закрытием по end_of_data
-            # Используем сохраненный position_side_end
-            if position_side_end.value == "long":
-                if tp_price and last_high >= tp_price:
-                    simulator._close(tp_price, f"{strategy_name}_tp_hit", last_timestamp)
-                elif sl_price and last_low <= sl_price:
-                    simulator._close(sl_price, f"{strategy_name}_sl_hit", last_timestamp)
-                elif sl_price and last_price <= sl_price:
-                    simulator._close(last_price, f"{strategy_name}_sl_hit_gap", last_timestamp)
-                else:
-                    simulator._close(last_price, f"{strategy_name}_end_of_data", last_timestamp)
-            else:  # SHORT
-                if tp_price and last_low <= tp_price:
-                    simulator._close(tp_price, f"{strategy_name}_tp_hit", last_timestamp)
-                elif sl_price and last_high >= sl_price:
-                    simulator._close(sl_price, f"{strategy_name}_sl_hit", last_timestamp)
-                elif sl_price and last_price >= sl_price:
-                    simulator._close(last_price, f"{strategy_name}_sl_hit_gap", last_timestamp)
-                else:
-                    simulator._close(last_price, f"{strategy_name}_end_of_data", last_timestamp)
-        
-        # Собираем статистику
-        trades = simulator.trades
-        if len(trades) == 0:
+        if not pnl_list:
             return StrategyResult(
                 strategy=strategy_name,
                 symbol=symbol,
@@ -861,29 +662,28 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -
                 signals_count=len(actionable_signals),
                 error="Нет сделок"
             )
+
+        profitable_trades = [p for p in pnl_list if p > 0]
+        losing_trades = [p for p in pnl_list if p < 0]
         
-        profitable = [t for t in trades if t.pnl > 0]
-        losing = [t for t in trades if t.pnl < 0]
+        total_pnl = sum(pnl_list)
+        avg_pnl = total_pnl / len(pnl_list)
+        avg_win = sum(profitable_trades) / len(profitable_trades) if profitable_trades else 0
+        avg_loss = sum(losing_trades) / len(losing_trades) if losing_trades else 0
+        max_win = max(pnl_list)
+        max_loss = min(pnl_list)
+        win_rate = len(profitable_trades) / len(pnl_list) * 100
         
-        total_pnl = sum(t.pnl for t in trades)
-        avg_pnl = total_pnl / len(trades) if trades else 0
-        avg_win = sum(t.pnl for t in profitable) / len(profitable) if profitable else 0
-        avg_loss = sum(t.pnl for t in losing) / len(losing) if losing else 0
-        max_win = max((t.pnl for t in trades), default=0)
-        max_loss = min((t.pnl for t in trades), default=0)
-        
-        win_rate = len(profitable) / len(trades) * 100 if trades else 0
-        
-        total_wins = sum(t.pnl for t in profitable) if profitable else 0
-        total_losses = abs(sum(t.pnl for t in losing)) if losing else 0
+        total_wins = sum(profitable_trades)
+        total_losses = abs(sum(losing_trades))
         profit_factor = total_wins / total_losses if total_losses > 0 else float('inf')
-        
+
         return StrategyResult(
             strategy=strategy_name,
             symbol=symbol,
-            total_trades=len(trades),
-            profitable=len(profitable),
-            losing=len(losing),
+            total_trades=len(pnl_list),
+            profitable=len(profitable_trades),
+            losing=len(losing_trades),
             win_rate=win_rate,
             total_pnl=total_pnl,
             avg_pnl=avg_pnl,
@@ -915,7 +715,7 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 10) -
         )
 
 
-def generate_report(strategies: List[str], symbols: List[str], days: int = 10, output_file: Optional[str] = None):
+def generate_report(strategies: List[str], symbols: List[str], days: int = 30, output_file: Optional[str] = None):
     """
     Генерирует сводный отчет по всем стратегиям
     """
@@ -1037,7 +837,7 @@ def generate_report(strategies: List[str], symbols: List[str], days: int = 10, o
     print("=" * 100)
 
 
-def optimize_strategies_auto(symbols: List[str] = None, days: int = 10, min_pnl: float = 0.0, min_win_rate: float = 0.0, progress_callback=None) -> Dict:
+def optimize_strategies_auto(symbols: List[str] = None, days: int = 30, min_pnl: float = 0.0, min_win_rate: float = 0.0, progress_callback=None) -> Dict:
     """
     Автоматически оптимизирует стратегии: тестирует все стратегии для всех символов,
     определяет лучшие (прибыльные) стратегии и возвращает рекомендации по настройкам.
@@ -1215,8 +1015,8 @@ def main():
     parser.add_argument("--symbols", type=str, nargs="+",
                        default=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
                        help="Список символов для тестирования")
-    parser.add_argument("--days", type=int, default=10,
-                       help="Количество дней для тестирования (по умолчанию: 10)")
+    parser.add_argument("--days", type=int, default=7,
+                       help="Количество дней для тестирования (по умолчанию: 7)")
     parser.add_argument("--output", type=str, default=None,
                        help="Путь к файлу для сохранения JSON отчета")
     parser.add_argument("--optimize", action="store_true",

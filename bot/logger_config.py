@@ -3,6 +3,7 @@
 Управление verbose логированием через переменную окружения.
 """
 import os
+import typing as t
 
 # Уровень логирования (можно изменить в .env)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -11,6 +12,48 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 VERBOSE_LOGGING = LOG_LEVEL == "DEBUG"
 INFO_LOGGING = LOG_LEVEL in ("DEBUG", "INFO")
 WARNING_LOGGING = LOG_LEVEL in ("DEBUG", "INFO", "WARNING")
+
+# Переключатели отладки для отдельных стратегий (включаются через .env)
+import logging as _logging
+
+
+def _is_true(val: t.Any) -> bool:
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+# Флаги доступные для других модулей
+DEBUG_TREND_ENABLED = _is_true(os.getenv("DEBUG_TREND_STRATEGY", ""))
+DEBUG_FLAT_ENABLED = _is_true(os.getenv("DEBUG_FLAT_STRATEGY", ""))
+
+
+def _enable_strategy_debug():
+    """Enable DEBUG logging for specific strategy modules via env vars:
+    DEBUG_TREND_STRATEGY, DEBUG_FLAT_STRATEGY (values: 1/true/yes).
+
+    Additionally, when either flag is set we force LOG_LEVEL to DEBUG so the
+    convenience helpers (should_log/log) will allow debug messages as well.
+    """
+    global LOG_LEVEL, VERBOSE_LOGGING, INFO_LOGGING
+
+    if DEBUG_TREND_ENABLED or DEBUG_FLAT_ENABLED:
+        # Ensure global log level reflects debug intent for helper functions
+        LOG_LEVEL = "DEBUG"
+        VERBOSE_LOGGING = True
+        INFO_LOGGING = True
+
+    # Apply python logging level to strategy-related loggers to help libs using logging
+    if DEBUG_TREND_ENABLED:
+        _logging.getLogger("bot.strategy").setLevel(_logging.DEBUG)
+        _logging.getLogger("bot.live").setLevel(_logging.DEBUG)
+        _logging.getLogger("bot.logger_config").debug("DEBUG enabled for TREND strategy via DEBUG_TREND_STRATEGY")
+
+    if DEBUG_FLAT_ENABLED:
+        _logging.getLogger("bot.strategy").setLevel(_logging.DEBUG)
+        _logging.getLogger("bot.live").setLevel(_logging.DEBUG)
+        _logging.getLogger("bot.logger_config").debug("DEBUG enabled for FLAT strategy via DEBUG_FLAT_STRATEGY")
+
+
+_enable_strategy_debug()
 
 # Отключение определенных категорий логов
 DISABLE_WEB_LOGS = os.getenv("DISABLE_WEB_LOGS", "true").lower() == "true"

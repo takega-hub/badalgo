@@ -13,16 +13,20 @@ ICT (Inner Circle Trader) стратегия "Silver Bullet" для торгов
 - ATR для динамического стоп-лосса
 - Автоматический перевод в безубыток при R:R 1:1
 """
-from typing import List, Optional, Tuple
-from dataclasses import dataclass
+from typing import List, Optional, Tuple, Dict, Any
+from dataclasses import dataclass, asdict
 from datetime import datetime, time, timezone
 import numpy as np
 import pandas as pd
 import pytz
+import logging
 
 from bot.strategy import Action, Signal, Bias
 import json
 from bot import logger_config
+
+# Настройка системного логгера
+logger = logging.getLogger("ict_strategy")
 
 
 @dataclass
@@ -65,12 +69,21 @@ class ICTStrategy:
             (time(14, 0), time(15, 0)), # NY PM SB
         ]
 
-        # Параметры по умолчанию (можно переопределить через params)
+        # Параметры из params (с fallback на значения по умолчанию)
         self.zone_expansion_mult = getattr(self.params, 'ict_fvg_zone_expansion_mult', 0.15)
         self.fvg_tolerance = getattr(self.params, 'ict_fvg_tolerance', 0.005)
         self.mss_close_required = getattr(self.params, 'ict_mss_close_required', True)
-        self.ict_max_slippage_pct = getattr(self.params, 'ict_max_slippage_pct', 0.001)  # 0.1% default
-        self.ict_time_drift_sec = getattr(self.params, 'ict_max_time_drift_sec', 5)  # seconds
+        self.ict_max_slippage_pct = getattr(self.params, 'ict_max_slippage_pct', 0.001)
+        self.ict_time_drift_sec = getattr(self.params, 'ict_max_time_drift_sec', 5)
+        self.mtf_bias_tf = getattr(self.params, 'ict_mtf_bias_timeframe', '4H')
+        
+        # Данные для визуализации
+        self.viz_data = {
+            "fvg": [],
+            "liquidity": [],
+            "mss": [],
+            "signals": []
+        }
     
     def is_trading_session(self, timestamp: pd.Timestamp) -> bool:
         """
@@ -213,22 +226,37 @@ class ICTStrategy:
             elif timeframe.upper() in ('1D', '1d', 'D'):
                 rule = '1D'
             else:
-                # Поддержка других форматов не реализована - возвращаем None
+                rule = timeframe.upper()
+
+            # Ресемплинг требует DatetimeIndex
+            df_res = df.copy()
+            if not isinstance(df_res.index, pd.DatetimeIndex):
+                df_res.index = pd.to_datetime(df_res.index)
+            
+            df_tf = df_res[['open', 'high', 'low', 'close']].resample(rule).agg({
+                'open':'first',
+                'high':'max',
+                'low':'min',
+                'close':'last'
+            }).dropna()
+
+            if df_tf.empty or len(df_tf) < 5:
                 return None
 
-            df_tf = df[['open', 'high', 'low', 'close']].resample(rule).agg({'open':'first','high':'max','low':'min','close':'last'})
-            if df_tf.empty or len(df_tf) < 3:
-                return None
-
-            close = df_tf['close']
-            sma_short = close.rolling(window=3).mean()
-            sma_long = close.rolling(window=8).mean()
-            if sma_short.iloc[-1] > sma_long.iloc[-1]:
+            # Используем EMA для определения тренда на старшем ТФ
+            ema_fast = df_tf['close'].ewm(span=9, adjust=False).mean()
+            ema_slow = df_tf['close'].ewm(span=21, adjust=False).mean()
+            
+            last_fast = ema_fast.iloc[-1]
+            last_slow = ema_slow.iloc[-1]
+            
+            if last_fast > last_slow:
                 return 'bullish'
-            if sma_short.iloc[-1] < sma_long.iloc[-1]:
+            elif last_fast < last_slow:
                 return 'bearish'
             return None
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error calculating MTF bias: {e}")
             return None
 
     def check_time_sync(self, server_ts: Optional[datetime]) -> bool:
@@ -552,93 +580,65 @@ class ICTStrategy:
         liquidity_sweeps: List[ICTLiquidity]
     ) -> List[ICTFVG]:
         """
-        Находит Fair Value Gaps после снятия ликвидности.
-        
-        FVG формируется когда:
-        1. Была свеча, которая сняла ликвидность
-        2. Произошел резкий возврат (манипуляция)
-        3. Образовался разрыв между свечами
-        
-        Args:
-            df: DataFrame с данными OHLCV
-            liquidity_sweeps: Список зон ликвидности
-            
-        Returns:
-            Список FVG зон
+        Находит Fair Value Gaps после снятия ликвидности с использованием векторизации.
         """
-        if len(df) < 10:
+        if len(df) < 3:
             return []
         
-        fvg_zones = []
         highs = df['high'].values
         lows = df['low'].values
-        opens = df['open'].values
-        closes = df['close'].values
         
-        # Для каждой зоны ликвидности ищем FVG
-        for liq in liquidity_sweeps:
-            if liq.bar_index >= len(df) - 3:
-                continue
-            
-            # Ищем FVG в следующих 20 свечах после снятия ликвидности (увеличиваем окно)
-            search_window = min(20, len(df) - liq.bar_index - 1)
-            
-            for i in range(liq.bar_index + 1, liq.bar_index + search_window):
-                if i >= len(df) - 1 or i < 2:
+        # Векторизованный поиск всех потенциальных FVG
+        # Бычий FVG: low[i] > high[i-2]
+        bullish_mask = lows[2:] > highs[:-2]
+        # Медвежий FVG: high[i] < low[i-2]
+        bearish_mask = highs[2:] < lows[:-2]
+        
+        all_fvg = []
+        
+        # Индексы, где маски True (сдвиг на 2 из-за среза)
+        bull_indices = np.where(bullish_mask)[0] + 2
+        bear_indices = np.where(bearish_mask)[0] + 2
+        
+        # Создаем временный маппинг для быстрого поиска ликвидности
+        liq_map = {liq.bar_index: liq for liq in liquidity_sweeps}
+        liq_indices = np.array(list(liq_map.keys()))
+        
+        # Фильтруем FVG, которые появились после снятия ликвидности в пределах окна
+        search_window = 20
+        
+        for i in bull_indices:
+            # Ищем ближайшее снятие ликвидности ПЕРЕД этим FVG
+            prev_liqs = liq_indices[(liq_indices < i) & (liq_indices >= i - search_window)]
+            for liq_idx in prev_liqs:
+                liq = liq_map[liq_idx]
+                if liq.direction == "above_high": # Манипуляция вверх, ищем возврат вниз (бычий FVG после разворота)
+                    all_fvg.append(ICTFVG(
+                        bar_index=int(i),
+                        timestamp=df.index[i],
+                        upper=float(lows[i]),
+                        lower=float(highs[i-2]),
+                        direction="bullish",
+                        liquidity_bar_index=liq.bar_index
+                    ))
                     break
-                
-                # Нужно минимум 3 свечи для определения FVG: i-2, i-1, i
-                if i < 2:
-                    continue
-                
-                prev_prev_high = highs[i-2]
-                prev_prev_low = lows[i-2]
-                prev_high = highs[i-1]
-                prev_low = lows[i-1]
-                curr_low = lows[i]
-                curr_high = highs[i]
-                curr_open = opens[i]
-                curr_close = closes[i]
-                prev_close = closes[i-1]
-                
-                # Бычий FVG: нижняя граница текущей свечи выше верхней границы свечи i-2
-                # (между i-2 и i есть разрыв, свеча i-1 может быть любой)
-                if curr_low > prev_prev_high:
-                    # Проверяем, что после снятия ликвидности вверх произошел возврат
-                    # (цена вернулась ниже уровня снятия ликвидности)
-                    if liq.direction == "above_high":
-                        # Проверяем возврат: текущая цена должна быть ниже уровня снятия ликвидности
-                        # или хотя бы ниже максимума свечи, которая сняла ликвидность
-                        if curr_close < liq.price or (i > liq.bar_index + 1 and any(closes[j] < liq.price for j in range(liq.bar_index + 1, i))):
-                            fvg_zones.append(
-                                ICTFVG(
-                                    bar_index=i,
-                                    timestamp=df.index[i],
-                                    upper=curr_low,
-                                    lower=prev_prev_high,
-                                    direction="bullish",
-                                    liquidity_bar_index=liq.bar_index,
-                                )
-                            )
-                
-                # Медвежий FVG: верхняя граница текущей свечи ниже нижней границы свечи i-2
-                if curr_high < prev_prev_low:
-                    # Проверяем, что после снятия ликвидности вниз произошел возврат
-                    if liq.direction == "below_low":
-                        # Проверяем возврат: текущая цена должна быть выше уровня снятия ликвидности
-                        if curr_close > liq.price or (i > liq.bar_index + 1 and any(closes[j] > liq.price for j in range(liq.bar_index + 1, i))):
-                            fvg_zones.append(
-                                ICTFVG(
-                                    bar_index=i,
-                                    timestamp=df.index[i],
-                                    upper=prev_prev_low,
-                                    lower=curr_high,
-                                    direction="bearish",
-                                    liquidity_bar_index=liq.bar_index,
-                                )
-                            )
+
+        for i in bear_indices:
+            prev_liqs = liq_indices[(liq_indices < i) & (liq_indices >= i - search_window)]
+            for liq_idx in prev_liqs:
+                liq = liq_map[liq_idx]
+                if liq.direction == "below_low": # Манипуляция вниз, ищем возврат вверх
+                    all_fvg.append(ICTFVG(
+                        bar_index=int(i),
+                        timestamp=df.index[i],
+                        upper=float(lows[i-2]),
+                        lower=float(highs[i]),
+                        direction="bearish",
+                        liquidity_bar_index=liq.bar_index
+                    ))
+                    break
         
-        return fvg_zones
+        return all_fvg
     
     def get_signals(self, df: pd.DataFrame, symbol: str = "Unknown") -> List[Signal]:
         """
@@ -661,6 +661,10 @@ class ICTStrategy:
         # 1. Williams Alligator
         jaw, teeth, lips = self.calculate_williams_alligator(df)
         
+        # 1.1 MTF Bias
+        mtf_bias = self.get_higher_tf_bias(df, self.mtf_bias_tf)
+        logger.info(f"[ICT] MTF Bias ({self.mtf_bias_tf}): {mtf_bias}")
+
         # 2. ATR для динамического SL
         if 'atr' not in df.columns:
             try:
@@ -695,6 +699,8 @@ class ICTStrategy:
         
         # 4. Ищем все FVG после снятия ликвидности
         fvg_zones = self.find_fvg(df, liquidity_sweeps)
+        self.viz_data["fvg"] = fvg_zones
+        self.viz_data["liquidity"] = liquidity_sweeps
         
         if not fvg_zones:
             # Убрали избыточное логирование
@@ -733,6 +739,13 @@ class ICTStrategy:
             
             if not is_expanded:
                 continue  # Аллигатор не раскрыт - нет тренда
+
+            # Фильтр MTF Bias
+            if mtf_bias:
+                if mtf_bias == 'bullish' and alligator_direction == 'bearish':
+                    continue
+                if mtf_bias == 'bearish' and alligator_direction == 'bullish':
+                    continue
             
             candles_with_trend += 1
             
@@ -759,22 +772,30 @@ class ICTStrategy:
                 # Проверка MSS (Market Structure Shift) между снятием ликвидности и FVG
                 liq = liq_by_bar.get(fvg.liquidity_bar_index)
                 if liq is not None:
-                    # Простая MSS: после снятия ликвидности цена должна пробить локальный свинг
+                    # Истинный MSS: закрытие свечи выше/ниже предыдущего свинга
                     lookback = 20
                     prior_start = max(0, liq.bar_index - lookback)
                     prior_slice = df.iloc[prior_start:liq.bar_index]
                     mid_slice = df.iloc[liq.bar_index + 1 : fvg.bar_index + 1]
+                    
                     if not prior_slice.empty and not mid_slice.empty:
                         if fvg.direction == "bullish":
-                            # Для бычьего сетапа: цена после лику должна пробить предыдущий high
-                            recent_high = prior_slice["high"].max()
-                            if mid_slice["close"].max() <= recent_high:
+                            # Для бычьего сетапа: цена должна ЗАКРЫТЬСЯ выше предыдущего Swing High
+                            swing_high = prior_slice["high"].max()
+                            # Проверяем закрытие в промежутке между ликвидностью и FVG
+                            mss_confirmed = (mid_slice["close"] > swing_high).any()
+                            if not mss_confirmed:
+                                logger.debug(f"MSS Bullish not confirmed: no close above {swing_high}")
                                 continue
+                            self.viz_data["mss"].append({"index": int(i), "price": swing_high, "type": "bullish"})
                         elif fvg.direction == "bearish":
-                            # Для медвежьего сетапа: цена после лику должна пробить предыдущий low
-                            recent_low = prior_slice["low"].min()
-                            if mid_slice["close"].min() >= recent_low:
+                            # Для медвежьего сетапа: цена должна ЗАКРЫТЬСЯ ниже предыдущего Swing Low
+                            swing_low = prior_slice["low"].min()
+                            mss_confirmed = (mid_slice["close"] < swing_low).any()
+                            if not mss_confirmed:
+                                logger.debug(f"MSS Bearish not confirmed: no close below {swing_low}")
                                 continue
+                            self.viz_data["mss"].append({"index": int(i), "price": swing_low, "type": "bearish"})
                 # Проверяем возраст FVG (не старше max_age свечей)
                 max_age = getattr(self.params, 'ict_fvg_max_age_bars', 20)
                 # Увеличиваем max_age для более старых FVG (до 50 баров)
@@ -828,6 +849,20 @@ class ICTStrategy:
                             if price_after_fvg > fvg.lower * 1.002:  # Если цена даже не достигла зоны
                                 continue
                 
+                # Проверка проскальзывания (Slippage)
+                # Если цена ушла слишком далеко от границы FVG, отменяем вход
+                max_slip = self.ict_max_slippage_pct
+                if fvg.direction == "bullish":
+                    # Для лонга: если цена слишком высоко над верхней границей FVG
+                    if current_price > fvg.upper * (1 + max_slip):
+                        logger.debug(f"Slippage too high for LONG: {current_price} > {fvg.upper * (1 + max_slip)}")
+                        continue
+                else:
+                    # Для шорта: если цена слишком низко под нижней границей FVG
+                    if current_price < fvg.lower * (1 - max_slip):
+                        logger.debug(f"Slippage too high for SHORT: {current_price} < {fvg.lower * (1 - max_slip)}")
+                        continue
+
                 # Проверяем, находится ли цена в зоне FVG (ретест)
                 # Используем более мягкое условие - цена может касаться зоны или быть внутри
                 if fvg.direction == "bullish":
@@ -892,12 +927,14 @@ class ICTStrategy:
                             if risk < min_sl_pct_from_price * current_price:
                                 continue  # Слишком маленький риск - пропускаем
                             
-                            signals.append(Signal(
+                            sig = Signal(
                                 timestamp=current_ts,
                                 action=Action.LONG,
                                 reason=f"ict_silver_bullet_long_fvg_reteest_sl_{sl_price:.2f}_tp_{tp_price:.2f}",
                                 price=current_price
-                            ))
+                            )
+                            signals.append(sig)
+                            self.viz_data["signals"].append(sig)
                 
                 elif fvg.direction == "bearish":
                     # Медвежий FVG: вход если цена в зоне или касается её
@@ -961,12 +998,14 @@ class ICTStrategy:
                             if risk < min_sl_pct_from_price * current_price:
                                 continue  # Слишком маленький риск - пропускаем
                             
-                            signals.append(Signal(
+                            sig = Signal(
                                 timestamp=current_ts,
                                 action=Action.SHORT,
                                 reason=f"ict_silver_bullet_short_fvg_reteest_sl_{sl_price:.2f}_tp_{tp_price:.2f}",
                                 price=current_price
-                            ))
+                            )
+                            signals.append(sig)
+                            self.viz_data["signals"].append(sig)
         
         # Убрали избыточное логирование статистики - слишком много сообщений
         # Диагностика: выводим статистику
@@ -976,7 +1015,38 @@ class ICTStrategy:
         # print(f"   - Проверок ретеста FVG: {fvg_retests_checked}")
         # print(f"   - Сгенерировано сигналов: {len(signals)}")
         
+        # Сохраняем данные для визуализации в файл (опционально)
+        self.export_viz_data(symbol)
+        
         return signals
+
+    def export_viz_data(self, symbol: str):
+        """Экспортирует данные разметки в JSON файл."""
+        try:
+            filename = f"dumps/ict_viz_{symbol}.json"
+            # Преобразуем Timestamp в строки для JSON
+            data_to_save = {
+                "fvg": [asdict(f) for f in self.viz_data["fvg"]],
+                "liquidity": [asdict(l) for l in self.viz_data["liquidity"]],
+                "mss": self.viz_data["mss"],
+                "signals": [asdict(s) for s in self.viz_data["signals"]]
+            }
+            # Сериализация Timestamp
+            def _default(obj):
+                if isinstance(obj, pd.Timestamp):
+                    return obj.isoformat()
+                if isinstance(obj, (Action, Bias)):
+                    return obj.name
+                return str(obj)
+
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(data_to_save, f, default=_default, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to export viz data: {e}")
+
+    def find_liquidity_sweeps_alternative(self, df: pd.DataFrame, lookback_bars: int = 50) -> List[ICTLiquidity]:
+        # Заглушка для совместимости, если метод вызывается
+        return []
 
 
 def build_ict_signals(

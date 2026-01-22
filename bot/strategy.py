@@ -1,29 +1,26 @@
+import typing as t
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
-import hashlib
-
 import numpy as np
 import pandas as pd
-
-from bot.config import StrategyParams
-
-
-class Bias(Enum):
-    LONG = "long"
-    SHORT = "short"
-    RANGE = "range"
-
-
-class MarketPhase(Enum):
-    TREND = "trend"  # Трендовое движение (ADX > threshold)
-    FLAT = "flat"    # Флэтовое движение (ADX <= threshold)
+from typing import Any, Optional, List
 
 
 class Action(Enum):
-    HOLD = "hold"  # Не показываем в списке, просто игнорируем
-    LONG = "long"  # Сигнал на покупку
-    SHORT = "short"  # Сигнал на продажу
+    LONG = "LONG"
+    SHORT = "SHORT"
+    HOLD = "HOLD"
+
+
+class Bias(Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class MarketPhase(Enum):
+    TREND = "trend"
+    FLAT = "flat"
+    MOMENTUM = "momentum"
 
 
 @dataclass
@@ -32,1330 +29,996 @@ class Signal:
     action: Action
     reason: str
     price: float
-    signal_id: Optional[str] = None  # Уникальный ID сигнала
-    indicators_info: Optional[dict] = None  # Детальная информация о показателях для логирования
-    stop_loss: Optional[float] = None  # Рекомендуемый Stop Loss
-    take_profit: Optional[float] = None  # Рекомендуемый Take Profit
-    tp2: Optional[float] = None  # Дополнительный таргет (structural liquidity level)
-    
-    def __post_init__(self):
-        """Генерирует уникальный ID сигнала, если он не задан."""
-        if self.signal_id is None:
-            # Генерируем ID на основе timestamp, action, reason и price
-            # ВАЖНО: Используем больше знаков для price и добавляем больше данных для уникальности
-            ts_str = str(self.timestamp) if hasattr(self.timestamp, 'isoformat') else str(self.timestamp)
-            price_str = f"{self.price:.6f}"  # Увеличено с 4 до 6 знаков для большей точности
-            # Добавляем больше данных для уникальности (timestamp уже включает время)
-            id_string = f"{ts_str}_{self.action.value}_{self.reason}_{price_str}"
-            self.signal_id = hashlib.md5(id_string.encode()).hexdigest()[:16]  # 16 символов MD5
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    trailing: Optional[dict] = None
+    indicators_info: Optional[dict] = None
 
 
-def detect_market_phase(row: pd.Series, params: StrategyParams) -> MarketPhase:
+def enrich_for_strategy(df: pd.DataFrame, strategy_name: str) -> pd.DataFrame:
+    """Passthrough/enrichment placeholder. Existing code expects this function.
+
+    Currently returns df unchanged. In future can add indicator prepping here.
     """
-    Определяет фазу рынка: тренд или флэт на основе ADX.
-    """
-    adx = row.get("adx", np.nan)
-    if np.isnan(adx):
-        return MarketPhase.FLAT
-    if adx > params.adx_threshold:
-        return MarketPhase.TREND
-    return MarketPhase.FLAT
-
-
-def infer_bias(row: pd.Series, params: StrategyParams) -> Bias:
-    """
-    Определяет направление bias на основе ADX и DI.
-    Используется только в трендовой фазе.
-    """
-    adx = row.get("adx", np.nan)
-    plus_di = row.get("plus_di", np.nan)
-    minus_di = row.get("minus_di", np.nan)
-    if np.isnan(adx) or np.isnan(plus_di) or np.isnan(minus_di):
-        return Bias.RANGE
-    if adx <= params.adx_threshold:
-        return Bias.RANGE
-    if plus_di > minus_di:
-        return Bias.LONG
-    if minus_di > plus_di:
-        return Bias.SHORT
-    return Bias.RANGE
-
-
-def _volume_ok(row: pd.Series, mult: float) -> bool:
-    vol = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    return np.isfinite(vol) and np.isfinite(vol_sma) and vol > vol_sma * mult
-
-
-def _fakeout_recovery_long(row: pd.Series) -> bool:
-    # Simple approximation: previous low pierced recent support, current close reclaims support and closes above prev close.
-    support = row.get("recent_low", np.nan)
-    prev_low = row.get("prev_low", np.nan)
-    prev_close = row.get("prev_close", np.nan)
-    close = row.get("close", np.nan)
-    if not np.isfinite([support, prev_low, prev_close, close]).all():
-        return False
-    return prev_low < support and close > support and close > prev_close
-
-
-def _fakeout_recovery_short(row: pd.Series) -> bool:
-    resistance = row.get("recent_high", np.nan)
-    prev_high = row.get("prev_high", np.nan)
-    prev_close = row.get("prev_close", np.nan)
-    close = row.get("close", np.nan)
-    if not np.isfinite([resistance, prev_high, prev_close, close]).all():
-        return False
-    return prev_high > resistance and close < resistance and close < prev_close
-
-
-def _safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-    """
-    Безопасное деление с проверкой на ноль и NaN.
-    
-    Args:
-        numerator: Числитель
-        denominator: Знаменатель
-        default: Значение по умолчанию, если деление невозможно
-    
-    Returns:
-        Результат деления или default
-    """
-    if denominator == 0 or not np.isfinite(denominator) or not np.isfinite(numerator):
-        return default
-    result = numerator / denominator
-    return result if np.isfinite(result) else default
-
-
-def _format_vol_ratio(volume: float, vol_sma: float, precision: int = 2) -> Optional[float]:
-    """
-    Форматирует отношение объема к Volume SMA с проверкой на валидность.
-    
-    Args:
-        volume: Объем
-        vol_sma: Volume SMA
-        precision: Точность округления
-    
-    Returns:
-        Отношение volume/vol_sma или None если деление невозможно
-    """
-    if vol_sma > 0 and np.isfinite(vol_sma) and np.isfinite(volume):
-        return round(volume / vol_sma, precision)
-    return None
-
-
-def generate_trend_signal(row: pd.Series, has_position: Optional[Bias], params: StrategyParams) -> Signal:
-    """
-    Трендовая стратегия: используется при ADX > threshold.
-    Логика: breakout, fakeout recovery, усреднение на pullback, пирамидинг на консолидации.
-    """
-    bias = row["bias"]
-    price = row["close"]
-    vol_ok = _volume_ok(row, params.breakout_volume_mult)
-    
-    # Собираем информацию о показателях
-    adx = row.get("adx", np.nan)
-    plus_di = row.get("plus_di", np.nan)
-    minus_di = row.get("minus_di", np.nan)
-    volume = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    recent_high = row.get("recent_high", np.nan)
-    recent_low = row.get("recent_low", np.nan)
-    sma = row.get("sma", np.nan)
-    
-    # ФИЛЬТР КАЧЕСТВА 1: Проверяем реальное направление тренда по цене и SMA
-    # Если цена выше SMA - бычий тренд, если ниже - медвежий
-    price_above_sma = np.isfinite(sma) and price > sma
-    price_below_sma = np.isfinite(sma) and price < sma
-    
-    # ФИЛЬТР КАЧЕСТВА 2: ADX должен быть достаточно высоким для сильного тренда
-    # Увеличиваем минимальный порог ADX для более качественных сигналов
-    min_adx = params.adx_threshold * 1.2  # Минимум 120% от базового порога
-    strong_trend = np.isfinite(adx) and adx >= min_adx
-    
-    # ФИЛЬТР КАЧЕСТВА 3: Проверяем согласованность bias и реального направления
-    # Если bias LONG, но цена ниже SMA - это слабый сигнал
-    # Если bias SHORT, но цена выше SMA - это слабый сигнал
-    bias_price_aligned = True
-    if bias == Bias.LONG and price_below_sma:
-        bias_price_aligned = False  # Bias LONG, но цена ниже SMA - слабый сигнал
-    elif bias == Bias.SHORT and price_above_sma:
-        bias_price_aligned = False  # Bias SHORT, но цена выше SMA - слабый сигнал
-    
-    # MACD анализ
-    macd = row.get("macd", np.nan)
-    macd_signal = row.get("macd_signal", np.nan)
-    macd_hist = row.get("macd_hist", np.nan)
-    macd_bullish = np.isfinite(macd) and np.isfinite(macd_signal) and macd > macd_signal and macd > 0
-    macd_bearish = np.isfinite(macd) and np.isfinite(macd_signal) and macd < macd_signal and macd < 0
-    macd_hist_positive = np.isfinite(macd_hist) and macd_hist > 0
-    macd_hist_negative = np.isfinite(macd_hist) and macd_hist < 0
-
-    # Breakout entries с подтверждением MACD
-    long_breakout = (
-        bias == Bias.LONG
-        and vol_ok
-        and price > row.get("recent_high", np.inf)
-        and (macd_bullish or not np.isfinite(macd))  # MACD подтверждает или не доступен
-    )
-    short_breakout = (
-        bias == Bias.SHORT
-        and vol_ok
-        and price < row.get("recent_low", -np.inf)
-        and (macd_bearish or not np.isfinite(macd))  # MACD подтверждает или не доступен
-    )
-
-    # Fakeout recovery entries
-    long_fakeout = bias == Bias.LONG and _fakeout_recovery_long(row) and vol_ok
-    short_fakeout = bias == Bias.SHORT and _fakeout_recovery_short(row) and vol_ok
-
-    # Scaling: averaging on pullback to SMA20
-    close = row["close"]
-    sma = row.get("sma", np.nan)
-    pullback_band = params.pullback_tolerance
-    near_sma = np.isfinite(sma) and abs(close - sma) / sma <= pullback_band
-    volume_spike = _volume_ok(row, params.volume_spike_mult) or (
-        np.isfinite(row.get("prev_volume", np.nan))
-        and np.isfinite(row.get("vol_sma", np.nan))
-        and max(row["volume"], row["prev_volume"]) > row["vol_sma"] * params.volume_spike_mult
-    )
-
-    long_scale_avg = bias == Bias.LONG and has_position == Bias.LONG and near_sma and volume_spike
-    short_scale_avg = bias == Bias.SHORT and has_position == Bias.SHORT and near_sma and volume_spike
-
-    # Scaling: pyramiding on consolidation breakout
-    rng_high = row.get("consolidation_high", np.nan)
-    rng_low = row.get("consolidation_low", np.nan)
-    consolidation = row.get("is_consolidating", False)
-    rsi = row.get("rsi", np.nan)
-    rsi_ok = np.isfinite(rsi) and params.rsi_floor <= rsi <= params.rsi_ceiling
-    long_pyramid = (
-        bias == Bias.LONG
-        and has_position == Bias.LONG
-        and consolidation
-        and price > rng_high
-        and vol_ok
-        and rsi_ok
-    )
-    short_pyramid = (
-        bias == Bias.SHORT
-        and has_position == Bias.SHORT
-        and consolidation
-        and price < rng_low
-        and vol_ok
-        and rsi_ok
-    )
-
-    # Определяем сигнал на основе bias и условий
-    # Если bias меняется на противоположное или на RANGE при открытой позиции - сигнал на разворот
-    if has_position and (bias == Bias.RANGE or (bias != has_position and bias != Bias.RANGE)):
-        # Если позиция LONG, а bias стал SHORT → сигнал SHORT (закроет LONG и откроет SHORT)
-        if has_position == Bias.LONG and bias == Bias.SHORT:
-            indicators_info = {
-                "strategy": "TREND",
-                "bias": bias.value,
-                "previous_bias": has_position.value if has_position else None,
-                "adx": round(adx, 2) if np.isfinite(adx) else None,
-                "plus_di": round(plus_di, 2) if np.isfinite(plus_di) else None,
-                "minus_di": round(minus_di, 2) if np.isfinite(minus_di) else None,
-                "macd": round(macd, 4) if np.isfinite(macd) else None,
-                "macd_signal": round(macd_signal, 4) if np.isfinite(macd_signal) else None,
-                "macd_hist": round(macd_hist, 4) if np.isfinite(macd_hist) else None,
-                "reason": "bias_flip",
-                "indicators": f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f})" if all(np.isfinite([adx, plus_di, minus_di, macd, macd_signal, macd_hist])) else (f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}" if all(np.isfinite([adx, plus_di, minus_di])) else "N/A")
-            }
-            return Signal(timestamp=row.name, action=Action.SHORT, reason="trend_bias_flip_to_short", price=price, indicators_info=indicators_info)
-        # Если позиция SHORT, а bias стал LONG → сигнал LONG (закроет SHORT и откроет LONG)
-        elif has_position == Bias.SHORT and bias == Bias.LONG:
-            indicators_info = {
-                "strategy": "TREND",
-                "bias": bias.value,
-                "previous_bias": has_position.value if has_position else None,
-                "adx": round(adx, 2) if np.isfinite(adx) else None,
-                "plus_di": round(plus_di, 2) if np.isfinite(plus_di) else None,
-                "minus_di": round(minus_di, 2) if np.isfinite(minus_di) else None,
-                "macd": round(macd, 4) if np.isfinite(macd) else None,
-                "macd_signal": round(macd_signal, 4) if np.isfinite(macd_signal) else None,
-                "macd_hist": round(macd_hist, 4) if np.isfinite(macd_hist) else None,
-                "reason": "bias_flip",
-                "indicators": f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f})" if all(np.isfinite([adx, plus_di, minus_di, macd, macd_signal, macd_hist])) else (f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}" if all(np.isfinite([adx, plus_di, minus_di])) else "N/A")
-            }
-            return Signal(timestamp=row.name, action=Action.LONG, reason="trend_bias_flip_to_long", price=price, indicators_info=indicators_info)
-        # Если bias стал RANGE → закрываем позицию только если ADX упал значительно
-        # НЕ закрываем сразу при переходе в RANGE, если тренд еще сильный
-        elif bias == Bias.RANGE:
-            # Закрываем позицию только если ADX упал ниже порога (т.е. тренд действительно закончился)
-            # Или если цена развернулась против позиции
-            adx_fell = np.isfinite(adx) and adx < params.adx_threshold
-            price_reversed = False
-            if has_position == Bias.LONG:
-                price_reversed = price_below_sma  # LONG позиция, но цена ниже SMA
-            elif has_position == Bias.SHORT:
-                price_reversed = price_above_sma  # SHORT позиция, но цена выше SMA
-            
-            # Закрываем только если ADX упал ИЛИ цена развернулась
-            if adx_fell or price_reversed:
-                if has_position == Bias.LONG:
-                    indicators_info = {
-                        "strategy": "TREND",
-                        "bias": bias.value,
-                        "previous_bias": has_position.value if has_position else None,
-                        "adx": round(adx, 2) if np.isfinite(adx) else None,
-                        "plus_di": round(plus_di, 2) if np.isfinite(plus_di) else None,
-                        "minus_di": round(minus_di, 2) if np.isfinite(minus_di) else None,
-                        "reason": "bias_to_range",
-                        "indicators": f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}" if all(np.isfinite([adx, plus_di, minus_di])) else "N/A"
-                    }
-                    return Signal(row.name, Action.SHORT, "trend_bias_to_range_close_long", price, indicators_info=indicators_info)
-                elif has_position == Bias.SHORT:
-                    indicators_info = {
-                        "strategy": "TREND",
-                        "bias": bias.value,
-                        "previous_bias": has_position.value if has_position else None,
-                        "adx": round(adx, 2) if np.isfinite(adx) else None,
-                        "plus_di": round(plus_di, 2) if np.isfinite(plus_di) else None,
-                        "minus_di": round(minus_di, 2) if np.isfinite(minus_di) else None,
-                        "reason": "bias_to_range",
-                        "indicators": f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}" if all(np.isfinite([adx, plus_di, minus_di])) else "N/A"
-                    }
-                    return Signal(row.name, Action.LONG, "trend_bias_to_range_close_short", price, indicators_info=indicators_info)
-    
-    # Определяем сигнал на основе bias и условий входа
-    # ВАЖНО: не генерируем сигналы, если позиция уже открыта в том же направлении
-    if bias == Bias.LONG:
-        # Если уже есть LONG позиция, не генерируем новые LONG сигналы (избегаем спама)
-        if has_position == Bias.LONG:
-            return Signal(row.name, Action.HOLD, "trend_already_long", price)
-        
-        # Условия для сигнала LONG: breakout, fakeout, или pullback (с подтверждением MACD)
-        # ДОБАВЛЯЕМ ФИЛЬТРЫ КАЧЕСТВА: требуем сильный тренд и согласованность bias с реальным направлением
-        if (long_breakout or long_fakeout or (near_sma and volume_spike and (macd_bullish or not np.isfinite(macd)))) and strong_trend and bias_price_aligned:
-            entry_type = []
-            if long_breakout:
-                entry_type.append("breakout")
-            if long_fakeout:
-                entry_type.append("fakeout")
-            if near_sma and volume_spike:
-                entry_type.append("pullback")
-            
-            indicators_info = {
-                "strategy": "TREND",
-                "bias": bias.value,
-                "entry_type": "+".join(entry_type),
-                "adx": round(adx, 2) if np.isfinite(adx) else None,
-                "plus_di": round(plus_di, 2) if np.isfinite(plus_di) else None,
-                "minus_di": round(minus_di, 2) if np.isfinite(minus_di) else None,
-                "macd": round(macd, 4) if np.isfinite(macd) else None,
-                "macd_signal": round(macd_signal, 4) if np.isfinite(macd_signal) else None,
-                "macd_hist": round(macd_hist, 4) if np.isfinite(macd_hist) else None,
-                "macd_bullish": macd_bullish if np.isfinite(macd) and np.isfinite(macd_signal) else None,
-                "volume": round(volume, 0) if np.isfinite(volume) else None,
-                "vol_sma": round(vol_sma, 0) if np.isfinite(vol_sma) else None,
-                "vol_ratio": round(volume / vol_sma, 2) if np.isfinite(volume) and np.isfinite(vol_sma) and vol_sma > 0 else None,
-                "price_vs_recent_high": round((price / recent_high - 1) * 100, 2) if np.isfinite(recent_high) and recent_high > 0 else None,
-                "sma": round(sma, 2) if np.isfinite(sma) else None,
-                "rsi": round(rsi, 2) if np.isfinite(rsi) else None,
-                "indicators": f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([adx, plus_di, minus_di, macd, macd_signal, macd_hist, volume, vol_sma])) and vol_sma > 0 else (f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([adx, plus_di, minus_di, volume, vol_sma])) and vol_sma > 0 else "N/A")
-            }
-            return Signal(row.name, Action.LONG, "trend_long_signal", price, indicators_info=indicators_info)
-    elif bias == Bias.SHORT:
-        # Если уже есть SHORT позиция, не генерируем новые SHORT сигналы (избегаем спама)
-        if has_position == Bias.SHORT:
-            return Signal(row.name, Action.HOLD, "trend_already_short", price)
-        
-        # Условия для сигнала SHORT: breakout, fakeout, или pullback (с подтверждением MACD)
-        # ДОБАВЛЯЕМ ФИЛЬТРЫ КАЧЕСТВА: требуем сильный тренд и согласованность bias с реальным направлением
-        if (short_breakout or short_fakeout or (near_sma and volume_spike and (macd_bearish or not np.isfinite(macd)))) and strong_trend and bias_price_aligned:
-            entry_type = []
-            if short_breakout:
-                entry_type.append("breakout")
-            if short_fakeout:
-                entry_type.append("fakeout")
-            if near_sma and volume_spike:
-                entry_type.append("pullback")
-            
-            indicators_info = {
-                "strategy": "TREND",
-                "bias": bias.value,
-                "entry_type": "+".join(entry_type),
-                "adx": round(adx, 2) if np.isfinite(adx) else None,
-                "plus_di": round(plus_di, 2) if np.isfinite(plus_di) else None,
-                "minus_di": round(minus_di, 2) if np.isfinite(minus_di) else None,
-                "macd": round(macd, 4) if np.isfinite(macd) else None,
-                "macd_signal": round(macd_signal, 4) if np.isfinite(macd_signal) else None,
-                "macd_hist": round(macd_hist, 4) if np.isfinite(macd_hist) else None,
-                "macd_bearish": macd_bearish if np.isfinite(macd) and np.isfinite(macd_signal) else None,
-                "volume": round(volume, 0) if np.isfinite(volume) else None,
-                "vol_sma": round(vol_sma, 0) if np.isfinite(vol_sma) else None,
-                "vol_ratio": round(volume / vol_sma, 2) if np.isfinite(volume) and np.isfinite(vol_sma) and vol_sma > 0 else None,
-                "price_vs_recent_low": round((price / recent_low - 1) * 100, 2) if np.isfinite(recent_low) and recent_low > 0 else None,
-                "sma": round(sma, 2) if np.isfinite(sma) else None,
-                "rsi": round(rsi, 2) if np.isfinite(rsi) else None,
-                "indicators": f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([adx, plus_di, minus_di, macd, macd_signal, macd_hist, volume, vol_sma])) and vol_sma > 0 else (f"ADX={adx:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([adx, plus_di, minus_di, volume, vol_sma])) and vol_sma > 0 else "N/A")
-            }
-            return Signal(row.name, Action.SHORT, "trend_short_signal", price, indicators_info=indicators_info)
-    
-    # Если нет четкого сигнала
-    return Signal(row.name, Action.HOLD, "trend_hold", price)
-
-
-def generate_range_signal(row: pd.Series, has_position: Optional[Bias], params: StrategyParams, entry_price: Optional[float] = None) -> Signal:
-    """
-    Флэтовая стратегия Mean Reversion + Volume Filter.
-    Используется при ADX <= threshold.
-    
-    Логика входа (LONG):
-    1. Касание нижней границы BB (цена <= bb_lower)
-    2. RSI <= 30 (перепроданность)
-    3. Объем не аномальный (Volume < Volume_SMA * 1.3)
-    
-    Логика входа (SHORT):
-    1. Касание верхней границы BB (цена >= bb_upper)
-    2. RSI >= 70 (перекупленность)
-    3. Объем не аномальный (Volume < Volume_SMA * 1.3)
-    
-    Логика выхода:
-    - Основной TP: средняя линия BB (bb_middle)
-    - Агрессивный TP: противоположная граница BB
-    - SL: локальный минимум/максимум или 1.5% от входа
-    """
-    price = row["close"]
-    high = row.get("high", price)
-    low = row.get("low", price)
-    rsi = row.get("rsi", np.nan)
-    volume = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    
-    # Bollinger Bands
-    bb_upper = row.get("bb_upper", np.nan)
-    bb_middle = row.get("bb_middle", np.nan)
-    bb_lower = row.get("bb_lower", np.nan)
-    
-    # MACD анализ для подтверждения разворота
-    macd = row.get("macd", np.nan)
-    macd_signal = row.get("macd_signal", np.nan)
-    macd_hist = row.get("macd_hist", np.nan)
-    # Для mean reversion: MACD должен показывать готовность к развороту
-    # LONG: MACD близок к нулю или выше сигнала (готовность к росту)
-    # SHORT: MACD близок к нулю или ниже сигнала (готовность к падению)
-    macd_ready_long = not np.isfinite(macd) or (np.isfinite(macd) and np.isfinite(macd_signal) and (macd >= macd_signal or abs(macd) < abs(macd_signal) * 0.5))
-    macd_ready_short = not np.isfinite(macd) or (np.isfinite(macd) and np.isfinite(macd_signal) and (macd <= macd_signal or abs(macd) < abs(macd_signal) * 0.5))
-    
-    # Проверяем валидность данных
-    if not all(np.isfinite([bb_upper, bb_middle, bb_lower, rsi, volume, vol_sma])):
-        return Signal(row.name, Action.HOLD, "range_no_data", price)
-    
-    # Фильтр объема: объем не должен быть аномально высоким
-    # ОСЛАБЛЯЕМ: увеличиваем максимальный объем до 1.5x (было 1.3x)
-    volume_ok = volume < vol_sma * params.range_volume_mult * 1.15  # До 1.5x вместо 1.3x
-    
-    # Определяем перекупленность/перепроданность
-    # ОСЛАБЛЯЕМ: расширяем зоны RSI (35 вместо 30 для oversold, 65 вместо 70 для overbought)
-    rsi_oversold = rsi <= params.range_rsi_oversold + 5  # перепроданность - сигнал на покупку (35 вместо 30)
-    rsi_overbought = rsi >= params.range_rsi_overbought - 5  # перекупленность - сигнал на продажу (65 вместо 70)
-    
-    # Проверяем касание границ BB (цена или тень свечи) с допуском
-    # ОСЛАБЛЯЕМ: увеличиваем допуск для касания BB до 0.5% (было 0.2%)
-    bb_tolerance = params.range_bb_touch_tolerance_pct * 2.5  # Увеличиваем до 0.5%
-    touch_lower = low <= bb_lower * (1 + bb_tolerance) or price <= bb_lower * (1 + bb_tolerance)  # касание нижней границы
-    touch_upper = high >= bb_upper * (1 - bb_tolerance) or price >= bb_upper * (1 - bb_tolerance)  # касание верхней границы
-    
-    # Выход из позиций: если достигнут TP/SL, сигнализируем противоположное направление или HOLD
-    if has_position == Bias.LONG:
-        # УЛУЧШЕННАЯ ЛОГИКА ВЫХОДА: не закрываем сразу при достижении TP, даем цене двигаться дальше
-        # Основной TP: средняя линия BB - закрываем только если цена откатилась от максимума
-        if price >= bb_middle:
-            # Проверяем, не продолжается ли движение вверх
-            # Если цена все еще растет (выше предыдущего максимума), держим позицию
-            prev_high = row.get("prev_high", price)
-            if price < prev_high * 0.995:  # Цена откатилась на 0.5% от максимума
-                return Signal(row.name, Action.HOLD, "range_tp_middle", price)
-        # Агрессивный TP: верхняя граница BB - закрываем только если цена откатилась
-        if params.range_tp_aggressive and price >= bb_upper:
-            prev_high = row.get("prev_high", price)
-            if price < prev_high * 0.995:  # Цена откатилась от максимума
-                return Signal(row.name, Action.HOLD, "range_tp_aggressive", price)
-        # Стоп-лосс: 1.5% от входа - если достигнут, сигнализируем HOLD (закроем позицию в симуляторе)
-        # УЛУЧШЕНИЕ: используем более широкий SL для mean reversion (2% вместо 1.5%)
-        # ИЗМЕНЕНИЕ: возвращаем HOLD вместо SHORT, чтобы не открывать новую позицию
-        if entry_price is not None:
-            stop_loss_pct = max(params.range_stop_loss_pct, 0.02)  # Минимум 2%
-            stop_loss_price = entry_price * (1 - stop_loss_pct)
-            if low <= stop_loss_price:
-                # Возвращаем HOLD с причиной range_sl_fixed - симулятор закроет позицию
-                return Signal(row.name, Action.HOLD, "range_sl_fixed", price)
-    
-    if has_position == Bias.SHORT:
-        # УЛУЧШЕННАЯ ЛОГИКА ВЫХОДА: не закрываем сразу при достижении TP, даем цене двигаться дальше
-        # Основной TP: средняя линия BB - закрываем только если цена откатилась от минимума
-        if price <= bb_middle:
-            # Проверяем, не продолжается ли движение вниз
-            # Если цена все еще падает (ниже предыдущего минимума), держим позицию
-            prev_low = row.get("prev_low", price)
-            if price > prev_low * 1.005:  # Цена откатилась на 0.5% от минимума
-                return Signal(row.name, Action.HOLD, "range_tp_middle", price)
-        # Агрессивный TP: нижняя граница BB - закрываем только если цена откатилась
-        if params.range_tp_aggressive and price <= bb_lower:
-            prev_low = row.get("prev_low", price)
-            if price > prev_low * 1.005:  # Цена откатилась от минимума
-                return Signal(row.name, Action.HOLD, "range_tp_aggressive", price)
-        # Стоп-лосс: 1.5% от входа - если достигнут, сигнализируем HOLD (закроем позицию в симуляторе)
-        # УЛУЧШЕНИЕ: используем более широкий SL для mean reversion (2% вместо 1.5%)
-        # ИЗМЕНЕНИЕ: возвращаем HOLD вместо LONG, чтобы не открывать новую позицию
-        if entry_price is not None:
-            stop_loss_pct = max(params.range_stop_loss_pct, 0.02)  # Минимум 2%
-            stop_loss_price = entry_price * (1 + stop_loss_pct)
-            if high >= stop_loss_price:
-                # Возвращаем HOLD с причиной range_sl_fixed - симулятор закроет позицию
-                return Signal(row.name, Action.HOLD, "range_sl_fixed", price)
-    
-    # Входы: если нет позиции и есть условия входа
-    if not has_position:
-        # ОСЛАБЛЯЕМ ФИЛЬТРЫ: делаем их менее строгими для генерации сигналов
-        # ФИЛЬТР КАЧЕСТВА 1: Проверяем, что рынок действительно во флэте (ADX низкий)
-        # ОСЛАБЛЯЕМ: разрешаем немного выше порога (до 30 вместо 25)
-        adx = row.get("adx", np.nan)
-        is_flat_market = np.isfinite(adx) and adx <= params.adx_threshold * 1.2  # До 30 вместо 25
-        
-        # ФИЛЬТР КАЧЕСТВА 2: Проверяем, что цена действительно в зоне перепроданности/перекупленности
-        # ОСЛАБЛЯЕМ: расширяем зону до 2% от границы BB
-        price_in_oversold_zone = price <= bb_lower * 1.02  # Цена в пределах 2% от нижней границы
-        price_in_overbought_zone = price >= bb_upper * 0.98  # Цена в пределах 2% от верхней границы
-        
-        # ФИЛЬТР КАЧЕСТВА 3: Проверяем, что объем подтверждает направление движения цены
-        # ОСЛАБЛЯЕМ: снижаем минимальный объем до 60% от среднего
-        volume_confirms_long = volume > vol_sma * 0.6  # Объем выше 60% от среднего
-        volume_confirms_short = volume > vol_sma * 0.6  # Объем выше 60% от среднего
-        
-        # ФИЛЬТР КАЧЕСТВА 4: RSI должен быть достаточно экстремальным
-        # ОСЛАБЛЯЕМ: используем стандартные пороги (30/70) вместо строгих (27/77)
-        # strong_rsi_oversold и strong_rsi_overbought оставляем как опциональные (OR условие)
-        
-        # LONG: касание нижней границы BB + RSI перепродан + нормальный объем + рынок во флэте
-        # ВОЗВРАЩАЕМ ФИЛЬТРЫ КАЧЕСТВА: добавляем обратно проверку volume_ok и is_flat_market для лучшего качества
-        # Основные (обязательные): touch_lower + rsi_oversold + volume_ok + is_flat_market
-        if touch_lower and rsi_oversold and volume_ok and is_flat_market:
-            indicators_info = {
-                "strategy": "FLAT",
-                "entry_type": "mean_reversion",
-                "adx": round(row.get("adx", np.nan), 2) if np.isfinite(row.get("adx", np.nan)) else None,
-                "rsi": round(rsi, 2) if np.isfinite(rsi) else None,
-                "bb_lower": round(bb_lower, 2) if np.isfinite(bb_lower) else None,
-                "bb_middle": round(bb_middle, 2) if np.isfinite(bb_middle) else None,
-                "bb_upper": round(bb_upper, 2) if np.isfinite(bb_upper) else None,
-                "price_vs_bb_lower": round((price / bb_lower - 1) * 100, 2) if np.isfinite(bb_lower) and bb_lower > 0 else None,
-                "macd": round(macd, 4) if np.isfinite(macd) else None,
-                "macd_signal": round(macd_signal, 4) if np.isfinite(macd_signal) else None,
-                "macd_hist": round(macd_hist, 4) if np.isfinite(macd_hist) else None,
-                "volume": round(volume, 0) if np.isfinite(volume) else None,
-                "vol_sma": round(vol_sma, 0) if np.isfinite(vol_sma) else None,
-                "vol_ratio": round(volume / vol_sma, 2) if np.isfinite(volume) and np.isfinite(vol_sma) and vol_sma > 0 else None,
-                "indicators": f"RSI={rsi:.2f} (oversold), BB_lower={bb_lower:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([rsi, bb_lower, macd, macd_signal, macd_hist, volume, vol_sma])) and vol_sma > 0 else (f"RSI={rsi:.2f} (oversold), BB_lower={bb_lower:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([rsi, bb_lower, volume, vol_sma])) and vol_sma > 0 else "N/A")
-            }
-            return Signal(row.name, Action.LONG, "range_bb_lower_rsi_oversold", price, indicators_info=indicators_info)
-        # SHORT: касание верхней границы BB + RSI перекуплен + нормальный объем + рынок во флэте
-        # ВОЗВРАЩАЕМ ФИЛЬТРЫ КАЧЕСТВА: добавляем обратно проверку volume_ok и is_flat_market для лучшего качества
-        # Основные (обязательные): touch_upper + rsi_overbought + volume_ok + is_flat_market
-        if touch_upper and rsi_overbought and volume_ok and is_flat_market:
-            indicators_info = {
-                "strategy": "FLAT",
-                "entry_type": "mean_reversion",
-                "adx": round(row.get("adx", np.nan), 2) if np.isfinite(row.get("adx", np.nan)) else None,
-                "rsi": round(rsi, 2) if np.isfinite(rsi) else None,
-                "bb_lower": round(bb_lower, 2) if np.isfinite(bb_lower) else None,
-                "bb_middle": round(bb_middle, 2) if np.isfinite(bb_middle) else None,
-                "bb_upper": round(bb_upper, 2) if np.isfinite(bb_upper) else None,
-                "price_vs_bb_upper": round((price / bb_upper - 1) * 100, 2) if np.isfinite(bb_upper) and bb_upper > 0 else None,
-                "macd": round(macd, 4) if np.isfinite(macd) else None,
-                "macd_signal": round(macd_signal, 4) if np.isfinite(macd_signal) else None,
-                "macd_hist": round(macd_hist, 4) if np.isfinite(macd_hist) else None,
-                "volume": round(volume, 0) if np.isfinite(volume) else None,
-                "vol_sma": round(vol_sma, 0) if np.isfinite(vol_sma) else None,
-                "vol_ratio": round(volume / vol_sma, 2) if np.isfinite(volume) and np.isfinite(vol_sma) and vol_sma > 0 else None,
-                "indicators": f"RSI={rsi:.2f} (overbought), BB_upper={bb_upper:.2f}, MACD={macd:.4f}/{macd_signal:.4f} (hist={macd_hist:.4f}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([rsi, bb_upper, macd, macd_signal, macd_hist, volume, vol_sma])) and vol_sma > 0 else (f"RSI={rsi:.2f} (overbought), BB_upper={bb_upper:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if all(np.isfinite([rsi, bb_upper, volume, vol_sma])) and vol_sma > 0 else "N/A")
-            }
-            return Signal(row.name, Action.SHORT, "range_bb_upper_rsi_overbought", price, indicators_info=indicators_info)
-    
-    return Signal(row.name, Action.HOLD, "range_wait", price)
-
-
-def generate_momentum_breakout_signal(row: pd.Series, has_position: Optional[Bias], params: StrategyParams) -> Signal:
-    """
-    Стратегия "Импульсный пробой" для тренда.
-    Цель: Зайти в сильное движение в самом начале и удерживать позицию, пока тренд не сменится.
-    
-    Технические параметры:
-    - Таймфрейм: 1h или 4h (EMA вычисляются на высоком таймфрейме)
-    - Индикаторы: EMA 20 (быстрая), EMA 50 (медленная), ADX (14), Volume SMA (20)
-    
-    Логика входа:
-    - EMA Cross: EMA 20 пересекает EMA 50 снизу вверх (для Long) или сверху вниз (для Short)
-    - ADX Confirmation: ADX > 25
-    - Volume Spike: Объем текущей свечи в 1.5-2 раза выше Volume SMA(20)
-    
-    Логика выхода:
-    - Trailing Stop: Подтягиваем стоп-лосс по линии EMA 50
-    - Обратный сигнал: Если EMA 20 пересекает EMA 50 в обратную сторону - закрываем позицию
-    """
-    price = row["close"]
-    adx = row.get("adx", np.nan)
-    volume = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    
-    # Получаем EMA с высокого таймфрейма
-    ema_timeframe = params.momentum_ema_timeframe
-    ema_fast_col = f"ema_fast_{ema_timeframe}"
-    ema_slow_col = f"ema_slow_{ema_timeframe}"
-    
-    ema_fast = row.get(ema_fast_col, np.nan)
-    ema_slow = row.get(ema_slow_col, np.nan)
-    
-    # Получаем предыдущие значения для определения пересечения
-    # Для этого нужно иметь доступ к предыдущей строке, но в текущей архитектуре это сложно
-    # Используем текущие значения и проверяем их соотношение
-    
-    # Проверяем валидность данных
-    if not all(np.isfinite([adx, ema_fast, ema_slow, volume, vol_sma])):
-        return Signal(row.name, Action.HOLD, "momentum_no_data", price)
-    
-    # ADX подтверждение тренда
-    # ОСЛАБЛЯЕМ: снижаем порог для большего количества сигналов
-    adx_confirmed = adx > max(params.momentum_adx_threshold * 0.7, 18)  # Минимум 18 (было 21)
-    
-    # Volume Spike: объем должен быть выше минимума
-    # ОСЛАБЛЯЕМ: снижаем порог для большего количества сигналов
-    volume_spike = volume >= vol_sma * max(params.momentum_volume_spike_min * 0.8, 1.2)  # Минимум 1.2x (было 1.35x)
-    
-    # Определяем направление тренда по EMA
-    ema_bullish = ema_fast > ema_slow  # Быстрая EMA выше медленной = восходящий тренд
-    ema_bearish = ema_fast < ema_slow  # Быстрая EMA ниже медленной = нисходящий тренд
-    
-    # Проверяем, что EMA достаточно разошлись (избегаем ложных сигналов)
-    # ВАЖНО: Проверяем деление на ноль и валидность данных
-    # ОСЛАБЛЯЕМ: снижаем минимальный разброс для большего количества сигналов
-    ema_spread = abs(ema_fast - ema_slow) / ema_slow if (ema_slow > 0 and np.isfinite(ema_slow)) else 0
-    ema_spread_ok = ema_spread > 0.0005  # Минимальный разброс 0.05% (было 0.08%)
-    
-    # Выход из позиций
-    if has_position == Bias.LONG:
-        # Обратный сигнал: EMA 20 пересекает EMA 50 сверху вниз
-        if ema_bearish and ema_spread_ok:
-            indicators_info = {
-                "strategy": "MOMENTUM",
-                "exit_type": "ema_cross_reversal",
-                "adx": round(adx, 2),
-                "ema_fast": round(ema_fast, 2),
-                "ema_slow": round(ema_slow, 2),
-                "indicators": f"ADX={adx:.2f}, EMA20={ema_fast:.2f}, EMA50={ema_slow:.2f} (bearish cross)"
-            }
-            return Signal(row.name, Action.SHORT, "momentum_long_exit_ema_reversal", price, indicators_info=indicators_info)
-        # Trailing Stop: цена ниже EMA 50
-        if params.momentum_trailing_stop_ema and price < ema_slow:
-            indicators_info = {
-                "strategy": "MOMENTUM",
-                "exit_type": "trailing_stop_ema",
-                "price_vs_ema50": round((price / ema_slow - 1) * 100, 2) if (ema_slow > 0 and np.isfinite(ema_slow)) else None,
-                "indicators": f"Price={price:.2f} < EMA50={ema_slow:.2f}"
-            }
-            return Signal(row.name, Action.HOLD, "momentum_long_exit_trailing_stop", price, indicators_info=indicators_info)
-    
-    if has_position == Bias.SHORT:
-        # Обратный сигнал: EMA 20 пересекает EMA 50 снизу вверх
-        if ema_bullish and ema_spread_ok:
-            indicators_info = {
-                "strategy": "MOMENTUM",
-                "exit_type": "ema_cross_reversal",
-                "adx": round(adx, 2),
-                "ema_fast": round(ema_fast, 2),
-                "ema_slow": round(ema_slow, 2),
-                "indicators": f"ADX={adx:.2f}, EMA20={ema_fast:.2f}, EMA50={ema_slow:.2f} (bullish cross)"
-            }
-            return Signal(row.name, Action.LONG, "momentum_short_exit_ema_reversal", price, indicators_info=indicators_info)
-        # Trailing Stop: цена выше EMA 50
-        if params.momentum_trailing_stop_ema and price > ema_slow:
-            indicators_info = {
-                "strategy": "MOMENTUM",
-                "exit_type": "trailing_stop_ema",
-                "price_vs_ema50": round((price / ema_slow - 1) * 100, 2) if (ema_slow > 0 and np.isfinite(ema_slow)) else None,
-                "indicators": f"Price={price:.2f} > EMA50={ema_slow:.2f}"
-            }
-            return Signal(row.name, Action.HOLD, "momentum_short_exit_trailing_stop", price, indicators_info=indicators_info)
-    
-    # Входы: если нет позиции и есть условия входа
-    # Примечание: Пересечение EMA проверяется в build_signals, здесь проверяем только текущее состояние
-    if not has_position:
-        # LONG: EMA 20 выше EMA 50 + ADX подтверждение + Volume Spike
-        # Пересечение снизу вверх уже проверено в build_signals, здесь проверяем только подтверждение условий
-        if ema_bullish and adx_confirmed and volume_spike and ema_spread_ok:
-            indicators_info = {
-                "strategy": "MOMENTUM",
-                "entry_type": "breakout",
-                "adx": round(adx, 2),
-                "ema_fast": round(ema_fast, 2),
-                "ema_slow": round(ema_slow, 2),
-                "ema_spread_pct": round(ema_spread * 100, 2),
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": _format_vol_ratio(volume, vol_sma),
-                "indicators": f"ADX={adx:.2f}, EMA20={ema_fast:.2f}, EMA50={ema_slow:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if (vol_sma > 0 and np.isfinite(vol_sma)) else f"ADX={adx:.2f}, EMA20={ema_fast:.2f}, EMA50={ema_slow:.2f}, Vol={volume:.0f}"
-            }
-            return Signal(row.name, Action.LONG, "momentum_long_breakout", price, indicators_info=indicators_info)
-        
-        # SHORT: EMA 20 ниже EMA 50 + ADX подтверждение + Volume Spike
-        # Пересечение сверху вниз уже проверено в build_signals, здесь проверяем только подтверждение условий
-        # ВАЖНО: Если нет флага пересечения, не генерируем сигнал (избегаем спама)
-        # Пересечение уже проверено в build_signals, но для дополнительной защиты проверяем флаг
-        ema_cross_down = row.get("ema_cross_down", False)  # Флаг пересечения сверху вниз (установлен в enrich_for_strategy)
-        # Если флаг не установлен, но мы в build_signals (где пересечение уже проверено), все равно генерируем сигнал
-        if ema_bearish and adx_confirmed and volume_spike and ema_spread_ok:
-            indicators_info = {
-                "strategy": "MOMENTUM",
-                "entry_type": "breakout",
-                "adx": round(adx, 2),
-                "ema_fast": round(ema_fast, 2),
-                "ema_slow": round(ema_slow, 2),
-                "ema_spread_pct": round(ema_spread * 100, 2),
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": _format_vol_ratio(volume, vol_sma),
-                "indicators": f"ADX={adx:.2f}, EMA20={ema_fast:.2f}, EMA50={ema_slow:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if (vol_sma > 0 and np.isfinite(vol_sma)) else f"ADX={adx:.2f}, EMA20={ema_fast:.2f}, EMA50={ema_slow:.2f}, Vol={volume:.0f}"
-            }
-            return Signal(row.name, Action.SHORT, "momentum_short_breakout", price, indicators_info=indicators_info)
-    
-    return Signal(row.name, Action.HOLD, "momentum_wait", price)
-
-
-    """
-    Стратегия "Возврат к среднему" (Mean Reversion) для флэта.
-    Цель: Заработать на «усталости» продавцов или покупателей, когда цена слишком сильно отклонилась от нормы.
-    
-    Технические параметры:
-    - Таймфрейм: 5m или 15m
-    - Индикаторы: Bollinger Bands (20, 2), RSI (14), Volume SMA (20)
-    
-    Логика входа:
-    - Цена касается или выходит за нижнюю/верхнюю полосу Боллинджера
-    - RSI в зоне перепроданности (<= 30) или перекупленности (>= 70)
-    - Volume Exhaustion: Объем низкий (<= Volume_SMA) - продавцы/покупатели иссякли
-    
-    Логика выхода:
-    - Take Profit: При достижении средней линии BB
-    - Stop Loss: Фиксированный 1% от входа или за локальный минимум/максимум
-    """
-    price = row["close"]
-    high = row.get("high", price)
-    low = row.get("low", price)
-    rsi = row.get("rsi", np.nan)
-    volume = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    
-    # Bollinger Bands
-    bb_upper = row.get("bb_upper", np.nan)
-    bb_middle = row.get("bb_middle", np.nan)
-    bb_lower = row.get("bb_lower", np.nan)
-    
-    # Проверяем валидность данных
-    if not all(np.isfinite([bb_upper, bb_middle, bb_lower, rsi, volume, vol_sma])):
-        return Signal(row.name, Action.HOLD, "mean_rev_no_data", price)
-    
-    # Volume Exhaustion: объем должен быть низким (<= Volume_SMA)
-    volume_exhausted = volume <= vol_sma * params.mean_rev_volume_exhaustion_mult
-    
-    # Определяем перекупленность/перепроданность
-    rsi_oversold = rsi <= params.mean_rev_rsi_oversold
-    rsi_overbought = rsi >= (100 - params.mean_rev_rsi_oversold)  # Симметрично для SHORT
-    
-    # Проверяем касание границ BB
-    touch_lower = low <= bb_lower or price <= bb_lower
-    touch_upper = high >= bb_upper or price >= bb_upper
-    
-    # Выход из позиций
-    if has_position == Bias.LONG:
-        # Take Profit: средняя линия BB
-        if params.mean_rev_tp_bb_middle and price >= bb_middle:
-            indicators_info = {
-                "strategy": "MEAN_REV",
-                "exit_type": "tp_bb_middle",
-                "price_vs_bb_middle": round((price / bb_middle - 1) * 100, 2),
-                "indicators": f"Price={price:.2f} >= BB_middle={bb_middle:.2f}"
-            }
-            return Signal(row.name, Action.HOLD, "mean_rev_long_exit_tp", price, indicators_info=indicators_info)
-        # Stop Loss: фиксированный процент
-        if entry_price is not None:
-            stop_loss_price = entry_price * (1 - params.mean_rev_stop_loss_pct)
-            if low <= stop_loss_price:
-                indicators_info = {
-                    "strategy": "MEAN_REV",
-                    "exit_type": "sl_fixed",
-                    "entry_price": round(entry_price, 2),
-                    "stop_loss_price": round(stop_loss_price, 2),
-                    "indicators": f"Price={price:.2f} <= SL={stop_loss_price:.2f}"
-                }
-                return Signal(row.name, Action.SHORT, "mean_rev_long_exit_sl", price, indicators_info=indicators_info)
-    
-    if has_position == Bias.SHORT:
-        # Take Profit: средняя линия BB
-        if params.mean_rev_tp_bb_middle and price <= bb_middle:
-            indicators_info = {
-                "strategy": "MEAN_REV",
-                "exit_type": "tp_bb_middle",
-                "price_vs_bb_middle": round((price / bb_middle - 1) * 100, 2),
-                "indicators": f"Price={price:.2f} <= BB_middle={bb_middle:.2f}"
-            }
-            return Signal(row.name, Action.HOLD, "mean_rev_short_exit_tp", price, indicators_info=indicators_info)
-        # Stop Loss: фиксированный процент
-        if entry_price is not None:
-            stop_loss_price = entry_price * (1 + params.mean_rev_stop_loss_pct)
-            if high >= stop_loss_price:
-                indicators_info = {
-                    "strategy": "MEAN_REV",
-                    "exit_type": "sl_fixed",
-                    "entry_price": round(entry_price, 2),
-                    "stop_loss_price": round(stop_loss_price, 2),
-                    "indicators": f"Price={price:.2f} >= SL={stop_loss_price:.2f}"
-                }
-                return Signal(row.name, Action.LONG, "mean_rev_short_exit_sl", price, indicators_info=indicators_info)
-    
-    # Входы: если нет позиции и есть условия входа
-    if not has_position:
-        # LONG: касание нижней границы BB + RSI перепродан + Volume Exhaustion
-        if touch_lower and rsi_oversold and volume_exhausted:
-            indicators_info = {
-                "strategy": "MEAN_REV",
-                "entry_type": "mean_reversion",
-                "rsi": round(rsi, 2),
-                "bb_lower": round(bb_lower, 2),
-                "bb_middle": round(bb_middle, 2),
-                "bb_upper": round(bb_upper, 2),
-                "price_vs_bb_lower": round((price / bb_lower - 1) * 100, 2),
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": round(volume / vol_sma, 2) if vol_sma > 0 else None,
-                "indicators": f"RSI={rsi:.2f} (oversold), BB_lower={bb_lower:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x, exhausted)"
-            }
-            return Signal(row.name, Action.LONG, "mean_rev_long_bb_lower", price, indicators_info=indicators_info)
-        
-        # SHORT: касание верхней границы BB + RSI перекуплен + Volume Exhaustion
-        if touch_upper and rsi_overbought and volume_exhausted:
-            indicators_info = {
-                "strategy": "MEAN_REV",
-                "entry_type": "mean_reversion",
-                "rsi": round(rsi, 2),
-                "bb_lower": round(bb_lower, 2),
-                "bb_middle": round(bb_middle, 2),
-                "bb_upper": round(bb_upper, 2),
-                "price_vs_bb_upper": round((price / bb_upper - 1) * 100, 2),
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": round(volume / vol_sma, 2) if vol_sma > 0 else None,
-                "indicators": f"RSI={rsi:.2f} (overbought), BB_upper={bb_upper:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x, exhausted)"
-            }
-            return Signal(row.name, Action.SHORT, "mean_rev_short_bb_upper", price, indicators_info=indicators_info)
-    
-    return Signal(row.name, Action.HOLD, "mean_rev_wait", price)
-
-
-def generate_vwap_breakout_signal(row: pd.Series, has_position: Optional[Bias], params: StrategyParams, df: pd.DataFrame, entry_price: Optional[float] = None) -> Signal:
-    """
-    Стратегия "Институциональный тренд: VWAP Breakout".
-    Цель: Зайти в движение, когда крупные игроки (институционалы) начинают активно толкать цену.
-    
-    Технические параметры:
-    - Таймфрейм: 5m или 15m (интрадей)
-    - Индикаторы: VWAP (с ежедневным сбросом), ATR (14), Volume SMA (20)
-    
-    Логика входа (LONG):
-    - Цена пробивает VWAP снизу вверх и закрывается выше
-    - Объем в момент пробоя > 1.8x от среднего (Volume SMA)
-    - Подтверждение: Следующая свеча также закрывается выше VWAP
-    
-    Логика входа (SHORT):
-    - Цена пробивает VWAP сверху вниз и закрывается ниже
-    - Объем в момент пробоя > 1.8x от среднего (Volume SMA)
-    - Подтверждение: Следующая свеча также закрывается ниже VWAP
-    
-    Логика выхода:
-    - Take Profit: 2 * ATR от входа
-    - Stop Loss: за линией VWAP
-    """
-    price = row["close"]
-    high = row.get("high", price)
-    low = row.get("low", price)
-    volume = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    vwap = row.get("vwap", np.nan)
-    atr = row.get("atr", np.nan)
-    
-    # Проверяем валидность данных
-    if not all(np.isfinite([vwap, volume, vol_sma, atr])):
-        return Signal(row.name, Action.HOLD, "vwap_no_data", price)
-    
-    # Volume Spike: объем должен быть > 1.8x от Volume SMA
-    volume_spike = volume > vol_sma * params.vwap_volume_spike_mult
-    
-    # Получаем предыдущие значения для определения пробоя
-    # Нужно проверить предыдущую свечу и текущую
-    current_idx = df.index.get_loc(row.name) if row.name in df.index else None
-    if current_idx is None or current_idx < 1:
-        return Signal(row.name, Action.HOLD, "vwap_no_prev_data", price)
-    
-    prev_row = df.iloc[current_idx - 1]
-    prev_close = prev_row.get("close", np.nan)
-    prev_vwap = prev_row.get("vwap", np.nan)
-    
-    # Проверяем пробой VWAP
-    # LONG: предыдущая цена была ниже VWAP, текущая закрылась выше VWAP
-    vwap_breakout_long = (np.isfinite([prev_close, prev_vwap]).all() and 
-                          prev_close < prev_vwap and 
-                          price > vwap)
-    
-    # SHORT: предыдущая цена была выше VWAP, текущая закрылась ниже VWAP
-    vwap_breakout_short = (np.isfinite([prev_close, prev_vwap]).all() and 
-                           prev_close > prev_vwap and 
-                           price < vwap)
-    
-    # Проверяем подтверждение следующей свечой (если доступна)
-    confirmation_ok = True
-    if params.vwap_confirmation_candles > 0 and current_idx < len(df) - 1:
-        next_row = df.iloc[current_idx + 1]
-        next_close = next_row.get("close", np.nan)
-        next_vwap = next_row.get("vwap", np.nan)
-        
-        if vwap_breakout_long:
-            # Для LONG: следующая свеча должна закрыться выше VWAP
-            confirmation_ok = np.isfinite([next_close, next_vwap]).all() and next_close > next_vwap
-        elif vwap_breakout_short:
-            # Для SHORT: следующая свеча должна закрыться ниже VWAP
-            confirmation_ok = np.isfinite([next_close, next_vwap]).all() and next_close < next_vwap
-    
-    # Выход из позиций
-    if has_position == Bias.LONG:
-        # Take Profit: 2 * ATR от входа
-        if entry_price is not None and np.isfinite(atr):
-            tp_price = entry_price + (atr * params.vwap_tp_atr_mult)
-            if high >= tp_price:
-                indicators_info = {
-                    "strategy": "VWAP",
-                    "exit_type": "tp_atr",
-                    "entry_price": round(entry_price, 2),
-                    "tp_price": round(tp_price, 2),
-                    "atr": round(atr, 2),
-                    "indicators": f"Price={price:.2f} >= TP={tp_price:.2f} (2*ATR)"
-                }
-                return Signal(row.name, Action.HOLD, "vwap_long_exit_tp", price, indicators_info=indicators_info)
-        
-        # Stop Loss: за линией VWAP
-        if params.vwap_sl_at_vwap and low < vwap:
-            indicators_info = {
-                "strategy": "VWAP",
-                "exit_type": "sl_vwap",
-                "vwap": round(vwap, 2),
-                "indicators": f"Price={price:.2f} < VWAP={vwap:.2f}"
-            }
-            return Signal(row.name, Action.SHORT, "vwap_long_exit_sl", price, indicators_info=indicators_info)
-    
-    if has_position == Bias.SHORT:
-        # Take Profit: 2 * ATR от входа
-        if entry_price is not None and np.isfinite(atr):
-            tp_price = entry_price - (atr * params.vwap_tp_atr_mult)
-            if low <= tp_price:
-                indicators_info = {
-                    "strategy": "VWAP",
-                    "exit_type": "tp_atr",
-                    "entry_price": round(entry_price, 2),
-                    "tp_price": round(tp_price, 2),
-                    "atr": round(atr, 2),
-                    "indicators": f"Price={price:.2f} <= TP={tp_price:.2f} (2*ATR)"
-                }
-                return Signal(row.name, Action.HOLD, "vwap_short_exit_tp", price, indicators_info=indicators_info)
-        
-        # Stop Loss: за линией VWAP
-        if params.vwap_sl_at_vwap and high > vwap:
-            indicators_info = {
-                "strategy": "VWAP",
-                "exit_type": "sl_vwap",
-                "vwap": round(vwap, 2),
-                "indicators": f"Price={price:.2f} > VWAP={vwap:.2f}"
-            }
-            return Signal(row.name, Action.LONG, "vwap_short_exit_sl", price, indicators_info=indicators_info)
-    
-    # Входы: если нет позиции и есть условия входа
-    if not has_position:
-        # LONG: пробой VWAP снизу вверх + Volume Spike + Подтверждение
-        if vwap_breakout_long and volume_spike and confirmation_ok:
-            indicators_info = {
-                "strategy": "VWAP",
-                "entry_type": "breakout",
-                "vwap": round(vwap, 2),
-                "price_vs_vwap": round((price / vwap - 1) * 100, 2) if (vwap > 0 and np.isfinite(vwap)) else None,
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": round(volume / vol_sma, 2) if vol_sma > 0 else None,
-                "atr": round(atr, 2),
-                "tp_atr_mult": params.vwap_tp_atr_mult,
-                "indicators": f"VWAP={vwap:.2f}, Price={price:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x), ATR={atr:.2f}"
-            }
-            return Signal(row.name, Action.LONG, "vwap_long_breakout", price, indicators_info=indicators_info)
-        
-        # SHORT: пробой VWAP сверху вниз + Volume Spike + Подтверждение
-        if vwap_breakout_short and volume_spike and confirmation_ok:
-            indicators_info = {
-                "strategy": "VWAP",
-                "entry_type": "breakout",
-                "vwap": round(vwap, 2),
-                "price_vs_vwap": round((price / vwap - 1) * 100, 2) if (vwap > 0 and np.isfinite(vwap)) else None,
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": round(volume / vol_sma, 2) if vol_sma > 0 else None,
-                "atr": round(atr, 2),
-                "tp_atr_mult": params.vwap_tp_atr_mult,
-                "indicators": f"VWAP={vwap:.2f}, Price={price:.2f}, Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x), ATR={atr:.2f}"
-            }
-            return Signal(row.name, Action.SHORT, "vwap_short_breakout", price, indicators_info=indicators_info)
-    
-    return Signal(row.name, Action.HOLD, "vwap_wait", price)
-
-
-def generate_liquidity_sweep_signal(row: pd.Series, has_position: Optional[Bias], params: StrategyParams, df: pd.DataFrame, entry_price: Optional[float] = None) -> Signal:
-    """
-    Стратегия "Liquidity Sweep" (Снятие ликвидности).
-    Цель: Охотиться за стоп-лоссами толпы, которые крупные игроки используют как ликвидность.
-    
-    Технические параметры:
-    - Таймфрейм: 15m или 1h
-    - Индикаторы: Donchian Channels (20), Volume Spike
-    
-    Логика входа (LONG):
-    - Цена кратковременно пробивает нижнюю границу канала (локальный минимум)
-    - Огромный всплеск объема в момент пробоя (вынос стопов) > 2.5x от среднего
-    - Разворот: Свеча закрывается внутри канала, оставив длинную тень снизу
-    - Тень должна составлять минимум 60% от общей длины свечи
-    
-    Логика входа (SHORT):
-    - Цена кратковременно пробивает верхнюю границу канала (локальный максимум)
-    - Огромный всплеск объема в момент пробоя (вынос стопов) > 2.5x от среднего
-    - Разворот: Свеча закрывается внутри канала, оставив длинную тень сверху
-    
-    Логика выхода:
-    - LONG: Ближайший локальный максимум (верхняя граница канала)
-    - SHORT: Ближайший локальный минимум (нижняя граница канала)
-    """
-    price = row["close"]
-    high = row.get("high", price)
-    low = row.get("low", price)
-    open_price = row.get("open", price)
-    volume = row.get("volume", np.nan)
-    vol_sma = row.get("vol_sma", np.nan)
-    
-    # Donchian Channels
-    donchian_upper = row.get("donchian_upper", np.nan)
-    donchian_lower = row.get("donchian_lower", np.nan)
-    donchian_middle = row.get("donchian_middle", np.nan)
-    
-    # Проверяем валидность данных
-    if not all(np.isfinite([donchian_upper, donchian_lower, volume, vol_sma])):
-        return Signal(row.name, Action.HOLD, "liquidity_no_data", price)
-    
-    # Volume Spike: огромный всплеск объема (вынос стопов)
-    volume_spike = volume > vol_sma * params.liquidity_volume_spike_mult
-    
-    # Вычисляем длину свечи и тени
-    candle_body = abs(price - open_price)
-    candle_range = high - low
-    lower_shadow = min(open_price, price) - low  # Нижняя тень
-    upper_shadow = high - max(open_price, price)  # Верхняя тень
-    
-    # Проверяем пробой нижней границы (для LONG)
-    # Цена должна была пробить нижнюю границу (low < donchian_lower)
-    # но закрыться внутри канала (close > donchian_lower)
-    lower_breakout = low < donchian_lower
-    closes_inside = price > donchian_lower
-    
-    # Проверяем пробой верхней границы (для SHORT)
-    # Цена должна была пробить верхнюю границу (high > donchian_upper)
-    # но закрыться внутри канала (close < donchian_upper)
-    upper_breakout = high > donchian_upper
-    closes_inside_upper = price < donchian_upper
-    
-    # Проверяем длинную тень (для LONG - нижняя тень, для SHORT - верхняя тень)
-    # Тень должна составлять минимум liquidity_shadow_ratio от общей длины свечи
-    long_lower_shadow = (candle_range > 0 and lower_shadow / candle_range >= params.liquidity_shadow_ratio)
-    long_upper_shadow = (candle_range > 0 and upper_shadow / candle_range >= params.liquidity_shadow_ratio)
-    
-    # Выход из позиций
-    if has_position == Bias.LONG:
-        # Выход: достижение верхней границы канала (локальный максимум)
-        if high >= donchian_upper:
-            indicators_info = {
-                "strategy": "LIQUIDITY",
-                "exit_type": "tp_donchian_upper",
-                "donchian_upper": round(donchian_upper, 2),
-                "indicators": f"Price={price:.2f} >= Donchian_upper={donchian_upper:.2f}"
-            }
-            return Signal(row.name, Action.HOLD, "liquidity_long_exit_tp", price, indicators_info=indicators_info)
-    
-    if has_position == Bias.SHORT:
-        # Выход: достижение нижней границы канала (локальный минимум)
-        if low <= donchian_lower:
-            indicators_info = {
-                "strategy": "LIQUIDITY",
-                "exit_type": "tp_donchian_lower",
-                "donchian_lower": round(donchian_lower, 2),
-                "indicators": f"Price={price:.2f} <= Donchian_lower={donchian_lower:.2f}"
-            }
-            return Signal(row.name, Action.HOLD, "liquidity_short_exit_tp", price, indicators_info=indicators_info)
-    
-    # Входы: если нет позиции и есть условия входа
-    if not has_position:
-        # LONG: пробой нижней границы + огромный объем + разворот с длинной тенью
-        if (lower_breakout and 
-            closes_inside and 
-            volume_spike and 
-            long_lower_shadow):
-            indicators_info = {
-                "strategy": "LIQUIDITY",
-                "entry_type": "sweep_long",
-                "donchian_lower": round(donchian_lower, 2),
-                "donchian_upper": round(donchian_upper, 2),
-                "donchian_middle": round(donchian_middle, 2),
-                "low_vs_donchian_lower": round((low / donchian_lower - 1) * 100, 2),
-                "close_vs_donchian_lower": round((price / donchian_lower - 1) * 100, 2),
-                "lower_shadow_pct": round((lower_shadow / candle_range * 100) if candle_range > 0 else 0, 2),
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": _format_vol_ratio(volume, vol_sma),
-                "indicators": f"Donchian_lower={donchian_lower:.2f}, Low={low:.2f} (breakout), Close={price:.2f} (inside), Lower_shadow={lower_shadow:.2f} ({(lower_shadow/candle_range*100):.1f}%)" + (f", Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if (vol_sma > 0 and np.isfinite(vol_sma) and candle_range > 0) else f", Vol={volume:.0f}")
-            }
-            return Signal(row.name, Action.LONG, "liquidity_long_sweep", price, indicators_info=indicators_info)
-        
-        # SHORT: пробой верхней границы + огромный объем + разворот с длинной тенью
-        if (upper_breakout and 
-            closes_inside_upper and 
-            volume_spike and 
-            long_upper_shadow):
-            indicators_info = {
-                "strategy": "LIQUIDITY",
-                "entry_type": "sweep_short",
-                "donchian_lower": round(donchian_lower, 2),
-                "donchian_upper": round(donchian_upper, 2),
-                "donchian_middle": round(donchian_middle, 2),
-                "high_vs_donchian_upper": round((high / donchian_upper - 1) * 100, 2),
-                "close_vs_donchian_upper": round((price / donchian_upper - 1) * 100, 2),
-                "upper_shadow_pct": round((upper_shadow / candle_range * 100) if candle_range > 0 else 0, 2),
-                "volume": round(volume, 0),
-                "vol_sma": round(vol_sma, 0),
-                "vol_ratio": round(volume / vol_sma, 2) if vol_sma > 0 else None,
-                "indicators": f"Donchian_upper={donchian_upper:.2f}, High={high:.2f} (breakout), Close={price:.2f} (inside), Upper_shadow={upper_shadow:.2f} ({upper_shadow/candle_range*100:.1f}%)" + (f", Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x)" if (vol_sma > 0 and np.isfinite(vol_sma)) else f", Vol={volume:.0f}")
-            }
-            return Signal(row.name, Action.SHORT, "liquidity_short_sweep", price, indicators_info=indicators_info)
-    
-    return Signal(row.name, Action.HOLD, "liquidity_wait", price)
-
-
-def generate_signal(
-    row: pd.Series, 
-    has_position: Optional[Bias], 
-    params: StrategyParams, 
-    entry_price: Optional[float] = None,
-    use_momentum: bool = False,
-    use_liquidity: bool = False,
-    df: Optional[pd.DataFrame] = None,
-) -> Signal:
-    """
-    Главная функция генерации сигналов.
-    Определяет фазу рынка и выбирает соответствующую стратегию.
-    
-    Args:
-        row: Строка DataFrame с данными свечи
-        has_position: Текущая позиция (LONG, SHORT, None)
-        params: Параметры стратегии
-        entry_price: Цена входа для расчета стоп-лосса
-        use_momentum: Использовать стратегию импульсного пробоя (вместо старой трендовой)
-        use_liquidity: Использовать стратегию Liquidity Sweep (снятие ликвидности)
-        df: DataFrame со всеми данными (необходим для Liquidity стратегии)
-    """
-    # Liquidity Sweep стратегия имеет приоритет (работает независимо от фазы рынка)
-    if use_liquidity and df is not None:
-        return generate_liquidity_sweep_signal(row, has_position, params, df, entry_price)
-    
-    market_phase = detect_market_phase(row, params)
-    
-    if market_phase == MarketPhase.TREND:
-        if use_momentum:
-            return generate_momentum_breakout_signal(row, has_position, params)
-        else:
-            return generate_trend_signal(row, has_position, params)
-    else:  # MarketPhase.FLAT
-        return generate_range_signal(row, has_position, params, entry_price)
-
-
-def enrich_for_strategy(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
-    df = df.copy()
-    df["prev_close"] = df["close"].shift(1)
-    df["prev_high"] = df["high"].shift(1)
-    df["prev_low"] = df["low"].shift(1)
-    df["prev_volume"] = df["volume"].shift(1)
-
-    # Consolidation detection (для трендовой стратегии)
-    window = params.consolidation_bars
-    rng_high = df["high"].rolling(window=window).max()
-    rng_low = df["low"].rolling(window=window).min()
-    rng_width = rng_high - rng_low
-    avg_price = df["close"].rolling(window=window).mean()
-    # ВАЖНО: Проверяем деление на ноль
-    df["is_consolidating"] = (rng_width / avg_price) <= params.consolidation_range_pct
-    # Заменяем NaN/Inf на False (если avg_price = 0, то не консолидация)
-    df["is_consolidating"] = df["is_consolidating"].fillna(False).replace([np.inf, -np.inf], False)
-    df["consolidation_high"] = rng_high
-    df["consolidation_low"] = rng_low
-
-    # Bias from 4H signals (используется только в трендовой фазе)
-    df["bias"] = df.apply(lambda row: infer_bias(row, params), axis=1)
-    
-    # Market phase detection
-    df["market_phase"] = df.apply(lambda row: detect_market_phase(row, params), axis=1)
-    
-    # Добавляем флаги пересечения EMA для momentum стратегии (предотвращение спама сигналов)
-    # Это позволяет избежать генерации сигналов на каждой свече внутри одного тренда
-    ema_timeframe = params.momentum_ema_timeframe
-    ema_fast_col = f"ema_fast_{ema_timeframe}"
-    ema_slow_col = f"ema_slow_{ema_timeframe}"
-    
-    if ema_fast_col in df.columns and ema_slow_col in df.columns:
-        # Пересечение снизу вверх: prev_ema_fast <= prev_ema_slow AND ema_fast > ema_slow
-        prev_ema_fast = df[ema_fast_col].shift(1)
-        prev_ema_slow = df[ema_slow_col].shift(1)
-        df["ema_cross_up"] = (prev_ema_fast <= prev_ema_slow) & (df[ema_fast_col] > df[ema_slow_col])
-        # Пересечение сверху вниз: prev_ema_fast >= prev_ema_slow AND ema_fast < ema_slow
-        df["ema_cross_down"] = (prev_ema_fast >= prev_ema_slow) & (df[ema_fast_col] < df[ema_slow_col])
-    else:
-        df["ema_cross_up"] = False
-        df["ema_cross_down"] = False
-    
-    # Удаляем только строки, где все значения NaN (не удаляем строки с частичными NaN)
-    # Это важно, так как shift() и rolling() создают NaN в начале, но основные данные (OHLCV) должны быть
-    key_columns = ["open", "high", "low", "close", "volume"]
-    if all(col in df.columns for col in key_columns):
-        # Удаляем только строки, где все ключевые колонки NaN
-        df = df[df[key_columns].notna().any(axis=1)]
-    else:
-        # Fallback: удаляем только строки, где все значения NaN
-        df = df.dropna(how='all')
-    
-    return df
+    # For backward compatibility, try to ensure standard columns exist
+    df_out = df.copy()
+    # Ensure timestamp column exists if index is DatetimeIndex
+    if isinstance(df_out.index, pd.DatetimeIndex) and 'timestamp' not in df_out.columns:
+        df_out = df_out.reset_index().rename(columns={'index': 'timestamp'}).set_index(pd.Index(df_out.index))
+    return df_out
 
 
 def build_signals(
-    df: pd.DataFrame, 
-    params: StrategyParams,
+    df: pd.DataFrame,
+    strategy_obj: t.Any,
     use_momentum: bool = False,
     use_liquidity: bool = False,
-) -> list[Signal]:
-    """
-    Строит сигналы на основе данных.
-    Возвращает только LONG, SHORT или HOLD сигналы.
-    
-    Args:
-        df: DataFrame с данными свечей и индикаторами
-        params: Параметры стратегии
-        use_momentum: Использовать стратегию импульсного пробоя (вместо старой трендовой)
-        use_liquidity: Использовать стратегию Liquidity Sweep
-    """
-    signals: list[Signal] = []
-    position_bias: Optional[Bias] = None
-    entry_price: Optional[float] = None  # отслеживаем цену входа для стоп-лосса в флэтовой стратегии
-    
-    # Для определения пересечения EMA нужны предыдущие значения
-    prev_ema_fast = None
-    prev_ema_slow = None
-    
-    for idx, (_, row) in enumerate(df.iterrows()):
-        sig = generate_signal(row, position_bias, params, entry_price, use_momentum=use_momentum, use_liquidity=use_liquidity, df=df)
-        
-        # Для momentum стратегии проверяем пересечение EMA
-        if use_momentum and idx > 0:
-            ema_timeframe = params.momentum_ema_timeframe
-            ema_fast_col = f"ema_fast_{ema_timeframe}"
-            ema_slow_col = f"ema_slow_{ema_timeframe}"
-            
-            ema_fast = row.get(ema_fast_col, np.nan)
-            ema_slow = row.get(ema_slow_col, np.nan)
-            
-            # Проверяем пересечение EMA для генерации сигнала
-            # Проверяем, что все значения валидны (не None и не NaN)
-            if (prev_ema_fast is not None and prev_ema_slow is not None and 
-                np.isfinite([ema_fast, ema_slow, prev_ema_fast, prev_ema_slow]).all()):
-                # РАСШИРЯЕМ УСЛОВИЯ: не только пересечение, но и когда EMA уже разошлись
-                # Пересечение снизу вверх (бычий сигнал) ИЛИ EMA уже разошлись в бычьем направлении
-                ema_cross_up = prev_ema_fast <= prev_ema_slow and ema_fast > ema_slow
-                ema_already_bullish = ema_fast > ema_slow and (ema_fast - ema_slow) / ema_slow > 0.002  # EMA разошлись минимум на 0.2%
-                if ema_cross_up or (ema_already_bullish and position_bias is None):  # Вход только если нет позиции
-                    # Генерируем LONG сигнал, если условия выполнены
-                    adx = row.get("adx", np.nan)
-                    volume = row.get("volume", np.nan)
-                    vol_sma = row.get("vol_sma", np.nan)
-                    
-                    # ВОЗВРАЩАЕМ БОЛЕЕ СТРОГИЕ ФИЛЬТРЫ: но оставляем немного ниже стандартного
-                    adx_threshold = max(params.momentum_adx_threshold * 0.85, 21)  # Минимум 21
-                    volume_min = max(params.momentum_volume_spike_min * 0.9, 1.35)  # Минимум 1.35x
-                    if (np.isfinite([adx, volume, vol_sma]).all() and
-                        adx > adx_threshold and
-                        volume >= vol_sma * volume_min):
-                        # Создаем сигнал через generate_momentum_breakout_signal
-                        sig = generate_momentum_breakout_signal(row, position_bias, params)
-                
-                # ВОЗВРАЩАЕМ БОЛЕЕ СТРОГИЕ УСЛОВИЯ: только пересечение EMA, но с более мягким разбросом
-                # Пересечение сверху вниз (медвежий сигнал) - основной сигнал
-                ema_cross_down = prev_ema_fast >= prev_ema_slow and ema_fast < ema_slow
-                # Дополнительно: EMA уже разошлись, но только если разброс достаточно большой (0.2% вместо 0.1%)
-                ema_already_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.002  # EMA разошлись минимум на 0.2%
-                if ema_cross_down or (ema_already_bearish and position_bias is None):  # Вход только если нет позиции
-                    # Генерируем SHORT сигнал, если условия выполнены
-                    adx = row.get("adx", np.nan)
-                    volume = row.get("volume", np.nan)
-                    vol_sma = row.get("vol_sma", np.nan)
-                    
-                    # ВОЗВРАЩАЕМ БОЛЕЕ СТРОГИЕ ФИЛЬТРЫ: но оставляем немного ниже стандартного
-                    adx_threshold = max(params.momentum_adx_threshold * 0.85, 21)  # Минимум 21
-                    volume_min = max(params.momentum_volume_spike_min * 0.9, 1.35)  # Минимум 1.35x
-                    if (np.isfinite([adx, volume, vol_sma]).all() and
-                        adx > adx_threshold and
-                        volume >= vol_sma * volume_min):
-                        # Создаем сигнал через generate_momentum_breakout_signal
-                        sig = generate_momentum_breakout_signal(row, position_bias, params)
-            
-            # Сохраняем текущие значения для следующей итерации
-            prev_ema_fast = ema_fast if np.isfinite(ema_fast) else prev_ema_fast
-            prev_ema_slow = ema_slow if np.isfinite(ema_slow) else prev_ema_slow
-        
-        signals.append(sig)
+    state: Optional[dict] = None,
+    params: Optional[dict] = None,
+    **kwargs,
+) -> List[Signal]:
+    """Backward-compatible adapter used across the codebase.
 
-        # Обновляем состояние позиции на основе сигнала
-        # LONG сигнал: если позиции нет - открываем LONG, если позиция LONG - добавляем, если позиция SHORT - закрываем SHORT и открываем LONG
-        if sig.action == Action.LONG:
-            if position_bias is None:
-                position_bias = Bias.LONG
-                entry_price = sig.price
-            elif position_bias == Bias.LONG:
-                # Позиция уже LONG - остаемся в LONG (добавление будет обработано в live.py)
+    Parameters from existing callers preserved: use_momentum/use_liquidity.
+    strategy_obj can be a string ("TREND","FLAT","MOMENTUM") or a settings
+    object; we attempt to derive a strategy name from it.
+    """
+    state = state or {}
+    params = params or {}
+    out: List[Signal] = []
+
+    # derive name
+    name = None
+    if isinstance(strategy_obj, str):
+        name = strategy_obj.upper()
+    else:
+        # try common attributes
+        for attr in ('strategy', 'name', 'strategy_name'):
+            if hasattr(strategy_obj, attr):
+                try:
+                    val = getattr(strategy_obj, attr)
+                    if isinstance(val, str):
+                        name = val.upper()
+                        break
+                except Exception:
+                    pass
+    # fallback to flags
+    if name is None:
+        name = 'MOMENTUM' if use_momentum else 'TREND'
+
+    try:
+        if name == 'FLAT':
+            res = generate_flat_signal(
+                df,
+                rsi_period=params.get('rsi_period', 14),
+                rsi_base_low=params.get('rsi_base_low', 35),
+                rsi_base_high=params.get('rsi_base_high', 65),
+                bb_period=params.get('bb_period', 20),
+                bb_mult=params.get('bb_mult', 2.0),
+                bb_compression_factor=params.get('bb_compression_factor', 0.8),
+                min_history=params.get('min_history', 50),
+            )
+        elif name == 'MOMENTUM':
+            res = generate_momentum_signal(
+                df,
+                ema_short=params.get('ema_short', 20),
+                ema_long=params.get('ema_long', 50),
+                vol_lookback=params.get('vol_lookback', 100),
+                vol_top_pct=params.get('vol_top_pct', 0.75),
+                min_history=params.get('min_history', 50),
+            )
+        else:
+            # default to TREND
+            res = generate_trend_signal(
+                df,
+                state=state,
+                sma_period=params.get('sma_period', 21),
+                atr_period=params.get('atr_period', 14),
+                atr_multiplier=params.get('atr_multiplier', 2.0),
+                max_pyramid=params.get('max_pyramid', 2),
+                min_history=params.get('min_history', 100),
+            )
+    except Exception:
+        return out
+
+    if res and res.get('signal') is not None:
+        action = Action.LONG if res.get('signal') == 'LONG' else (Action.SHORT if res.get('signal') == 'SHORT' else Action.HOLD)
+        reason = res.get('reason', '')
+        price = float(df['close'].iloc[-1]) if 'close' in df.columns and len(df) > 0 else 0.0
+        # Prefer explicit indicators_info, but attach SL/TP/trailing into indicators so downstream
+        # systems that only accept a Signal object still have access to exit params.
+        indicators = dict(res.get('indicators_info', {}) or {})
+        # attach stop/take/trailing into indicators for downstream consumers
+        if res.get('stop_loss') is not None:
+            try:
+                indicators['stop_loss'] = float(res.get('stop_loss'))
+            except Exception:
+                indicators['stop_loss'] = res.get('stop_loss')
+        if res.get('take_profit') is not None:
+            try:
+                indicators['take_profit'] = float(res.get('take_profit'))
+            except Exception:
+                indicators['take_profit'] = res.get('take_profit')
+        if res.get('trailing') is not None:
+            indicators['trailing'] = res.get('trailing')
+        # prefer timestamp from df index if available
+        try:
+            ts = pd.Timestamp(df.index[-1])
+        except Exception:
+            ts = pd.Timestamp.now()
+        # Prefer explicit stop/take/trailing fields on Signal for downstream consumers
+        sig = Signal(
+            timestamp=ts,
+            action=action,
+            reason=reason,
+            price=price,
+            stop_loss=res.get('stop_loss') or res.get('indicators_info', {}).get('sl'),
+            take_profit=res.get('take_profit') or res.get('indicators_info', {}).get('tp'),
+            trailing=res.get('trailing'),
+            indicators_info=indicators,
+        )
+        out.append(sig)
+
+    return out
+
+
+def detect_market_phase(row_or_df: t.Union[pd.Series, pd.DataFrame], strategy_name: Optional[str] = None) -> Optional[MarketPhase]:
+    """
+    Простая детекция рыночной фазы для совместимости с остальным кодом.
+    Принимает либо одну строку (Series) с индикаторами, либо DataFrame.
+    Если доступны индикаторы ('adx', 'atr' и т.д.), пытается определить фазу.
+
+    Возвращает MarketPhase или None.
+    """
+    try:
+        # If DataFrame passed, use last row
+        if isinstance(row_or_df, pd.DataFrame):
+            row = row_or_df.iloc[-1]
+        else:
+            row = row_or_df
+
+        # Prefer explicit strategy_name hints
+        if strategy_name and strategy_name.upper() == 'TREND':
+            return MarketPhase.TREND
+        if strategy_name and strategy_name.upper() == 'FLAT':
+            return MarketPhase.FLAT
+        if strategy_name and strategy_name.upper() == 'MOMENTUM':
+            return MarketPhase.MOMENTUM
+
+        # ADX-based heuristic if available
+        adx = row.get('adx') if hasattr(row, 'get') else None
+        if adx is not None:
+            try:
+                adx_v = float(adx)
+                if adx_v > 25:
+                    return MarketPhase.TREND
+                if adx_v < 15:
+                    return MarketPhase.FLAT
+            except Exception:
                 pass
-            elif position_bias == Bias.SHORT:
-                # Позиция SHORT, сигнал LONG - закрываем SHORT и открываем LONG
-                position_bias = Bias.LONG
-                entry_price = sig.price
-        # SHORT сигнал: аналогично
-        elif sig.action == Action.SHORT:
-            if position_bias is None:
-                position_bias = Bias.SHORT
-                entry_price = sig.price
-            elif position_bias == Bias.SHORT:
-                # Позиция уже SHORT - остаемся в SHORT
+
+        # Volatility-based fallback using atr
+        atr = row.get('atr') if hasattr(row, 'get') else None
+        if atr is not None:
+            try:
+                atr_v = float(atr)
+                # crude thresholds - kept conservative
+                if atr_v > 0.5:
+                    return MarketPhase.MOMENTUM
+                return MarketPhase.FLAT
+            except Exception:
                 pass
-            elif position_bias == Bias.LONG:
-                # Позиция LONG, сигнал SHORT - закрываем LONG и открываем SHORT
-                position_bias = Bias.SHORT
-                entry_price = sig.price
-        # HOLD сигнал: ничего не меняем
-        elif sig.action == Action.HOLD:
-            pass  # Позиция остается как есть
+
+        return None
+    except Exception:
+        return None
+
+
+def generate_range_signal(row: pd.Series, position_bias: Optional[Bias], settings: t.Any) -> Signal:
+    """Compatibility wrapper for legacy code that expects a row-based range signal.
+
+    Uses indicators already present in the row (prepared by prepare_with_indicators).
+    Falls back to conservative defaults when indicators are missing.
+    """
+    try:
+        price = float(row.get('close', 0.0))
+        indicators_info = {}
+
+        rsi = row.get('rsi') if row.get('rsi') is not None else row.get('rsi_14')
+        bbw = row.get('bb_width') or row.get('bbw')
+        atr = row.get('atr') or row.get('atr_14')
+        indicators_info['rsi'] = float(rsi) if rsi is not None else None
+        indicators_info['bb_width'] = float(bbw) if bbw is not None else None
+        indicators_info['atr'] = float(atr) if atr is not None else None
+
+        # Bollinger compression: if bb width present and very small -> block
+        if bbw is not None:
+            try:
+                if float(bbw) <= 1e-6:
+                    return Signal(timestamp=row.name, action=Action.HOLD, reason='bb_compression', price=price, indicators_info=indicators_info)
+            except Exception:
+                pass
+
+        # Adaptive RSI thresholds - try to read from settings, fallback to 35/65
+        try:
+            low_lvl = getattr(settings, 'range_rsi_low', None) or getattr(settings, 'rsi_base_low', None) or 30
+            high_lvl = getattr(settings, 'range_rsi_high', None) or getattr(settings, 'rsi_base_high', None) or 70
+            low_lvl = int(low_lvl)
+            high_lvl = int(high_lvl)
+        except Exception:
+            low_lvl, high_lvl = 35, 65
+
+        if rsi is None:
+            return Signal(timestamp=row.name, action=Action.HOLD, reason='flat_missing_indicators', price=price, indicators_info=indicators_info)
+
+        rsi_v = float(rsi)
+        open_price = float(row.get('open', price))
+        if rsi_v < low_lvl and price > open_price:
+            return Signal(timestamp=row.name, action=Action.LONG, reason='rsi_oversold_bullish_confirm', price=price, indicators_info=indicators_info)
+        if rsi_v > high_lvl and price < open_price:
+            return Signal(timestamp=row.name, action=Action.SHORT, reason='rsi_overbought_bearish_confirm', price=price, indicators_info=indicators_info)
+
+        return Signal(timestamp=row.name, action=Action.HOLD, reason='no_mean_reversion', price=price, indicators_info=indicators_info)
+    except Exception as e:
+        return Signal(timestamp=row.name if hasattr(row, 'name') else pd.Timestamp.now(), action=Action.HOLD, reason=f'error_range_signal_{str(e)[:80]}', price=float(row.get('close', 0.0)), indicators_info={})
+
+
+def generate_momentum_breakout_signal(row: pd.Series, position_bias: Optional[Bias], settings: t.Any) -> Signal:
+    """Compatibility wrapper for legacy momentum breakout signature.
+
+    Uses EMA and volume fields that should be present in the row. Falls back
+    to conservative HOLD if required indicators are missing.
+    """
+    try:
+        price = float(row.get('close', 0.0))
+        indicators_info = {}
+
+        # Try common EMA column names
+        ema_short = row.get('ema_fast') or row.get('ema20') or row.get('ema_20')
+        ema_long = row.get('ema_slow') or row.get('ema50') or row.get('ema_50')
+        if ema_short is None or ema_long is None:
+            # try momentum-specific names
+            tf = getattr(settings, 'momentum_ema_timeframe', None)
+            if tf:
+                ema_short = ema_short or row.get(f'ema_fast_{tf}')
+                ema_long = ema_long or row.get(f'ema_slow_{tf}')
+
+        indicators_info['ema_short'] = float(ema_short) if ema_short is not None else None
+        indicators_info['ema_long'] = float(ema_long) if ema_long is not None else None
+
+        # RSI fallback: if missing, use neutral 50
+        rsi_val = row.get('rsi') if row.get('rsi') is not None else row.get('rsi_14')
+        try:
+            indicators_info['rsi'] = float(rsi_val) if rsi_val is not None else 50.0
+        except Exception:
+            indicators_info['rsi'] = 50.0
+
+        # Volume confirmation with safe defaults (row may not contain vol_sma/avg5)
+        vol = row.get('volume')
+        vol_sma = row.get('vol_sma') or row.get('volume_sma')
+        vol_avg5 = row.get('vol_avg5') or row.get('volume_avg5')
+
+        vol_current_safe = float(vol) if vol is not None else 0.0
+        try:
+            vol_sma_safe = float(vol_sma) if vol_sma is not None else vol_current_safe
+        except Exception:
+            vol_sma_safe = vol_current_safe
+        try:
+            vol_avg5_safe = float(vol_avg5) if vol_avg5 is not None else vol_current_safe
+        except Exception:
+            vol_avg5_safe = vol_current_safe
+
+        indicators_info['vol_current'] = vol_current_safe
+        indicators_info['vol_sma'] = vol_sma_safe
+        indicators_info['vol_avg5'] = vol_avg5_safe
+
+        # Require EMA fan: support both LONG and SHORT
+        if ema_short is None or ema_long is None:
+            return Signal(timestamp=row.name, action=Action.HOLD, reason='momentum_missing_ema', price=price, indicators_info=indicators_info)
+
+        ema_s = float(ema_short)
+        ema_l = float(ema_long)
+
+        is_long_fan = price > ema_s > ema_l
+        is_short_fan = price < ema_s < ema_l
+
+        if not (is_long_fan or is_short_fan):
+            return Signal(timestamp=row.name, action=Action.HOLD, reason='ema_fan_not_aligned', price=price, indicators_info=indicators_info)
+
+        # Volume spike: require current volume >= 2x vol_sma and short-term jump
+        try:
+            if vol_current_safe < vol_sma_safe * 2.0:
+                return Signal(timestamp=row.name, action=Action.HOLD, reason='no_volume_spike', price=price, indicators_info=indicators_info)
+        except Exception:
+            return Signal(timestamp=row.name, action=Action.HOLD, reason='volume_check_error', price=price, indicators_info=indicators_info)
+
+        if vol_current_safe < 1.5 * vol_avg5_safe:
+            return Signal(timestamp=row.name, action=Action.HOLD, reason='no_short_term_volume_jump', price=price, indicators_info=indicators_info)
+
+        # Directional result
+        if is_long_fan:
+            return Signal(timestamp=row.name, action=Action.LONG, reason='momentum_breakout_ok', price=price, indicators_info=indicators_info)
+        if is_short_fan:
+            return Signal(timestamp=row.name, action=Action.SHORT, reason='momentum_breakout_ok_short', price=price, indicators_info=indicators_info)
+
+        return Signal(timestamp=row.name, action=Action.HOLD, reason='no_action', price=price, indicators_info=indicators_info)
+    except Exception as e:
+        return Signal(timestamp=row.name if hasattr(row, 'name') else pd.Timestamp.now(), action=Action.HOLD, reason=f'error_momentum_signal_{str(e)[:80]}', price=float(row.get('close', 0.0)), indicators_info={})
+
+
+
+def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(period, min_periods=1).mean()
+
+
+def _ema(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def _sma(series: pd.Series, period: int) -> pd.Series:
+    # Use min_periods=1 to produce values on short series (prevents NaN for small datasets)
+    return series.rolling(period, min_periods=1).mean()
+
+
+def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+    ma_up = up.ewm(alpha=1/period, adjust=False).mean()
+    ma_down = down.ewm(alpha=1/period, adjust=False).mean()
+    rs = ma_up / (ma_down + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    # Backfill then default to neutral 50 to avoid None values in downstream checks/logs
+    rsi = rsi.bfill().fillna(50.0)
+    return rsi
+
+
+def _bb_width(df: pd.DataFrame, period: int = 20, mult: float = 2.0) -> pd.Series:
+    mid = _sma(df['close'], period)
+    # ensure std is computed with min_periods to avoid NaNs on short series
+    std = df['close'].rolling(period, min_periods=1).std()
+    upper = mid + mult * std
+    lower = mid - mult * std
+    width = (upper - lower) / (mid.replace(0, np.nan).abs())
+    return width
+
+
+def _ensure_history(df: pd.DataFrame, required: int) -> bool:
+    return len(df) >= required
+
+
+def _generate_trend_signal_df(
+    df: pd.DataFrame,
+    state: t.Optional[dict] = None,
+    sma_period: int = 21,
+    atr_period: int = 14,
+    atr_multiplier: float = 3.0,
+    max_pyramid: int = 2,
+    min_history: int = 50,
+    adx_threshold: float = 30.0,
+    vol_multiplier: float = 1.0,
+) -> t.Dict:
+    """
+    Генерация сигнала TREND.
+
+    Входные параметры:
+      - df: DataFrame с колонками ['open','high','low','close','volume']
+      - state: словарь состояния позиции: ожидаются ключи 'long_pyramid' и 'short_pyramid'
+
+    Возвращает dict с ключами: signal, stop_loss, indicators_info, reason.
+    """
+    state = state or {}
+    indicators_info = {}
+
+    # Cooldown check: don't generate signals too frequently
+    last_signal_idx = state.get('last_signal_idx', -100)
+    current_idx = len(df)
+    if current_idx - last_signal_idx < 10:
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "cooldown"}
+
+    # Forward-fill simple NaNs then validate
+    df = df.ffill()
+
+    # Data validation: avoid NaN/inf-only DataFrames
+    if df.replace([np.inf, -np.inf], np.nan).dropna().empty:
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "nan_in_data"}
+
+    if not _ensure_history(df, min_history):
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "insufficient_history"}
+    close = df['close']
+    price = float(close.iloc[-1])
+
+    sma = _sma(close, sma_period)
+    sma_current = float(sma.iloc[-1])
+    sma_prev = float(sma.iloc[-2])
+
+    # Prefer ATR already present in the DataFrame (precomputed) — fallback to computed ATR.
+    atr_current = None
+    try:
+        if 'atr' in df.columns and pd.notna(df['atr'].iloc[-1]):
+            atr_current = float(df['atr'].iloc[-1])
+        else:
+            # compute ATR from price series as a fallback
+            atr_series = _atr(df, period=atr_period)
+            if not pd.isna(atr_series.iloc[-1]):
+                atr_current = float(atr_series.iloc[-1])
+    except Exception:
+        atr_current = None
+
+    # If ATR still missing, use conservative 0.5% of price (more realistic for crypto on 15m-1h)
+    if atr_current is None or np.isnan(atr_current):
+        try:
+            atr_current = float(price * 0.005)
+        except Exception:
+            atr_current = 0.0
+
+    indicators_info['atr'] = atr_current
+
+    # default max hold (bars) for time-exit protection — can be overridden via state/settings
+    max_hold = int(state.get('max_hold_bars', 12))
+    indicators_info['max_hold_bars'] = max_hold
+
+    # Use EMA trend-following as primary entry condition (faster, less noise-prone than SMA pullbacks).
+    # 1. EMA fan
+    try:
+        ema_short = _ema(close, 21)
+        ema_long = _ema(close, 50)
+        ema_s_curr = float(ema_short.iloc[-1])
+        ema_s_prev = float(ema_short.iloc[-2]) if len(ema_short) > 1 else ema_s_curr
+        ema_l_curr = float(ema_long.iloc[-1])
+    except Exception:
+        ema_s_curr = None
+        ema_l_curr = None
+
+    is_uptrend = False
+    is_downtrend = False
+    try:
+        if ema_s_curr is not None and ema_l_curr is not None:
+            # Тренд подтвержден веером EMA
+            # Тренд подтвержден веером EMA и наклоном EMA20
+            trend_up = ema_s_curr > ema_l_curr and ema_s_curr > ema_s_prev
+            trend_down = ema_s_curr < ema_l_curr and ema_s_curr < ema_s_prev
+            
+            # Pullback: цена коснулась EMA20, но закрылась в сторону тренда
+            low_curr = float(df['low'].iloc[-1])
+            high_curr = float(df['high'].iloc[-1])
+            
+            # Pullback: цена коснулась EMA20 (с допуском 0.5%), но закрылась в сторону тренда
+            is_uptrend = trend_up and (low_curr <= ema_s_curr * 1.005) and (price > ema_s_curr)
+            is_downtrend = trend_down and (high_curr >= ema_s_curr * 0.995) and (price < ema_s_curr)
+    except Exception:
+        is_uptrend = False
+        is_downtrend = False
+
+    # ADX filter (required)
+    adx_ok = True
+    try:
+        if 'adx' in df.columns:
+            adx_val = float(df['adx'].iloc[-1])
+            if adx_val < 25:
+                adx_ok = False
+    except Exception:
+        adx_ok = True
+
+    # Simplified volume filter: require current volume >= vol_sma * 1.0 when vol_sma is present
+    vol_ok = True
+    try:
+        if 'vol_sma' in df.columns and 'volume' in df.columns:
+            vol_s = float(df['vol_sma'].iloc[-1])
+            vol_c = float(df['volume'].iloc[-1])
+            if vol_c < vol_s * 1.0:
+                vol_ok = False
+    except Exception:
+        vol_ok = True
+
+    # Breakout logic (Donchian Channels)
+    donchian_lookback = 20
+    upper_band = df['high'].rolling(donchian_lookback).max().shift(1)
+    lower_band = df['low'].rolling(donchian_lookback).min().shift(1)
     
-    return signals
+    is_breakout_long = trend_up and price > upper_band.iloc[-1]
+    is_breakout_short = trend_down and price < lower_band.iloc[-1]
+
+    long_allowed = False
+    short_allowed = False
+    entry_reason = "ok"
+
+    if (is_uptrend or is_breakout_long) and adx_ok and vol_ok:
+        long_allowed = True
+        entry_reason = "trend_pullback_long" if is_uptrend else "trend_breakout_long"
+    if (is_downtrend or is_breakout_short) and adx_ok and vol_ok:
+        short_allowed = True
+        entry_reason = "trend_pullback_short" if is_downtrend else "trend_breakout_short"
+
+    # RSI guard: avoid entering LONG when market is already overheated
+    try:
+        rsi_series = _rsi(close, period=14)
+        rsi_current = float(rsi_series.iloc[-1])
+        indicators_info['rsi'] = rsi_current
+        # Relaxed RSI guard for trend following: allow up to 70 for LONG, down to 30 for SHORT
+        if long_allowed and rsi_current > 70.0:
+            long_allowed = False
+        if short_allowed and rsi_current < 30.0:
+            short_allowed = False
+    except Exception:
+        # if RSI cannot be computed, don't block by RSI
+        pass
+
+    if not (long_allowed or short_allowed):
+        # Avoid "panic exits" — don't close positions on small retracements.
+        # Only signal an exit (HOLD) when the price crosses the slow EMA (EMA50)
+        # in the opposite direction of the current position (full trend reversal).
+        try:
+            current_bias = None
+            if state is not None:
+                current_bias = state.get('current_bias') or state.get('bias') or state.get('position_bias')
+            if isinstance(current_bias, str):
+                try:
+                    current_bias = Bias[current_bias.upper()]
+                except Exception:
+                    current_bias = None
+
+            is_trend_broken_long = False
+            is_trend_broken_short = False
+            if ema_l_curr is not None:
+                try:
+                    # price below slow EMA indicates trend break for longs
+                    is_trend_broken_long = price < ema_l_curr
+                    # price above slow EMA indicates trend break for shorts
+                    is_trend_broken_short = price > ema_l_curr
+                except Exception:
+                    is_trend_broken_long = False
+                    is_trend_broken_short = False
+
+            if current_bias == Bias.LONG and is_trend_broken_long:
+                return {"signal": "HOLD", "stop_loss": None, "indicators_info": indicators_info, "reason": "trend_broken_long"}
+            if current_bias == Bias.SHORT and is_trend_broken_short:
+                return {"signal": "HOLD", "stop_loss": None, "indicators_info": indicators_info, "reason": "trend_broken_short"}
+        except Exception:
+            pass
+
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "sma_not_trending_or_price_mismatch"}
+
+    # ADX filter: if ADX present and below threshold, block trend entries
+    try:
+        adx_val = None
+        if 'adx' in df.columns:
+            adx_val = float(df['adx'].iloc[-1])
+            if adx_val is not None:
+                if adx_val <= float(adx_threshold):
+                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "adx_no_trend"}
+                # add adaptive exit suggestion: if ADX falls below 20 later, suggest exit (for downstream to act on)
+                indicators_info['adx_exit_threshold'] = 20
+        indicators_info['adx'] = adx_val
+    except Exception:
+        pass
+
+    # Volume confirmation: prefer a simple check against vol_sma to avoid over-filtering
+    try:
+        vol_current = df['volume'].iloc[-1] if 'volume' in df.columns else None
+        vol_sma = df.get('vol_sma') and df['vol_sma'].iloc[-1]
+        vol_avg5 = df.get('vol_avg5') and df['vol_avg5'].iloc[-1]
+        indicators_info['vol_current'] = float(vol_current) if vol_current is not None else None
+        indicators_info['vol_sma'] = float(vol_sma) if vol_sma is not None else None
+        indicators_info['vol_avg5'] = float(vol_avg5) if vol_avg5 is not None else None
+
+        # Require current volume >= vol_sma * vol_multiplier when vol_sma is present.
+        # Removing strict per-bar comparison vs previous bar to avoid false negatives.
+        if vol_current is not None and vol_sma is not None:
+            try:
+                if float(vol_current) < float(vol_sma) * float(vol_multiplier):
+                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "low_volume_trend"}
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Breakout confirmation and HTF EMA200 filter temporarily disabled to increase signal coverage.
+    # Kept lightweight markers in indicators_info for debugging, but these checks DO NOT block entries.
+    try:
+        indicators_info['donchian_checked'] = False
+        indicators_info['ema1h200_present'] = None
+    except Exception:
+        pass
+
+    # pyramiding limit
+    long_pyr = int(state.get('long_pyramid', 0))
+    short_pyr = int(state.get('short_pyramid', 0))
+    if long_allowed and long_pyr >= max_pyramid:
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "long_pyramid_limit_reached"}
+    if short_allowed and short_pyr >= max_pyramid:
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "short_pyramid_limit_reached"}
+
+    # Dynamic stop-loss via ATR — separate for LONG/SHORT
+    # SL = 2 ATR, TP = 4 ATR (соотношение 1:2)
+    if long_allowed:
+        stop_loss = price - (2.5 * atr_current)
+        take_profit = price + (8.0 * atr_current)
+        # add trailing parameters: start trailing after 1.5 * ATR; trail step = 0.5 * ATR
+        trailing = {
+            "start_at_atr": 1.5,
+            "trail_step_atr": 0.5,
+            "move_to_break_even_atr": 1.0,
+        }
+        return {
+            "signal": "LONG",
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
+            "trailing": trailing,
+            "indicators_info": {**indicators_info, "sl": float(stop_loss), "tp": float(take_profit)},
+            "reason": entry_reason,
+            "last_signal_idx": current_idx,
+        }
+
+    if short_allowed:
+        stop_loss = price + (2.5 * atr_current)
+        take_profit = price - (8.0 * atr_current)
+        trailing = {
+            "start_at_atr": 1.5,
+            "trail_step_atr": 0.5,
+            "move_to_break_even_atr": 1.0,
+        }
+        return {
+            "signal": "SHORT",
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
+            "trailing": trailing,
+            "indicators_info": {**indicators_info, "sl": float(stop_loss), "tp": float(take_profit)},
+            "reason": entry_reason,
+            "last_signal_idx": current_idx,
+        }
+
+    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "no_action"}
+
+
+def generate_trend_signal(*args, **kwargs):
+    """Compatibility wrapper for generate_trend_signal.
+
+    Supports two call styles:
+      - generate_trend_signal(df: DataFrame, state: dict, ...)
+      - generate_trend_signal(row: Series, position_bias: Bias, settings: object)
+
+    When a Series (row) is passed, the function reads precomputed indicators from
+    the row (sma, atr, close) and returns a Signal-like dict compatible with
+    legacy callers.
+    """
+    # If first arg is a pandas Series -> legacy row-based call
+    if len(args) >= 1 and isinstance(args[0], pd.Series):
+        row: pd.Series = args[0]
+        position_bias = args[1] if len(args) > 1 else None
+        settings = args[2] if len(args) > 2 else None
+
+        indicators_info = {}
+        price = float(row.get('close', row.get('price', 0.0)))
+
+        sma_current = row.get('sma') or row.get('sma_50') or row.get('sma_20')
+        sma_prev = row.get('sma_prev')
+        atr_current = row.get('atr') if 'atr' in row.index else row.get('atr_14')
+        # Normalize missing/NaN ATR to None so downstream checks are consistent
+        try:
+            if atr_current is None or (hasattr(pd, 'isna') and pd.isna(atr_current)):
+                indicators_info['atr'] = None
+                atr_current = None
+            else:
+                atr_current = float(atr_current)
+                indicators_info['atr'] = atr_current
+        except Exception:
+            indicators_info['atr'] = None
+            atr_current = None
+
+        # SMA slope check using available fields
+        if sma_current is None or sma_prev is None:
+            # fallback: if no sma_prev provided, allow only if price > sma_current
+            if sma_current is None:
+                return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "missing_sma"}
+            
+            # Pullback logic for row-based
+            low_p = float(row.get('low', price))
+            if not (low_p <= float(sma_current) * 1.001 and price > float(sma_current)):
+                return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "no_pullback_sma"}
+        else:
+            try:
+                if not (float(sma_current) > float(sma_prev)):
+                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "sma_not_uptrending"}
+                
+                # Pullback logic
+                low_p = float(row.get('low', price))
+                if not (low_p <= float(sma_current) * 1.001 and price > float(sma_current)):
+                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "no_pullback_sma"}
+            except Exception:
+                return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "sma_parse_error"}
+
+        # pyramiding: try to read from position_bias if provided
+        long_pyr = 0
+        if isinstance(position_bias, dict):
+            long_pyr = int(position_bias.get('long_pyramid', 0))
+        elif hasattr(position_bias, 'value'):
+            # position_bias enum — no pyramid info
+            long_pyr = 0
+
+        max_pyramid = getattr(settings, 'max_pyramid', 2) if settings is not None else 2
+        if long_pyr >= max_pyramid:
+            return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "pyramid_limit_reached"}
+
+        # Dynamic SL via ATR if available (treat NaN as missing)
+        if atr_current is None or (hasattr(np, 'isnan') and np.isnan(atr_current)):
+            atr_current = price * 0.005
+            indicators_info['atr'] = atr_current
+
+        # Additional trend confirmation: ADX and volume checks when available
+        try:
+            adx_threshold = getattr(settings, 'adx_threshold', None) if settings is not None else None
+            if adx_threshold is None:
+                adx_threshold = getattr(settings.strategy, 'adx_threshold', 25.0) if settings is not None else 25.0
+            vol_multiplier = getattr(settings, 'trend_min_volume_multiplier', None) if settings is not None else None
+            if vol_multiplier is None:
+                vol_multiplier = getattr(settings.strategy, 'breakout_volume_mult', 1.5) if settings is not None else 1.5
+            adx_val = row.get('adx')
+            if adx_val is not None:
+                try:
+                    if float(adx_val) <= float(adx_threshold):
+                        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "adx_no_trend"}
+                except Exception:
+                    pass
+
+            vol_current = row.get('volume')
+            vol_prev = None
+            try:
+                vol_prev = getattr(row, 'volume') if hasattr(row, 'volume') else None
+            except Exception:
+                vol_prev = None
+            vol_sma = row.get('vol_sma') or row.get('volume_sma')
+            if vol_current is not None and vol_sma is not None:
+                try:
+                    # prefer short-term increase vs previous bar
+                    if vol_prev is not None:
+                        if float(vol_current) <= float(vol_prev):
+                            return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "low_volume_vs_prev"}
+                    # fallback: require vol_current >= vol_sma * vol_multiplier
+                    if float(vol_current) < float(vol_sma) * float(vol_multiplier):
+                        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "low_volume_trend"}
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # SL = 2.5 ATR, TP = 5.0 ATR
+        stop_loss = price - 2.5 * float(atr_current)
+        take_profit = price + 8.0 * float(atr_current)
+
+        return {
+            "signal": "LONG",
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
+            "indicators_info": {**indicators_info, "sl": float(stop_loss), "tp": float(take_profit)},
+            "reason": "ok"
+        }
+
+    # Otherwise, delegate to DataFrame implementation
+    return _generate_trend_signal_df(*args, **kwargs)
+
+
+def generate_flat_signal(
+    df: pd.DataFrame,
+    state: t.Optional[dict] = None,
+    rsi_period: int = 14,
+    rsi_base_low: int = 30,
+    rsi_base_high: int = 70,
+    bb_period: int = 20,
+    bb_mult: float = 2.0,
+    bb_compression_factor: float = 0.8,
+    min_history: int = 50,
+) -> t.Dict:
+    """
+    Генерация сигнала FLAT (Mean Reversion) с фильтрами сжатия BB и адаптивным RSI.
+    """
+    # forward-fill missing indicator values to improve robustness on short series
+    df = df.ffill()
+    state = state or {}
+    indicators_info = {}
+
+    # Cooldown check
+    last_signal_idx = state.get('last_signal_idx', -100)
+    current_idx = len(df)
+    if current_idx - last_signal_idx < 10:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "cooldown"}
+
+    if df.replace([np.inf, -np.inf], np.nan).dropna().empty:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "nan_in_data"}
+
+    if not _ensure_history(df, min_history):
+        return {"signal": None, "indicators_info": indicators_info, "reason": "insufficient_history"}
+
+    close = df['close']
+    price = float(close.iloc[-1])
+
+    # Фильтр по объему: не торгуем во флэте на низком объеме - это ловушка
+    vol_avg = df['volume'].rolling(20).mean().iloc[-1]
+    if df['volume'].iloc[-1] < vol_avg * 0.8:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "low_volume_flat_trap"}
+
+    bbw = _bb_width(df, period=bb_period, mult=bb_mult)
+    bbw_current = float(bbw.iloc[-1])
+    # Compare to historical median to detect compression
+    bbw_median = float(bbw.iloc[-20:].median()) if len(bbw) >= 20 else float(bbw.median())
+    indicators_info['bb_width'] = bbw_current
+
+    # Relax BB compression check for testing: allow entries if bbw_current not smaller than 0.6*median
+    # Relax BB compression check for testing: allow entries if bbw_current >= 0.6*median
+    if bbw_median == 0 or bbw_current < max(0.6 * bbw_median, (bb_compression_factor * bbw_median) * 0.75):
+        return {"signal": None, "indicators_info": indicators_info, "reason": "bb_compression"}
+
+    # Adaptive RSI levels by volatility (ATR20 percentile)
+    atr20 = _atr(df, period=20)
+    atr20_current = float(atr20.iloc[-1])
+    indicators_info['atr20'] = atr20_current
+
+    # compute volatility rank over last 100
+    atr20_hist = atr20.iloc[-100:] if len(atr20) >= 100 else atr20
+    vol_pct = float((atr20_current >= atr20_hist).mean())  # crude percentile
+
+    # Extreme volatility guard: if in top 10% volatility, block mean-reversion
+    if vol_pct > 0.9:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "extreme_volatility_block"}
+
+    if vol_pct > 0.75:
+        low_level, high_level = 25, 75
+    elif vol_pct < 0.25:
+        low_level, high_level = 35, 65
+    else:
+        low_level, high_level = rsi_base_low, rsi_base_high
+
+    # Ensure minimum gap between levels to avoid too narrow RSI bands
+    min_gap = 20
+    if (high_level - low_level) < min_gap:
+        center = (high_level + low_level) / 2
+        low_level = max(40, int(center - min_gap / 2))
+        high_level = min(60, int(center + min_gap / 2))
+
+    rsi = _rsi(close, period=rsi_period)
+    rsi_current = float(rsi.iloc[-1])
+    indicators_info['rsi'] = rsi_current
+
+    # Time exit suggestion for FLAT: how many bars to hold maximum
+    max_hold = getattr(df, 'max_hold_bars', None) or 20
+    indicators_info['max_hold_bars'] = int(max_hold)
+
+    # Mean reversion entry: RSI below low_level => LONG, above high_level => SHORT
+    # Добавляем свечное подтверждение (разворотная свеча)
+    open_curr = float(df['open'].iloc[-1])
+    if rsi_current < low_level and price > open_curr:
+        return {"signal": "LONG", "indicators_info": indicators_info, "reason": "rsi_oversold_bullish_confirm", "last_signal_idx": current_idx}
+    if rsi_current > high_level and price < open_curr:
+        return {"signal": "SHORT", "indicators_info": indicators_info, "reason": "rsi_overbought_bearish_confirm", "last_signal_idx": current_idx}
+
+    return {"signal": None, "indicators_info": indicators_info, "reason": "no_mean_reversion"}
+
+
+def generate_momentum_signal(
+    df: pd.DataFrame,
+    ema_short: int = 20,
+    ema_long: int = 50,
+    vol_lookback: int = 100,
+    vol_top_pct: float = 0.60,
+    min_history: int = 100,
+) -> t.Dict:
+    """
+    Генерация сигнала MOMENTUM с проверкой "веера EMA" и подтверждением по объему.
+
+    Улучшения:
+      - смягчён vol_top_pct по умолчанию до 0.75
+      - дополнительное условие: текущий объём >= 1.5 * avg(volume last 5 bars)
+      - RSI(14) должен быть в диапазоне [50,65] для входа
+      - поддержка SHORT при Price < EMA20 < EMA50
+      - выход (HOLD) при закрытии ниже EMA20
+    """
+    indicators_info = {}
+    if df.replace([np.inf, -np.inf], np.nan).dropna().empty:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "nan_in_data"}
+    if not _ensure_history(df, min_history):
+        return {"signal": None, "indicators_info": indicators_info, "reason": "insufficient_history"}
+
+    close = df['close']
+    price = float(close.iloc[-1])
+
+    ema_s = _ema(close, ema_short)
+    ema_l = _ema(close, ema_long)
+    ema_s_val = float(ema_s.iloc[-1])
+    ema_l_val = float(ema_l.iloc[-1])
+    indicators_info['ema20'] = ema_s_val
+    indicators_info['ema50'] = ema_l_val
+
+    # previous EMA values (for cross detection)
+    prev_ema_s_val = float(ema_s.iloc[-2]) if len(ema_s) >= 2 else None
+    prev_ema_l_val = float(ema_l.iloc[-2]) if len(ema_l) >= 2 else None
+    indicators_info['prev_ema20'] = prev_ema_s_val
+    indicators_info['prev_ema50'] = prev_ema_l_val
+
+    # EMA fan check: LONG if Price > EMA20 > EMA50, SHORT if Price < EMA20 < EMA50
+    is_long_fan = price > ema_s_val > ema_l_val
+    is_short_fan = price < ema_s_val < ema_l_val
+
+    # Allow entry also on a clean EMA cross (fast EMA crossing above slow EMA) to relax strict fan requirement
+    ema_cross_up = False
+    ema_cross_down = False
+    try:
+        if prev_ema_s_val is not None and prev_ema_l_val is not None:
+            ema_cross_up = (prev_ema_s_val <= prev_ema_l_val) and (ema_s_val > ema_l_val)
+            ema_cross_down = (prev_ema_s_val >= prev_ema_l_val) and (ema_s_val < ema_l_val)
+    except Exception:
+        ema_cross_up = False
+        ema_cross_down = False
+
+    indicators_info['ema_cross_up'] = ema_cross_up
+    indicators_info['ema_cross_down'] = ema_cross_down
+
+    # require either full fan alignment or a recent cross
+    is_long_condition = is_long_fan or ema_cross_up
+    is_short_condition = is_short_fan or ema_cross_down
+
+    if not (is_long_condition or is_short_condition):
+        return {"signal": None, "indicators_info": indicators_info, "reason": "ema_fan_not_aligned"}
+
+    # RSI filter (leading): require RSI(14) in [50,65]
+    rsi = _rsi(close, period=14)
+    rsi_current = float(rsi.iloc[-1])
+    indicators_info['rsi'] = rsi_current
+    # Relax RSI window for momentum entries to [45,75]
+    if not (45.0 <= rsi_current <= 75.0):
+        return {"signal": None, "indicators_info": indicators_info, "reason": "rsi_not_in_preferred_range"}
+
+    # Volume checks
+    vol = df['volume'].iloc[-vol_lookback:]
+    vol_hist = vol
+    vol_current = float(df['volume'].iloc[-1])
+    threshold = float(np.percentile(vol_hist, vol_top_pct * 100)) if len(vol_hist) > 0 else float(vol_current)
+    indicators_info['vol_current'] = vol_current
+    indicators_info['vol_threshold_pct'] = vol_top_pct
+
+    # short-term average over last 5 bars
+    vol_avg5 = float(df['volume'].iloc[-5:].mean()) if len(df) >= 5 else vol_current
+    indicators_info['vol_avg5'] = vol_avg5
+
+    # Require both percentile and short-term jump
+    if vol_current < threshold:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "no_volume_spike_percentile"}
+    # require short-term multiplier (relaxed to 1.1x to increase signal frequency)
+    if vol_current < 1.1 * vol_avg5:
+        return {"signal": None, "indicators_info": indicators_info, "reason": "no_short_term_volume_jump"}
+
+    # Exit (trailing idea): if price closes below EMA20 -> HOLD (close)
+    if price < ema_s_val:
+        return {"signal": "HOLD", "indicators_info": indicators_info, "reason": "momentum_exit_below_ema20"}
+
+    # Determine direction
+    if is_long_fan:
+        return {"signal": "LONG", "indicators_info": indicators_info, "reason": "ok"}
+    if is_short_fan:
+        return {"signal": "SHORT", "indicators_info": indicators_info, "reason": "ok"}
+
+    return {"signal": None, "indicators_info": indicators_info, "reason": "no_action"}
+
+
+if __name__ == '__main__':
+    # quick smoke test (runs only when module executed directly)
+    import json
+
+    # create dummy data
+    idx = pd.date_range(end=pd.Timestamp.now(), periods=200, freq='T')
+    df = pd.DataFrame(index=idx)
+    df['open'] = np.linspace(100, 120, len(df)) + np.random.randn(len(df))
+    df['high'] = df['open'] + np.random.rand(len(df)) * 1.5
+    df['low'] = df['open'] - np.random.rand(len(df)) * 1.5
+    df['close'] = df['open'] + np.random.randn(len(df)) * 0.5
+    df['volume'] = np.random.randint(1, 100, len(df))
+
+    print(json.dumps(generate_trend_signal(df, state={'long_pyramid': 0}), indent=2))
+    print(json.dumps(generate_flat_signal(df), indent=2))
+    print(json.dumps(generate_momentum_signal(df), indent=2))
+

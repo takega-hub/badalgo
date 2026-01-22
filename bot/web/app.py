@@ -1511,22 +1511,64 @@ def api_update_symbol_strategy_settings(symbol: str):
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
-        
-        # Создаем настройки из данных
-        symbol_settings = SymbolStrategySettings.from_dict(data)
-        
+
+        # Попытка создать объект настроек (выполнит базовую десериализацию)
+        try:
+            symbol_settings = SymbolStrategySettings.from_dict(data)
+        except Exception as e:
+            return jsonify({"error": "Invalid settings payload", "details": str(e)}), 400
+
+        # Серверная валидация ключевых полей (предотвращает сохранение очевидно некорректных значений)
+        validation_errors = []
+
+        # boolean flags that should be booleans when present
+        bool_fields = [
+            'enable_trend_strategy', 'enable_flat_strategy', 'enable_ml_strategy', 'enable_momentum_strategy',
+            'enable_smc_strategy', 'enable_ict_strategy', 'enable_liquidation_hunter_strategy',
+            'enable_zscore_strategy', 'enable_vbo_strategy', 'enable_amt_of_strategy'
+        ]
+        for f in bool_fields:
+            v = getattr(symbol_settings, f, None)
+            if v is not None and not isinstance(v, bool):
+                validation_errors.append(f"{f} must be boolean")
+
+        # numeric ranges: (min, max)
+        numeric_ranges = {
+            'sma_length': (1, 1000),
+            'atr_period': (1, 200),
+            'atr_multiplier': (0.05, 20.0),
+            'vol_multiplier': (0.0, 1000.0),
+            'rsi_length': (2, 200),
+            'range_stop_loss_pct': (0.0, 1.0),
+            'range_tp_aggressive': (0, 1),
+        }
+        for key, (lo, hi) in numeric_ranges.items():
+            val = getattr(symbol_settings, key, None)
+            if val is None:
+                # possibly nested under strategy dict inside dataclass - try attribute access
+                continue
+            try:
+                fval = float(val)
+                if not (lo <= fval <= hi):
+                    validation_errors.append(f"{key} out of range [{lo}, {hi}]: {fval}")
+            except Exception:
+                validation_errors.append(f"{key} must be numeric")
+
+        if validation_errors:
+            return jsonify({"error": "Validation failed", "details": validation_errors}), 400
+
         # Сохраняем настройки для пары
         settings.set_strategy_settings_for_symbol(symbol, symbol_settings)
-        
+
         # Сохраняем в JSON файл
         save_symbol_strategy_settings(settings)
-        
+
         # Обновляем настройки в shared_settings для работающего бота
         from bot.shared_settings import set_settings
         set_settings(settings)
-        
+
         print(f"[web] Strategy settings updated for {symbol}: {symbol_settings.to_dict()}")
-        
+
         return jsonify({
             "success": True,
             "symbol": symbol,
@@ -3395,7 +3437,8 @@ def api_chart_data():
             # Trend стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_trend_strategy:
                 use_momentum = settings.enable_momentum_strategy
-                trend_signals = build_signals(df_ready, settings.strategy, use_momentum=use_momentum, use_liquidity=False)
+                # Pass full settings object and explicit params to ensure new build_signals
+                trend_signals = build_signals(df_ready, settings, use_momentum=use_momentum, use_liquidity=False, params=getattr(settings, 'strategy', {}))
                 _web_log(f"[web] Strategy processed")
                 for sig in trend_signals:
                     # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
@@ -3425,7 +3468,7 @@ def api_chart_data():
             
             # Flat стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_flat_strategy:
-                flat_signals = build_signals(df_ready, settings.strategy, use_momentum=False, use_liquidity=False)
+                flat_signals = build_signals(df_ready, settings, use_momentum=False, use_liquidity=False, params=getattr(settings, 'strategy', {}))
                 _web_log(f"[web] Strategy processed")
                 for sig in flat_signals:
                     # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
@@ -3546,7 +3589,7 @@ def api_chart_data():
             # Momentum стратегия - генерируем текущие сигналы (если стратегия включена)
             if settings.enable_momentum_strategy:
                 try:
-                    momentum_signals = build_signals(df_ready, settings.strategy, use_momentum=True, use_liquidity=False)
+                    momentum_signals = build_signals(df_ready, settings, use_momentum=True, use_liquidity=False, params=getattr(settings, 'strategy', {}))
                     _web_log(f"[web] Strategy processed")
                     for sig in momentum_signals:
                         # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
@@ -4178,4 +4221,3 @@ def run_web_server(host="127.0.0.1", port=5000, debug=False):
 
 if __name__ == "__main__":
     run_web_server(debug=True)
-

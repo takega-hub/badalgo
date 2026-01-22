@@ -517,6 +517,7 @@
             <button class="tab" onclick="showTab('risk', event)">Risk</button>
             <button class="tab" onclick="showTab('trades', event)">Trades</button>
             <button class="tab" onclick="showTab('signals', event)">Signals</button>
+            <button class="tab" onclick="showTab('smc_history', event)">SMC History</button>
             <div style="margin-left: auto; display: flex; gap: 10px;">
                 <button class="tab" onclick="showTab('settings', event)">Settings</button>
                 <button class="tab" onclick="logout()" style="color: #ff6666;">Logout</button>
@@ -1067,12 +1068,34 @@
             </div>
         </div>
         
-        <!-- Strategy Settings Tab -->
+        <!-- Strategy Settings Tab (Per-symbol editor for symbol_strategy_settings.json) -->
         <div id="strategy" class="tab-content">
             <div class="card">
-                <h2>Trend Strategy</h2>
-                <div id="strategy-form">
-                    <div class="loading">Loading settings...</div>
+                <h2>Strategy Settings (Per-symbol)</h2>
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label style="display:block; margin-bottom:6px; color:#aaa; font-weight:bold;">Select symbol to edit:</label>
+                    <select id="strategy-settings-symbol-select" style="padding:8px; background:#2a2a2a; color:#e0e0e0; border:1px solid #444; border-radius:4px; width:200px;">
+                        <option value="BTCUSDT">BTCUSDT</option>
+                        <option value="ETHUSDT">ETHUSDT</option>
+                        <option value="SOLUSDT">SOLUSDT</option>
+                    </select>
+                    <button class="btn" style="margin-left:10px;" onclick="loadSymbolStrategySettings()">🔄 Load</button>
+                    <button class="btn" style="margin-left:6px; background:#555; color:#fff;" onclick="copySymbolSettingsToAll()">📋 Copy to All</button>
+                </div>
+
+                <div style="margin-top:10px;">
+                    <label style="display:block; margin-bottom:6px; color:#aaa; font-weight:bold;">Symbol strategy JSON (editable)</label>
+                    <textarea id="symbol-strategy-json" style="width:100%; height:340px; padding:10px; background:#0f0f0f; color:#e0e0e0; border:1px solid #333; border-radius:6px; font-family: monospace; font-size:13px;">{
+    "enable_trend_strategy": true
+}</textarea>
+                    <div style="margin-top:12px; display:flex; gap:10px;">
+                        <button class="btn success" onclick="saveSymbolStrategySettings()">💾 Save</button>
+                        <button class="btn" onclick="revertSymbolStrategySettings()">↺ Reload</button>
+                        <div id="symbol-settings-status" style="margin-left:12px; color:#aaa; align-self:center;"></div>
+                    </div>
+                </div>
+                <div style="margin-top:14px; color:#888; font-size:0.9em;">
+                    <strong>Notes:</strong> This editor updates the per-symbol settings stored in <code>symbol_strategy_settings.json</code> via the web API. Use the JSON view to change enables and numeric parameters for TREND, FLAT and other strategies per symbol. The server validates and saves the data.
                 </div>
             </div>
         </div>
@@ -3991,6 +4014,95 @@
                 console.error('Error loading strategy settings for symbol:', error);
             }
         }
+
+        // --- Per-symbol JSON editor for symbol_strategy_settings.json ---
+        async function loadSymbolStrategySettings() {
+            const sel = document.getElementById('strategy-settings-symbol-select');
+            const statusEl = document.getElementById('symbol-settings-status');
+            const textarea = document.getElementById('symbol-strategy-json');
+            if (!sel || !textarea) return;
+            const symbol = sel.value || 'BTCUSDT';
+            if (statusEl) statusEl.textContent = 'Loading...';
+            try {
+                const resp = await fetch(`/api/settings/symbol/${encodeURIComponent(symbol)}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.error || 'No data');
+                // Pretty-print settings object
+                const pretty = JSON.stringify(data.settings, null, 4);
+                textarea.value = pretty;
+                if (statusEl) { statusEl.style.color = '#00ff88'; statusEl.textContent = 'Loaded'; }
+            } catch (e) {
+                console.error('Error loading symbol settings:', e);
+                if (statusEl) { statusEl.style.color = '#ff4444'; statusEl.textContent = 'Error loading'; }
+                alert('Error loading symbol settings: ' + (e.message || e));
+            }
+        }
+
+        async function saveSymbolStrategySettings() {
+            const sel = document.getElementById('strategy-settings-symbol-select');
+            const statusEl = document.getElementById('symbol-settings-status');
+            const textarea = document.getElementById('symbol-strategy-json');
+            if (!sel || !textarea) return;
+            const symbol = sel.value || 'BTCUSDT';
+            let payload;
+            try {
+                payload = JSON.parse(textarea.value);
+            } catch (e) {
+                alert('Invalid JSON: ' + e.message);
+                return;
+            }
+            if (statusEl) { statusEl.style.color = '#aaa'; statusEl.textContent = 'Saving...'; }
+            try {
+                const resp = await fetch(`/api/settings/symbol/${encodeURIComponent(symbol)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    const err = data.error || `HTTP ${resp.status}`;
+                    throw new Error(err);
+                }
+                if (statusEl) { statusEl.style.color = '#00ff88'; statusEl.textContent = 'Saved'; }
+                // Update shared UI
+                try { loadStrategySettingsForSymbol(); loadSymbolSettings(); } catch(_){}
+            } catch (e) {
+                console.error('Error saving symbol settings:', e);
+                if (statusEl) { statusEl.style.color = '#ff4444'; statusEl.textContent = 'Save failed'; }
+                alert('Error saving symbol settings: ' + (e.message || e));
+            }
+        }
+
+        function revertSymbolStrategySettings() {
+            loadSymbolStrategySettings();
+            const statusEl = document.getElementById('symbol-settings-status');
+            if (statusEl) { statusEl.style.color = '#aaa'; statusEl.textContent = 'Reverted'; }
+        }
+
+        async function copySymbolSettingsToAll() {
+            const sel = document.getElementById('strategy-settings-symbol-select');
+            if (!sel) return;
+            const symbol = sel.value || 'BTCUSDT';
+            if (!confirm(`Copy settings for ${symbol} to all symbols (BTCUSDT, ETHUSDT, SOLUSDT)?`)) return;
+            try {
+                const resp = await fetch(`/api/settings/symbol/${encodeURIComponent(symbol)}/copy-to-all`, { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) throw new Error(data.error || `HTTP ${resp.status}`);
+                alert(`Settings for ${symbol} copied to all symbols`);
+                // Reload editor for current symbol
+                loadSymbolStrategySettings();
+            } catch (e) {
+                console.error('Error copying settings to all:', e);
+                alert('Error copying settings: ' + (e.message || e));
+            }
+        }
+
+        // Auto-load when select changes
+        try {
+            const editorSelect = document.getElementById('strategy-settings-symbol-select');
+            if (editorSelect) editorSelect.addEventListener('change', loadSymbolStrategySettings);
+        } catch (e) {}
         
         async function copyStrategySettingsToAllSymbols() {
             const symbolSelect = document.getElementById('strategy-symbol-select');
@@ -6106,3 +6218,4 @@
     </script>
 </body>
 </html>
+

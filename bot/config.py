@@ -37,9 +37,20 @@ class StrategyParams:
     breakout_volume_mult: float = 1.0  # require volume > vol_sma * mult
 
     # Scaling - averaging on pullback
-    sma_length: int = 20
+    # Default SMA/EMA period for trend detection (can be tuned between 20-30)
+    sma_length: int = 30
     pullback_tolerance: float = 0.002  # 0.2% band around SMA20
     volume_spike_mult: float = 1.0  # require max(curr, prev) > vol_sma * mult
+
+    # Trend-specific tunables
+    trend_atr_multiplier: float = 2.5  # default ATR multiplier for trend stop-loss (2.5 recommended)
+    trend_max_pyramid: int = 0  # max number of pyramiding additions for trend (0 = disabled)
+    # Altcoins (ETH, SOL) may require wider stops due to higher volatility
+    trend_atr_multiplier_alt: float = 3.0
+    # Double EMA option: use EMA short/long crossover (e.g., 9/21) for trend confirmation when enabled
+    trend_double_ema_enabled: bool = True
+    trend_ema_short: int = 9
+    trend_ema_long: int = 21
 
     # Scaling - pyramiding on consolidation breakout
     consolidation_bars: int = 8
@@ -91,15 +102,6 @@ class StrategyParams:
     smc_session_london_end: int = 10
     smc_session_ny_start: int = 12
     smc_session_ny_end: int = 15
-    # Inversion FVG (iFVG): если цена пробивает FVG и закрепляется, зона инвертируется
-    smc_enable_ifvg: bool = False
-    smc_ifvg_confirm_bars: int = 3
-    # Учет спреда при входе (доля от цены, например 0.0005 = 0.05%)
-    smc_spread_pct: float = 0.0
-    # Partial close / breakeven при достижении TP1
-    smc_enable_partial_on_tp1: bool = True
-    smc_partial_close_pct: float = 0.5  # Закрывать 50% на tp1
-    smc_move_sl_to_be: bool = True  # Переводить SL в безубыток при достижении tp1
     
     # ICT Silver Bullet strategy parameters
     ict_enable_london_session: bool = True  # Торговать в Лондонскую сессию (08:00-16:00 UTC)
@@ -114,6 +116,22 @@ class StrategyParams:
     ict_liquidity_lookback_days: int = 1  # Количество дней для поиска ликвидности
     ict_atr_multiplier_sl: float = 2.0  # Множитель ATR для стоп-лосса
     ict_rr_ratio: float = 3.0  # Минимальное соотношение Risk/Reward (1:3) - улучшено с 2.0 для лучших результатов
+    ict_fvg_zone_expansion_mult: float = 0.15
+    ict_fvg_tolerance: float = 0.005
+    ict_mss_close_required: bool = True
+    ict_max_slippage_pct: float = 0.001
+    ict_max_time_drift_sec: int = 5
+    ict_round_number_step: Optional[float] = None
+    ict_round_number_tol: float = 0.002
+    ict_pdh_pdl_tol: float = 0.002
+    ict_breakeven_rr: float = 1.0
+    ict_partial_rr: float = 2.0
+    ict_partial_pct: float = 0.5
+    ict_breakeven_buffer_pct: float = 0.0005
+    ict_enable_alligator_trailing: bool = True
+    ict_trailing_buffer_pct: float = 0.0005
+    ict_mtf_bias_timeframe: str = "4H"
+    ict_risk_limit_pct: float = 0.10  # 10% limit
     
     # AMT & Order Flow Scalper (Absorption Squeeze) - базовые параметры для order flow анализа
     amt_of_lookback_seconds: int = 60  # окно анализа тиков (секунды)
@@ -786,6 +804,53 @@ def load_settings() -> AppSettings:
     if sma_length:
         try:
             settings.strategy.sma_length = int(sma_length)
+        except ValueError:
+            pass
+
+    # Trend ATR multiplier (stop distance)
+    trend_atr_multiplier = os.getenv("TREND_ATR_MULTIPLIER", "").strip()
+    if trend_atr_multiplier:
+        try:
+            settings.strategy.trend_atr_multiplier = float(trend_atr_multiplier)
+            print(f"[config] TREND_ATR_MULTIPLIER loaded from .env: {settings.strategy.trend_atr_multiplier}")
+        except ValueError:
+            pass
+
+    # Trend max pyramid (number of additional entries)
+    trend_max_pyramid = os.getenv("TREND_MAX_PYRAMID", "").strip()
+    if trend_max_pyramid:
+        try:
+            settings.strategy.trend_max_pyramid = int(trend_max_pyramid)
+            print(f"[config] TREND_MAX_PYRAMID loaded from .env: {settings.strategy.trend_max_pyramid}")
+        except ValueError:
+            pass
+
+    trend_atr_multiplier_alt = os.getenv("TREND_ATR_MULTIPLIER_ALT", "").strip()
+    if trend_atr_multiplier_alt:
+        try:
+            settings.strategy.trend_atr_multiplier_alt = float(trend_atr_multiplier_alt)
+            print(f"[config] TREND_ATR_MULTIPLIER_ALT loaded from .env: {settings.strategy.trend_atr_multiplier_alt}")
+        except ValueError:
+            pass
+
+    trend_double_ema_enabled = os.getenv("TREND_DOUBLE_EMA_ENABLED", "").strip().lower()
+    if trend_double_ema_enabled:
+        settings.strategy.trend_double_ema_enabled = trend_double_ema_enabled in ("true", "1", "yes", "on")
+        print(f"[config] TREND_DOUBLE_EMA_ENABLED loaded from .env: {settings.strategy.trend_double_ema_enabled}")
+
+    trend_ema_short = os.getenv("TREND_EMA_SHORT", "").strip()
+    if trend_ema_short:
+        try:
+            settings.strategy.trend_ema_short = int(trend_ema_short)
+            print(f"[config] TREND_EMA_SHORT loaded from .env: {settings.strategy.trend_ema_short}")
+        except ValueError:
+            pass
+
+    trend_ema_long = os.getenv("TREND_EMA_LONG", "").strip()
+    if trend_ema_long:
+        try:
+            settings.strategy.trend_ema_long = int(trend_ema_long)
+            print(f"[config] TREND_EMA_LONG loaded from .env: {settings.strategy.trend_ema_long}")
         except ValueError:
             pass
     

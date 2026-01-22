@@ -1,0 +1,38 @@
+{
+  "BTCUSDT": {
+    "enable_trend_strategy": true,
+    "enable_flat_strategy": true,
+    "strategy_priority": "trend",
+    "trend_params": {
+      "sma_period": 21,
+      "vol_multiplier": 1.2,
+      "tp_atr": 1.5,
+      "atr_multiplier": 2.5,
+      "max_pyramid": 0
+    }
+  },
+  "ETHUSDT": {
+    "enable_trend_strategy": true,
+    "enable_flat_strategy": true,
+    "strategy_priority": "trend",
+    "trend_params": {
+      "sma_period": 21,
+      "vol_multiplier": 1.2,
+      "tp_atr": 1.5,
+      "atr_multiplier": 3.0,
+      "max_pyramid": 0
+    }
+  },
+  "SOLUSDT": {
+    "enable_trend_strategy": true,
+    "enable_flat_strategy": true,
+    "strategy_priority": "trend",
+    "trend_params": {
+      "sma_period": 21,
+      "vol_multiplier": 1.2,
+      "tp_atr": 1.5,
+      "atr_multiplier": 3.0,
+      "max_pyramid": 0
+    }
+  }
+}

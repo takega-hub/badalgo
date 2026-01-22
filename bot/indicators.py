@@ -15,6 +15,7 @@ if "NUMBA_CACHE_DIR" not in os.environ:
         os.environ["NUMBA_CACHE_DIR"] = cache_dir
 
 import pandas as pd
+import numpy as np
 import pandas_ta as ta
 
 
@@ -159,9 +160,36 @@ def compute_15m_features(
     Adds 15m-level indicators required for entries and scaling.
     """
     df = df_15m.copy()
-    df["sma"] = ta.sma(df["close"], length=sma_length)
-    df["rsi"] = ta.rsi(df["close"], length=rsi_length)
-    df["vol_sma"] = ta.sma(df["volume"], length=breakout_lookback)
+    # SMA: use rolling with min_periods=1 to avoid NaNs on short series
+    df["sma"] = df["close"].rolling(window=sma_length, min_periods=1).mean()
+    # Previous SMA value (sma_prev) is required by row-based trend signal generator
+    # Shift by 1 to provide previous-period SMA for each row (will be NaN for first row)
+    df["sma_prev"] = df["sma"].shift(1)
+
+    # Also compute a trend EMA (faster) for trend strategy
+    try:
+        df["ema_trend"] = ta.ema(df["close"], length=sma_length)
+    except Exception:
+        # Fallback to simple EMA implementation
+        df["ema_trend"] = df["close"].ewm(span=sma_length, adjust=False).mean()
+    df["ema_prev"] = df["ema_trend"].shift(1)
+    # Compute short/long EMA pair for double-EMA crossover if configured
+    try:
+        df["ema_short"] = ta.ema(df["close"], length=kwargs.get('ema_short', df.attrs.get('ema_short', 9)))
+        df["ema_long"] = ta.ema(df["close"], length=kwargs.get('ema_long', df.attrs.get('ema_long', 21)))
+    except Exception:
+        df["ema_short"] = df["close"].ewm(span=9, adjust=False).mean()
+        df["ema_long"] = df["close"].ewm(span=21, adjust=False).mean()
+    # RSI: try pandas_ta, but ensure no NaNs remain (fallback to conservative 50)
+    try:
+        df["rsi"] = ta.rsi(df["close"], length=rsi_length)
+    except Exception:
+        df["rsi"] = pd.Series(index=df.index, dtype=float)
+    df["rsi"] = df["rsi"].fillna(method='bfill').fillna(50.0)
+
+    # Volume moving averages: ensure vol_sma and vol_avg5 always present (min_periods=1)
+    df["vol_sma"] = df["volume"].rolling(window=breakout_lookback, min_periods=1).mean()
+    df["vol_avg5"] = df["volume"].rolling(window=5, min_periods=1).mean()
     df["recent_high"] = df["high"].rolling(window=breakout_lookback).max().shift(1)
     df["recent_low"] = df["low"].rolling(window=breakout_lookback).min().shift(1)
     
@@ -184,22 +212,71 @@ def compute_15m_features(
     
     # Bollinger Bands для флэтовой стратегии
     # pandas-ta использует lower_std и upper_std отдельно, формат имени: BBU_{length}_{lower_std}_{upper_std}
-    bb = ta.bbands(df["close"], length=bb_length, lower_std=bb_std, upper_std=bb_std)
-    # Формируем правильное имя колонки
-    bb_col_suffix = f"_{bb_length}_{bb_std}_{bb_std}"
-    df["bb_upper"] = bb[f"BBU{bb_col_suffix}"]
-    df["bb_middle"] = bb[f"BBM{bb_col_suffix}"]
-    df["bb_lower"] = bb[f"BBL{bb_col_suffix}"]
+    # Bollinger Bands: try pandas_ta, but fallback to manual calculation if needed
+    # Bollinger Bands: try pandas_ta, but fallback to manual calculation if needed
+    bb = None
+    try:
+        bb = ta.bbands(df["close"], length=bb_length, lower_std=bb_std, upper_std=bb_std)
+    except Exception:
+        bb = None
+
+    if isinstance(bb, pd.DataFrame) and len(bb.columns) >= 3:
+        # Try to pick standard pandas_ta column names, otherwise take first three
+        try:
+            bb_col_suffix = f"_{bb_length}_{bb_std}_{bb_std}"
+            upper_col = f"BBU{bb_col_suffix}"
+            middle_col = f"BBM{bb_col_suffix}"
+            lower_col = f"BBL{bb_col_suffix}"
+            if upper_col in bb.columns and middle_col in bb.columns and lower_col in bb.columns:
+                df["bb_upper"] = bb[upper_col]
+                df["bb_middle"] = bb[middle_col]
+                df["bb_lower"] = bb[lower_col]
+            else:
+                # Fallback: take first three columns
+                df["bb_upper"] = bb.iloc[:, 0]
+                df["bb_middle"] = bb.iloc[:, 1]
+                df["bb_lower"] = bb.iloc[:, 2]
+        except Exception:
+            # As ultimate fallback, compute manually below
+            bb = None
+
+    if bb is None:
+        mid = df["close"].rolling(window=bb_length, min_periods=1).mean()
+        std = df["close"].rolling(window=bb_length, min_periods=1).std()
+        df["bb_middle"] = mid
+        df["bb_upper"] = mid + bb_std * std
+        df["bb_lower"] = mid - bb_std * std
+
+    # Ensure BB columns have no NaN by backfilling and using mid as fallback
+    df["bb_middle"] = df["bb_middle"].fillna(method='bfill').fillna(df["close"].rolling(window=bb_length, min_periods=1).mean())
+    df["bb_upper"] = df["bb_upper"].fillna(method='bfill').fillna(df["bb_middle"])
+    df["bb_lower"] = df["bb_lower"].fillna(method='bfill').fillna(df["bb_middle"])
+
+    # Bollinger Band width (relative) — used by flat/range strategies
+    # Protect against division by zero by replacing zeros in middle with NaN
+    mid_abs = df["bb_middle"].replace(0, np.nan).abs()
+    df["bb_width"] = ((df["bb_upper"] - df["bb_lower"]) / (mid_abs)).fillna(0.0)
+    # alias used in some places
+    df["bbw"] = df["bb_width"]
     
     # MACD для анализа тренда и моментума
-    macd_result = ta.macd(df["close"], fast=12, slow=26, signal=9)
+    macd_result = None
+    try:
+        macd_result = ta.macd(df["close"], fast=12, slow=26, signal=9)
+    except Exception:
+        macd_result = None
+
     if isinstance(macd_result, pd.DataFrame):
         df["macd"] = macd_result.get("MACD_12_26_9", macd_result.iloc[:, 0] if len(macd_result.columns) > 0 else pd.Series(index=df.index))
         df["macd_signal"] = macd_result.get("MACDs_12_26_9", macd_result.iloc[:, 1] if len(macd_result.columns) > 1 else pd.Series(index=df.index))
         df["macd_hist"] = macd_result.get("MACDh_12_26_9", macd_result.iloc[:, 2] if len(macd_result.columns) > 2 else pd.Series(index=df.index))
     elif isinstance(macd_result, pd.Series):
-        # Если вернулась только одна серия (MACD line)
         df["macd"] = macd_result
+        df["macd_signal"] = pd.Series(index=df.index, dtype=float)
+        df["macd_hist"] = pd.Series(index=df.index, dtype=float)
+    else:
+        # fallback: create empty numeric columns
+        df["macd"] = pd.Series(index=df.index, dtype=float)
         df["macd_signal"] = pd.Series(index=df.index, dtype=float)
         df["macd_hist"] = pd.Series(index=df.index, dtype=float)
     
