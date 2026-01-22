@@ -4172,8 +4172,21 @@ def run_live_from_api(
                     bot_state["current_phase"] = phase_value
                     
                     # Определяем направление рынка (bias)
+                    # Определяем направление рынка (bias)
                     bias = detect_market_bias(last_row)
-                    bias_value = bias.value if bias else None
+
+                    if bias:
+                        bias_value = bias.value
+                    else:
+                        # ГАРАНТИРОВАННЫЙ ЗАПАСНОЙ ВАРИАНТ (если detect_market_bias вернул None)
+                        price = last_row.get('close')
+                        sma = last_row.get('sma') or last_row.get('sma_200')
+                        
+                        if price and sma:
+                            bias_value = "long" if price > sma else "short"
+                        else:
+                            bias_value = None # Совсем нет данных
+
                     bot_state["current_bias"] = bias_value
                     
                     # Извлекаем ADX из последнего бара
