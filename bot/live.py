@@ -4177,35 +4177,20 @@ def run_live_from_api(
                     # --- В файле live.py ---
 
                     # 1. Пытаемся определить через индикаторы (DMI)
-                    # --- В live.py ---
+                    # --- ВРЕМЕННЫЙ ТЕСТ В live.py ---
+# Закомментируй старый расчет и вставь это:
 
                     bias = detect_market_bias(last_row)
-
                     if bias:
                         bias_value = bias.value
                     else:
-                        # Пытаемся найти цену (пробуем close, Close, или цену из индекса)
-                        price = last_row.get('close') or last_row.get('Close') or (last_row.values[0] if len(last_row) > 0 else None)
-                        
-                        # Пытаемся найти скользящую среднюю (любую колонку с 'ma')
-                        ma_key = next((k for k in last_row.index if 'ma' in k.lower()), None)
-                        ma_value = last_row.get(ma_key) if ma_key else None
-                        
-                        # Пытаемся найти цену открытия для сравнения
-                        open_p = last_row.get('open') or last_row.get('Open')
+                        # ПРИНУДИТЕЛЬНО СТАВИМ SHORT ДЛЯ ПРОВЕРКИ СВЯЗИ
+                        bias_value = "short" 
 
-                        if price is not None and ma_value is not None:
-                            bias_value = "short" if float(price) < float(ma_value) else "long"
-                        elif price is not None and open_p is not None:
-                            # Если нет MA, сравниваем Close и Open текущей свечи
-                            bias_value = "short" if float(price) < float(open_p) else "long"
-                        else:
-                            # Если вообще ничего не нашли, но фаза TREND и ADX > 25 (как у вас сейчас)
-                            # В текущих рыночных условиях ставим short
-                            bias_value = "short"
-
+                    # Теперь очень важно, чтобы это значение ушло в функцию обновления!
                     bot_state["current_bias"] = bias_value
-                    
+                    update_worker_status(symbol, current_phase=phase_value, current_adx=adx_value, current_bias=bias_value)
+                                        
                     # Извлекаем ADX из последнего бара
                     adx_value = None
                     try:
