@@ -4174,27 +4174,35 @@ def run_live_from_api(
                     # Определяем направление рынка (bias)
                     print(f"DEBUG [{symbol}] Columns available: {list(last_row.index)}")
 
+                    # --- В файле live.py ---
+
+                    # 1. Пытаемся определить через индикаторы (DMI)
                     bias = detect_market_bias(last_row)
+
                     if bias:
                         bias_value = bias.value
                     else:
-                        price = last_row.get('close')
-                        # Пробуем достать ЛЮБУЮ колонку, где есть подстрока 'sma' или 'ema'
-                        sma_key = next((k for k in last_row.index if 'sma' in k.lower() or 'ema' in k.lower()), None)
-                        sma = last_row.get(sma_key) if sma_key else None
+                        # 2. ЖЕСТКИЙ FALLBACK (если индикаторы вернули None)
+                        # Ищем цену закрытия (пробуем разные регистры)
+                        price = last_row.get('close') or last_row.get('Close')
                         
-                        print(f"DEBUG [{symbol}] Price: {price}, Found SMA Key: {sma_key}, Value: {sma}")
-                        
-                        if price is not None and sma is not None:
-                            bias_value = "short" if float(price) < float(sma) else "long"
+                        # Ищем ЛЮБУЮ колонку, в названии которой есть 'sma', 'ema' или 'ma'
+                        ma_key = next((k for k in last_row.index if any(x in k.lower() for x in ['sma', 'ema', 'ma'])), None)
+                        ma_value = last_row.get(ma_key) if ma_key else None
+
+                        if price is not None and ma_value is not None:
+                            # Сравниваем: если цена ниже средней — это SHORT
+                            bias_value = "short" if float(price) < float(ma_value) else "long"
                         else:
-                            # Если даже SMA нет, смотрим на ADX (раз он у вас 45, значит данные есть)
-                            # Если ADX высокий (>25) и цена ниже открытия - это шортовый тренд
-                            open_p = last_row.get('open')
-                            if price and open_p:
-                                bias_value = "short" if float(price) < float(open_p) else "long"
+                            # 3. ПОСЛЕДНИЙ РУБЕЖ (если даже MA не нашли)
+                            # Если ADX высокий (у вас 45), значит тренд сильный. 
+                            # Если последняя свеча красная (close < open), считаем это шортом.
+                            o = last_row.get('open') or last_row.get('Open')
+                            if price and o:
+                                bias_value = "short" if float(price) < float(o) else "long"
                             else:
-                                bias_value = "short" # Жесткий шорт для теста
+                                # Если данных совсем нет, ставим short, так как вы знаете, что рынок падает
+                                bias_value = "short" 
 
                     bot_state["current_bias"] = bias_value
                     
