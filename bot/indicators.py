@@ -185,7 +185,7 @@ def compute_15m_features(
         df["rsi"] = ta.rsi(df["close"], length=rsi_length)
     except Exception:
         df["rsi"] = pd.Series(index=df.index, dtype=float)
-    df["rsi"] = df["rsi"].fillna(method='bfill').fillna(50.0)
+    df["rsi"] = df["rsi"].bfill().fillna(50.0)
 
     # Volume moving averages: ensure vol_sma and vol_avg5 always present (min_periods=1)
     df["vol_sma"] = df["volume"].rolling(window=breakout_lookback, min_periods=1).mean()
