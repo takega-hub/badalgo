@@ -1,0 +1,26 @@
+{
+  "symbol": "BTC",
+  "test_type": "sequential",
+  "timestamp": "20260125_174604",
+  "initial_balance": 10000,
+  "total_periods": 6,
+  "summary": {
+    "periods_with_trades": 6,
+    "periods_without_trades": 0,
+    "total_trades": 250,
+    "total_reward": 611.393210123929,
+    "avg_trades_per_period": 41.666666666666664,
+    "avg_reward_per_period": 101.89886835398816,
+    "trades_per_1000_steps": 83.50033400133601
+  },
+  "detailed_results": [
+    {
+      "period_id": 1,
+      "period_info": {
+        "id": 1,
+        "start_idx": 0,
+        "end_idx": 500,
+        "length": 500,
+        "start_date": 69997,
+        "end_date": 70496,
+        "data": 

@@ -2,37 +2,43 @@
   "BTCUSDT": {
     "enable_trend_strategy": true,
     "enable_flat_strategy": true,
-    "strategy_priority": "trend",
-    "trend_params": {
-      "sma_period": 21,
-      "vol_multiplier": 1.2,
-      "tp_atr": 1.5,
-      "atr_multiplier": 2.5,
-      "max_pyramid": 0
-    }
+    "enable_ml_strategy": true,
+    "enable_momentum_strategy": true,
+    "enable_liquidity_sweep_strategy": false,
+    "enable_smc_strategy": true,
+    "enable_ict_strategy": true,
+    "enable_liquidation_hunter_strategy": false,
+    "enable_zscore_strategy": true,
+    "enable_vbo_strategy": true,
+    "enable_amt_of_strategy": true,
+    "strategy_priority": "trend"
   },
   "ETHUSDT": {
     "enable_trend_strategy": true,
     "enable_flat_strategy": true,
-    "strategy_priority": "trend",
-    "trend_params": {
-      "sma_period": 21,
-      "vol_multiplier": 1.2,
-      "tp_atr": 1.5,
-      "atr_multiplier": 3.0,
-      "max_pyramid": 0
-    }
+    "enable_ml_strategy": false,
+    "enable_momentum_strategy": false,
+    "enable_liquidity_sweep_strategy": false,
+    "enable_smc_strategy": false,
+    "enable_ict_strategy": false,
+    "enable_liquidation_hunter_strategy": false,
+    "enable_zscore_strategy": false,
+    "enable_vbo_strategy": false,
+    "enable_amt_of_strategy": false,
+    "strategy_priority": "trend"
   },
   "SOLUSDT": {
     "enable_trend_strategy": true,
     "enable_flat_strategy": true,
-    "strategy_priority": "trend",
-    "trend_params": {
-      "sma_period": 21,
-      "vol_multiplier": 1.2,
-      "tp_atr": 1.5,
-      "atr_multiplier": 3.0,
-      "max_pyramid": 0
-    }
+    "enable_ml_strategy": false,
+    "enable_momentum_strategy": false,
+    "enable_liquidity_sweep_strategy": false,
+    "enable_smc_strategy": false,
+    "enable_ict_strategy": false,
+    "enable_liquidation_hunter_strategy": false,
+    "enable_zscore_strategy": false,
+    "enable_vbo_strategy": false,
+    "enable_amt_of_strategy": false,
+    "strategy_priority": "trend"
   }
 }

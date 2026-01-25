@@ -3,6 +3,8 @@ import time
 import warnings
 import os
 import logging
+from bot.signal_diagnostics import SignalDiagnostics, quick_signal_check, print_signal_report
+from bot.signal_diagnostics import check_missing_values_report
 
 # Подавляем предупреждения scikit-learn ДО импорта библиотек
 # Устанавливаем переменную окружения ПЕРВОЙ
@@ -3464,6 +3466,9 @@ def run_live_from_api(
         signal_max_age_seconds: Максимальный возраст сигнала для обработки (в секундах)
         symbol: Торговая пара (если None, используется initial_settings.symbol для обратной совместимости)
     """
+    
+    signal_diagnostics = SignalDiagnostics(symbol, log_func=_log)
+
     from bot.shared_settings import get_settings
     
     # Определяем символ для этого воркера
@@ -4038,22 +4043,31 @@ def run_live_from_api(
                 interval = _timeframe_to_bybit_interval(current_settings.timeframe)
                 df_raw = client.get_kline_df(symbol=symbol, interval=interval, limit=current_settings.kline_limit)
                 
+                # Диагностика: логируем количество загруженных данных
+                if not df_raw.empty:
+                    _log(f"📥 Loaded {len(df_raw)} candles (limit={current_settings.kline_limit}, timeframe={interval})", symbol)
+                    # Проверяем достаточность данных для расчета индикаторов
+                    min_required = max(
+                        200,  # Минимум для SMC/ICT/Liquidation Hunter
+                        current_settings.strategy.ema_slow_length * 2,  # Для EMA
+                        current_settings.strategy.sma_length * 2,  # Для SMA
+                        50  # Минимум для базовых индикаторов
+                    )
+                    if len(df_raw) < min_required:
+                        _log(f"⚠️ WARNING: Only {len(df_raw)} candles loaded, but {min_required} recommended for reliable indicators", symbol)
+                else:
+                    _log(f"⚠️ WARNING: Received EMPTY dataframe for {symbol}!", symbol)
+                
                 # Проверяем stop_event после получения данных
                 if stop_event.is_set():
                     _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                     break
                 
-                # ДИАГНОСТИКА: Логируем информацию о полученных данных
                 if df_raw.empty:
-                    _log(f"⚠️ WARNING: Received EMPTY dataframe for {symbol}!", symbol)
-                    _log(f"   Interval: {interval}, Limit: {current_settings.kline_limit}", symbol)
-                else:
-                    _log(f"✅ Data fetched: {len(df_raw)} candles for {symbol} (interval: {interval})", symbol)
-                    if not df_raw.empty:
-                        last_candle_time = df_raw.index[-1] if hasattr(df_raw.index, '__getitem__') else None
-                        first_candle_time = df_raw.index[0] if hasattr(df_raw.index, '__getitem__') else None
-                        _log(f"   Time range: {first_candle_time} to {last_candle_time}", symbol)
-                        _log(f"   Last close price: ${df_raw.iloc[-1]['close']:.2f}" if 'close' in df_raw.columns else "   (no close price)", symbol)
+                    _log(f"⚠️ WARNING: df_raw is EMPTY for {symbol}, skipping this cycle", symbol)
+                    if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                        break
+                    continue
             except Exception as e:
                 print(f"[live] Error fetching klines: {e}")
                 _log(f"❌ ERROR fetching klines for {symbol}: {e}", symbol)
@@ -4107,6 +4121,10 @@ def run_live_from_api(
                 except ImportError:
                     pass
                 
+                # Диагностика: проверяем данные перед расчетом индикаторов
+                if len(df_raw) < 50:
+                    _log(f"⚠️ WARNING: Only {len(df_raw)} candles available, indicators may be unreliable", symbol)
+                
                 df_ind = prepare_with_indicators(
                     df_raw,
                     adx_length=current_settings.strategy.adx_length,
@@ -4122,6 +4140,24 @@ def run_live_from_api(
                     ema_timeframe=current_settings.strategy.momentum_ema_timeframe,
                 )
                 
+                # Диагностика: проверяем результат расчета индикаторов
+                if df_ind.empty:
+                    _log(f"❌ ERROR: df_ind is EMPTY after prepare_with_indicators for {symbol}!", symbol)
+                else:
+                    _log(f"✅ Indicators computed: {len(df_ind)} candles with indicators", symbol)
+                    # Проверяем, что ключевые индикаторы не все NaN в последних строках
+                    key_indicators = ['sma', 'rsi', 'atr', 'adx', 'bb_upper', 'bb_lower']
+                    last_row = df_ind.iloc[-1]
+                    missing_indicators = []
+                    for ind in key_indicators:
+                        if ind in df_ind.columns:
+                            if pd.isna(last_row[ind]):
+                                missing_indicators.append(ind)
+                    if missing_indicators:
+                        _log(f"⚠️ WARNING: Missing indicators in last row: {', '.join(missing_indicators)}", symbol)
+                    else:
+                        _log(f"✅ All key indicators available in last row", symbol)
+                
                 # Обновляем статус после вычисления индикаторов, перед обогащением
                 try:
                     from bot.multi_symbol_manager import update_worker_status
@@ -4136,11 +4172,10 @@ def run_live_from_api(
                     _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                     break
                 
-                # ДИАГНОСТИКА: Логируем результат обработки индикаторов
                 if df_ready.empty:
                     _log(f"⚠️ WARNING: df_ready is EMPTY after indicator computation for {symbol}!", symbol)
                 else:
-                    _log(f"✅ Indicators computed: {len(df_ready)} candles ready for {symbol}", symbol)
+                    _log(f"✅ Data enriched for strategies: {len(df_ready)} candles ready", symbol)
                 
                 # Определяем текущую фазу рынка из последнего бара (bot_state всегда инициализирован)
                 if not df_ready.empty:
@@ -4172,8 +4207,37 @@ def run_live_from_api(
                     bot_state["current_phase"] = phase_value
                     
                     # Определяем направление рынка (bias)
+
+                    # --- В файле live.py ---
+
+                    # 1. Пытаемся определить через индикаторы (DMI)
                     bias = detect_market_bias(last_row)
-                    bias_value = bias.value if bias else None
+
+                    if bias:
+                        bias_value = bias.value
+                    else:
+                        # 2. ЖЕСТКИЙ FALLBACK (если индикаторы вернули None)
+                        # Ищем цену закрытия (пробуем разные регистры)
+                        price = last_row.get('close') or last_row.get('Close')
+                        
+                        # Ищем ЛЮБУЮ колонку, в названии которой есть 'sma', 'ema' или 'ma'
+                        ma_key = next((k for k in last_row.index if any(x in k.lower() for x in ['sma', 'ema', 'ma'])), None)
+                        ma_value = last_row.get(ma_key) if ma_key else None
+
+                        if price is not None and ma_value is not None:
+                            # Сравниваем: если цена ниже средней — это SHORT
+                            bias_value = "short" if float(price) < float(ma_value) else "long"
+                        else:
+                            # 3. ПОСЛЕДНИЙ РУБЕЖ (если даже MA не нашли)
+                            # Если ADX высокий (у вас 45), значит тренд сильный. 
+                            # Если последняя свеча красная (close < open), считаем это шортом.
+                            o = last_row.get('open') or last_row.get('Open')
+                            if price and o:
+                                bias_value = "short" if float(price) < float(o) else "long"
+                            else:
+                                # Если данных совсем нет, ставим short, так как вы знаете, что рынок падает
+                                bias_value = "short" 
+
                     bot_state["current_bias"] = bias_value
                     
                     # Извлекаем ADX из последнего бара
@@ -4283,6 +4347,8 @@ def run_live_from_api(
             # Получаем настройки стратегий для текущей пары
             symbol_strategy_settings = current_settings.get_strategy_settings_for_symbol(symbol)
             
+            
+
             # Trend стратегия (старая или новая Momentum)
             if symbol_strategy_settings.enable_trend_strategy or symbol_strategy_settings.enable_momentum_strategy:
                 use_momentum = symbol_strategy_settings.enable_momentum_strategy
@@ -4301,63 +4367,15 @@ def run_live_from_api(
                         s for s in trend_signals
                         if s.reason.startswith("trend_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
                     ]
-                _log(f"📊 {strategy_name} strategy: generated {len(trend_signals)} total, {len(trend_generated)} actionable (LONG/SHORT)", symbol)
                 
-                # Диагностика для Momentum стратегии
-                if use_momentum and not trend_generated and len(trend_signals) == 0:
-                    if not df_ready.empty:
-                        last_row = df_ready.iloc[-1]
-                        ema_fast_1h = last_row.get('ema_fast_1h', np.nan)
-                        ema_slow_1h = last_row.get('ema_slow_1h', np.nan)
-                        price = last_row['close']
-                        if pd.notna([ema_fast_1h, ema_slow_1h]).all():
-                            _log(f"  💡 EMA Fast (1h): ${ema_fast_1h:.2f}, EMA Slow (1h): ${ema_slow_1h:.2f}, Price: ${price:.2f}", symbol)
-                            _log(f"    - EMA Fast > EMA Slow: {ema_fast_1h > ema_slow_1h} (бычий тренд)", symbol)
-                            _log(f"    - EMA Fast < EMA Slow: {ema_fast_1h < ema_slow_1h} (медвежий тренд)", symbol)
-                            _log(f"    - Price > EMA Fast: {price > ema_fast_1h}", symbol)
-                            _log(f"    - Price < EMA Fast: {price < ema_fast_1h}", symbol)
-                
-                # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
                 if trend_generated:
-                    # Сортируем по timestamp и берем последние 3 (самые свежие)
-                    sorted_signals = sorted(trend_generated, key=get_timestamp_for_sort)[-3:]
-                    for i, sig in enumerate(sorted_signals):
-                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
-                elif len(trend_signals) > 0:
-                    # Показываем примеры HOLD сигналов для диагностики
-                    hold_signals = [s for s in trend_signals if s.reason.startswith("trend_") and s.action == Action.HOLD]
-                    if hold_signals:
-                        _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
+                    _log(f"📊 {strategy_name} strategy: generated {len(trend_generated)} actionable signals", symbol)
                 else:
-                    _log(f"  ⚠️ No TREND signals generated at all", symbol)
-                    # Диагностика: проверяем условия
-                    if not df_ready.empty:
-                        last_row = df_ready.iloc[-1]
-                        adx = last_row.get("adx", np.nan)
-                        if pd.notna(adx):
-                            if adx <= current_settings.strategy.adx_threshold:
-                                _log(f"  💡 ADX ({adx:.2f}) <= порога ({current_settings.strategy.adx_threshold}) - рынок не в тренде", symbol)
-                            else:
-                                _log(f"  💡 ADX ({adx:.2f}) > порога ({current_settings.strategy.adx_threshold}) - рынок в тренде, но нет условий для входа", symbol)
-                                plus_di = last_row.get("plus_di", np.nan)
-                                minus_di = last_row.get("minus_di", np.nan)
-                                recent_high = last_row.get("recent_high", np.nan)
-                                recent_low = last_row.get("recent_low", np.nan)
-                                price = last_row["close"]
-                                volume = last_row.get("volume", 0)
-                                vol_sma = last_row.get("vol_sma", np.nan)
-                                vol_ok = pd.notna(vol_sma) and volume > vol_sma * current_settings.strategy.breakout_volume_mult
-                                
-                                _log(f"    - Price: ${price:.2f}, Recent High: ${recent_high:.2f}, Recent Low: ${recent_low:.2f}", symbol)
-                                _log(f"    - Volume OK: {vol_ok} (Volume: {volume:.0f}, Vol SMA: {vol_sma:.0f}, Mult: {current_settings.strategy.breakout_volume_mult})", symbol)
-                                _log(f"    - +DI: {plus_di:.2f}, -DI: {minus_di:.2f}", symbol)
+                    _log(f"⚠️ {strategy_name} strategy: enabled but generated 0 signals (total from build_signals: {len(trend_signals)})", symbol)
                 
                 for sig in trend_generated:
                     trend_actionable.append(sig)
                     all_signals.append(sig)
-            else:
-                _log(f"⚠️ TREND strategy is DISABLED for {symbol}", symbol)
             
             # Flat стратегия
             if symbol_strategy_settings.enable_flat_strategy:
@@ -4367,88 +4385,15 @@ def run_live_from_api(
                     s for s in flat_signals
                     if s.reason.startswith("range_") and s.action in (StrategyActionFlat.LONG, StrategyActionFlat.SHORT)
                 ]
-                strategy_name = "FLAT"
-                _log(f"📊 {strategy_name} strategy: generated {len(flat_signals)} total, {len(flat_generated)} actionable (LONG/SHORT)", symbol)
                 
-                # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
                 if flat_generated:
-                    # Сортируем по timestamp и берем последние 3 (самые свежие)
-                    sorted_signals = sorted(flat_generated, key=get_timestamp_for_sort)[-3:]
-                    for i, sig in enumerate(sorted_signals):
-                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
-                elif len(flat_signals) > 0:
-                    # Убираем логи о том, что нет LONG/SHORT сигналов - это нормальная ситуация
-                    # Показываем примеры HOLD сигналов для диагностики
-                    hold_signals = [s for s in flat_signals if s.reason.startswith("range_") and s.action == StrategyActionFlat.HOLD]
-                    if hold_signals:
-                        _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
+                    _log(f"📊 FLAT strategy: generated {len(flat_generated)} actionable signals", symbol)
                 else:
-                    _log(f"  ⚠️ No FLAT signals generated at all", symbol)
-                    if not df_ready.empty:
-                        last_row = df_ready.iloc[-1]
-                        adx = last_row.get("adx", np.nan)
-                        if np.isfinite(adx) and adx > current_settings.strategy.adx_threshold:
-                            _log(f"  💡 Hint: Market is in TREND phase (ADX={adx:.2f} > {current_settings.strategy.adx_threshold}). FLAT strategy works only in FLAT phase. Consider enabling TREND strategy.", symbol)
-                        
-                        # Диагностика: проверяем фазу рынка (TREND или FLAT)
-                        rsi = last_row.get("rsi", np.nan)
-                        bb_upper = last_row.get("bb_upper", np.nan)
-                        bb_lower = last_row.get("bb_lower", np.nan)
-                        price = last_row.get("close", np.nan)
-                        volume = last_row.get("volume", np.nan)
-                        vol_sma = last_row.get("vol_sma", np.nan)
-                        
-                        if np.isfinite([rsi, bb_upper, bb_lower, price, volume, vol_sma]).all():
-                            touch_lower = price <= bb_lower
-                            touch_upper = price >= bb_upper
-                            rsi_oversold = rsi <= current_settings.strategy.range_rsi_oversold
-                            rsi_overbought = rsi >= current_settings.strategy.range_rsi_overbought
-                            volume_ok = volume < vol_sma * current_settings.strategy.range_volume_mult
-                            volume_confirms = volume > vol_sma * 0.8
-                            
-                            # ДИАГНОСТИКА: Детальная информация о том, почему FLAT стратегия не генерирует сигналы
-                            if symbol == "BTCUSDT":
-                                # Проверяем условия для LONG сигнала
-                                long_conditions = {
-                                    "touch_lower": touch_lower,
-                                    "rsi_oversold": rsi_oversold,
-                                    "volume_ok": volume_ok,
-                                    "volume_confirms": volume_confirms,
-                                }
-                                long_ready = all(long_conditions.values())
-                                
-                                # Проверяем условия для SHORT сигнала
-                                short_conditions = {
-                                    "touch_upper": touch_upper,
-                                    "rsi_overbought": rsi_overbought,
-                                    "volume_ok": volume_ok,
-                                    "volume_confirms": volume_confirms,
-                                }
-                                short_ready = all(short_conditions.values())
-                                
-                                _log(f"  🔍 FLAT strategy conditions check for BTCUSDT:", symbol)
-                                _log(f"    LONG signal ready: {long_ready}", symbol)
-                                for cond_name, cond_value in long_conditions.items():
-                                    _log(f"      - {cond_name}: {cond_value}", symbol)
-                                _log(f"    SHORT signal ready: {short_ready}", symbol)
-                                for cond_name, cond_value in short_conditions.items():
-                                    _log(f"      - {cond_name}: {cond_value}", symbol)
-                                
-                                # Показываем, что нужно для сигнала
-                                if not long_ready and not short_ready:
-                                    missing_long = [k for k, v in long_conditions.items() if not v]
-                                    missing_short = [k for k, v in short_conditions.items() if not v]
-                                    _log(f"    💡 Missing conditions for LONG: {missing_long}", symbol)
-                                    _log(f"    💡 Missing conditions for SHORT: {missing_short}", symbol)
-                            
-                            _log(f"  📊 Current indicators: RSI={rsi:.2f} (oversold={rsi_oversold}, overbought={rsi_overbought}), Price=${price:.2f} (BB: ${bb_lower:.2f}-${bb_upper:.2f}, touch_lower={touch_lower}, touch_upper={touch_upper}), Vol={volume:.0f}/{vol_sma:.0f} ({volume/vol_sma:.2f}x, ok={volume_ok}, confirms={volume_confirms})", symbol)
+                    _log(f"⚠️ FLAT strategy: enabled but generated 0 signals (total from build_signals: {len(flat_signals)})", symbol)
                 
                 for sig in flat_generated:
                     flat_actionable.append(sig)
                     all_signals.append(sig)
-            else:
-                _log(f"⚠️ FLAT strategy is DISABLED for {symbol}", symbol)
             
             # Liquidity Sweep стратегия (снятие ликвидности) - ОТКЛЮЧЕНА
             # Стратегия отключена из-за плохих результатов
@@ -4468,7 +4413,6 @@ def run_live_from_api(
                         if stop_event.is_set():
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
-                        _log(f"🔍 SMC: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         # Промежуточное обновление статуса во время генерации
                         try:
                             from bot.multi_symbol_manager import update_worker_status
@@ -4485,19 +4429,11 @@ def run_live_from_api(
                             s for s in smc_signals
                             if s.action in (StrategyActionSMC.LONG, StrategyActionSMC.SHORT)
                         ]
-                        _log(f"📊 SMC strategy: generated {len(smc_signals)} total, {len(smc_generated)} actionable (LONG/SHORT)", symbol)
                         
-                        # Диагностика, если нет сигналов
-                        if not smc_generated:
-                            if len(smc_signals) == 0:
-                                if len(df_ready) < 1000:
-                                    _log(f"  💡 SMC works best with 1000+ candles. Current: {len(df_ready)} candles. Try increasing KLINE_LIMIT in .env", symbol)
-                                else:
-                                    _log(f"  💡 SMC: No zones found matching current trend and session filters. This is normal - waiting for setup", symbol)
-                            else:
-                                # Есть сигналы, но все HOLD
-                                hold_count = len([s for s in smc_signals if s.action == StrategyActionSMC.HOLD])
-                                _log(f"  💡 SMC: Generated {len(smc_signals)} signals, but all are HOLD (no actionable signals). Hold count: {hold_count}", symbol)
+                        if smc_generated:
+                            _log(f"📊 SMC strategy: generated {len(smc_generated)} actionable signals (total: {len(smc_signals)})", symbol)
+                        else:
+                            _log(f"⚠️ SMC strategy: enabled but generated 0 actionable signals (total: {len(smc_signals)})", symbol)
                         
                         for sig in smc_generated:
                             all_signals.append(sig)
@@ -4519,7 +4455,6 @@ def run_live_from_api(
                         if stop_event.is_set():
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
-                        _log(f"🔍 ICT: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         # Промежуточное обновление статуса во время генерации
                         try:
                             from bot.multi_symbol_manager import update_worker_status
@@ -4531,14 +4466,11 @@ def run_live_from_api(
                         update_worker_status(symbol, current_status="Running", last_action="ICT signals generated")
                         from bot.strategy import Action as StrategyActionIct
                         ict_generated = [s for s in ict_signals if s.action in (StrategyActionIct.LONG, StrategyActionIct.SHORT)]
-                        _log(f"📊 ICT strategy: generated {len(ict_signals)} total, {len(ict_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if ict_generated:
-                            # Сортируем по timestamp и берем последние 3 (самые свежие)
-                            sorted_signals = sorted(ict_generated, key=get_timestamp_for_sort)[-3:]
-                            for i, sig in enumerate(sorted_signals):
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                            _log(f"📊 ICT strategy: generated {len(ict_generated)} actionable signals (total: {len(ict_signals)})", symbol)
+                        else:
+                            _log(f"⚠️ ICT strategy: enabled but generated 0 actionable signals (total: {len(ict_signals)})", symbol)
                         
                         for sig in ict_generated:
                             all_signals.append(sig)
@@ -4575,7 +4507,6 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ ICT strategy is DISABLED for {symbol}", symbol)
-            
             # Liquidation Hunter стратегия
             if symbol_strategy_settings.enable_liquidation_hunter_strategy:
                 try:
@@ -4585,7 +4516,6 @@ def run_live_from_api(
                         if stop_event.is_set():
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
-                        _log(f"🔍 Liquidation Hunter: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         # Промежуточное обновление статуса во время генерации
                         try:
                             from bot.multi_symbol_manager import update_worker_status
@@ -4612,7 +4542,6 @@ def run_live_from_api(
                                 cfg=lh_of_cfg,
                             )
                             if lh_of_signals:
-                                _log(f"📊 LIQUIDATION_HUNTER (orderflow) generated {len(lh_of_signals)} additional signals", symbol)
                                 liquidation_hunter_signals.extend(lh_of_signals)
                         except Exception as e:
                             _log(f"⚠️ Error generating orderflow LH signals: {e}", symbol)
@@ -4623,14 +4552,11 @@ def run_live_from_api(
                             s for s in liquidation_hunter_signals
                             if s.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT)
                         ]
-                        _log(f"📊 LIQUIDATION_HUNTER strategy: generated {len(liquidation_hunter_signals)} total, {len(liquidation_hunter_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if liquidation_hunter_generated:
-                            # Сортируем по timestamp и берем последние 3 (самые свежие)
-                            sorted_signals = sorted(liquidation_hunter_generated, key=get_timestamp_for_sort)[-3:]
-                            for i, sig in enumerate(sorted_signals):
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                            _log(f"📊 Liquidation Hunter strategy: generated {len(liquidation_hunter_generated)} actionable signals (total: {len(liquidation_hunter_signals)})", symbol)
+                        else:
+                            _log(f"⚠️ Liquidation Hunter strategy: enabled but generated 0 actionable signals (total: {len(liquidation_hunter_signals)})", symbol)
                         
                         for sig in liquidation_hunter_generated:
                             all_signals.append(sig)
@@ -4667,7 +4593,6 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ Liquidation Hunter strategy is DISABLED for {symbol}", symbol)
-            
             # Z-Score стратегия
             if symbol_strategy_settings.enable_zscore_strategy:
                 try:
@@ -4677,7 +4602,6 @@ def run_live_from_api(
                         if stop_event.is_set():
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
-                        _log(f"🔍 Z-Score: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         # Промежуточное обновление статуса во время генерации (Z-Score может занимать много времени)
                         try:
                             from bot.multi_symbol_manager import update_worker_status
@@ -4700,7 +4624,6 @@ def run_live_from_api(
                             vp_z = build_volume_profile_from_ohlcv(df_vp, vp_cfg_z)
                             if vp_z:
                                 zscore_poc = float(vp_z["poc"])
-                                _log(f"📊 Z-Score: Volume Profile POC={zscore_poc:.2f} will be used as TP", symbol)
                         except Exception as e:
                             _log(f"⚠️ Z-Score: failed to build Volume Profile for POC TP: {e}", symbol)
 
@@ -4711,6 +4634,7 @@ def run_live_from_api(
                         zscore_generated = [s for s in zscore_signals if s.action in (StrategyActionZscore.LONG, StrategyActionZscore.SHORT)]
 
                         # CVD‑фильтр: если поток агрессии слишком силён, блокируем Z-Score сигналы (защита от "падающих ножей")
+                        zscore_before_cvd_filter = len(zscore_generated)
                         try:
                             trades = client.get_recent_trades(symbol, limit=400)
                             trades_df = _parse_trades(trades)
@@ -4724,14 +4648,13 @@ def run_live_from_api(
                         except Exception as e:
                             _log(f"⚠️ Z-Score: CVD filter failed, keeping signals unfiltered: {e}", symbol)
 
-                        _log(f"📊 ZSCORE strategy: generated {len(zscore_signals)} total, {len(zscore_generated)} actionable (LONG/SHORT)", symbol)
-                        
                         if zscore_generated:
-                            # Сортируем по timestamp и берем последние 3 (самые свежие)
-                            sorted_signals = sorted(zscore_generated, key=get_timestamp_for_sort)[-3:]
-                            for i, sig in enumerate(sorted_signals):
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                            _log(f"📊 Z-Score strategy: generated {len(zscore_generated)} actionable signals (total: {len(zscore_signals)}, before CVD filter: {zscore_before_cvd_filter})", symbol)
+                        else:
+                            if zscore_before_cvd_filter > 0:
+                                _log(f"⚠️ Z-Score strategy: {zscore_before_cvd_filter} signals filtered by CVD filter (total: {len(zscore_signals)})", symbol)
+                            else:
+                                _log(f"⚠️ Z-Score strategy: enabled but generated 0 actionable signals (total: {len(zscore_signals)})", symbol)
                         
                         for sig in zscore_generated:
                             # Если удалось посчитать POC, добавляем его в reason, чтобы TP/SL могли использовать TP=POC
@@ -4771,7 +4694,6 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ Z-Score strategy is DISABLED for {symbol}", symbol)
-            
             # VBO (Volatility Breakout) стратегия
             if symbol_strategy_settings.enable_vbo_strategy:
                 try:
@@ -4781,7 +4703,6 @@ def run_live_from_api(
                         if stop_event.is_set():
                             _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
                             break
-                        _log(f"🔍 VBO: Building signals with {len(df_ready)} candles for {symbol}", symbol)
                         # Промежуточное обновление статуса во время генерации
                         try:
                             from bot.multi_symbol_manager import update_worker_status
@@ -4796,14 +4717,11 @@ def run_live_from_api(
                             s for s in vbo_signals
                             if s.action in (StrategyActionVbo.LONG, StrategyActionVbo.SHORT)
                         ]
-                        _log(f"📊 VBO strategy: generated {len(vbo_signals)} total, {len(vbo_generated)} actionable (LONG/SHORT)", symbol)
                         
                         if vbo_generated:
-                            # Сортируем по timestamp и берем последние 3 (самые свежие)
-                            sorted_signals = sorted(vbo_generated, key=get_timestamp_for_sort)[-3:]
-                            for i, sig in enumerate(sorted_signals):
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
+                            _log(f"📊 VBO strategy: generated {len(vbo_generated)} actionable signals (total: {len(vbo_signals)})", symbol)
+                        else:
+                            _log(f"⚠️ VBO strategy: enabled but generated 0 actionable signals (total: {len(vbo_signals)})", symbol)
                         
                         for sig in vbo_generated:
                             all_signals.append(sig)
@@ -4835,7 +4753,7 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ VBO strategy is DISABLED for {symbol}", symbol)
-            
+            # AMT & Order Flow Scalper (Absorption + Breakout/Squeeze по профилю)
             # AMT & Order Flow Scalper (Absorption + Breakout/Squeeze по профилю)
             if symbol_strategy_settings.enable_amt_of_strategy:
                 try:
@@ -4853,14 +4771,6 @@ def run_live_from_api(
                     abs_cfg.max_price_drift_pct = current_settings.strategy.amt_of_max_price_drift_pct
                     vp_cfg.value_area_pct = current_settings.strategy.amt_of_value_area_pct
 
-                    _log(
-                        "🔍 AMT_OF: Checking AMT signals "
-                        f"(lookback={abs_cfg.lookback_seconds}s, "
-                        f"min_vol={abs_cfg.min_total_volume:,.0f}, min_cvd={abs_cfg.min_cvd_delta:,.0f}, "
-                        f"step={vp_cfg.price_step}, VA={vp_cfg.value_area_pct*100:.0f}%)",
-                        symbol,
-                    )
-
                     amt_signals = generate_amt_signals(
                         client=client,
                         symbol=symbol,
@@ -4871,6 +4781,11 @@ def run_live_from_api(
                         delta_aggr_mult=current_settings.strategy.amt_of_delta_aggr_mult,
                     )
 
+                    if amt_signals:
+                        _log(f"📊 AMT_OF strategy: generated {len(amt_signals)} signals", symbol)
+                    else:
+                        _log(f"⚠️ AMT_OF strategy: enabled but generated 0 signals", symbol)
+                    
                     if amt_signals:
                         for amt_signal in amt_signals:
                             # Добавляем в общий список сигналов
@@ -4896,13 +4811,12 @@ def run_live_from_api(
                                 )
                             except Exception as e:
                                 _log(f"⚠️ Failed to save AMT_OF signal to history: {e}", symbol)
-                    else:
-                        _log("ℹ️ AMT_OF: no valid AMT signals in current window", symbol)
                 except Exception as e:
                     _log(f"❌ Error in AMT_OF strategy: {e}", symbol)
                     import traceback
                     traceback.print_exc()
-            
+
+# ML стратегия
             # ML стратегия
             if symbol_strategy_settings.enable_ml_strategy and current_settings.ml_model_path:
                 try:
@@ -4928,27 +4842,6 @@ def run_live_from_api(
                     ml_generated = [s for s in ml_signals if s.action in (MlAction.LONG, MlAction.SHORT)]
                     _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
                     
-                    # Детальное логирование последних 3 сигналов для диагностики (отсортированных по времени)
-                    if ml_generated:
-                        # Сортируем по timestamp и берем последние 3 (самые свежие)
-                        sorted_signals = sorted(ml_generated, key=get_timestamp_for_sort)[-3:]
-                        for i, sig in enumerate(sorted_signals):
-                            ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                            _log(f"  [{i+1}] {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
-                    elif len(ml_signals) > 0:
-                        # Показываем примеры HOLD сигналов и статистику по уверенности
-                        hold_signals = [s for s in ml_signals if s.action == MlAction.HOLD]
-                        if hold_signals:
-                            _log(f"  Example HOLD signals: {[s.reason for s in hold_signals[:3]]}", symbol)
-                            # Показываем статистику по уверенности модели
-                            confidences = []
-                            for sig in ml_signals:
-                                if hasattr(sig, 'confidence') and sig.confidence is not None:
-                                    confidences.append(sig.confidence)
-                            if confidences:
-                                _log(f"  💡 ML confidence stats: min={min(confidences):.3f}, max={max(confidences):.3f}, mean={np.mean(confidences):.3f}, threshold={current_settings.ml_confidence_threshold:.3f}", symbol)
-                    else:
-                        _log(f"  ⚠️ No ML signals generated at all", symbol)
                     
                     import re
                     min_strength_map = {
@@ -4992,6 +4885,52 @@ def run_live_from_api(
                     import traceback
                     traceback.print_exc()
             
+            # ========== ДИАГНОСТИКА СИГНАЛОВ (НАЧАЛО) ==========
+            # Логируем общее количество сгенерированных сигналов
+            _log(f"📊 Total signals generated this cycle: {len(all_signals)}", symbol)
+            
+            # Полная диагностика (каждые 5 минут)
+            diagnostic_result = signal_diagnostics.check_signal_generation(
+                all_signals=all_signals,
+                strategy_settings=symbol_strategy_settings,
+                df_ready=df_ready,
+                current_price=current_price
+            )
+            
+            # Обновляем bot_state
+            if diagnostic_result.get("diagnostics_performed") and bot_state:
+                bot_state["signal_stats"] = {
+                    "last_diagnostic": diagnostic_result["timestamp"],
+                    "total_signals": diagnostic_result["signal_analysis"]["total"],
+                    "fresh_signals": diagnostic_result["signal_analysis"]["fresh_signals"],
+                    "market_phase": diagnostic_result["market_conditions"].get("market_phase", "unknown"),
+                    "market_bias": diagnostic_result["market_conditions"].get("market_bias", "unknown"),
+                    "recommendations": diagnostic_result["recommendations"]
+                }
+            
+            # Быстрая проверка каждый цикл
+            strategies_enabled_dict = {
+                "TREND": symbol_strategy_settings.enable_trend_strategy,
+                "FLAT": symbol_strategy_settings.enable_flat_strategy,
+                "ML": symbol_strategy_settings.enable_ml_strategy,
+                "MOMENTUM": symbol_strategy_settings.enable_momentum_strategy,
+                "SMC": symbol_strategy_settings.enable_smc_strategy,
+                "ICT": symbol_strategy_settings.enable_ict_strategy,
+                "LIQUIDATION_HUNTER": symbol_strategy_settings.enable_liquidation_hunter_strategy,
+                "ZSCORE": symbol_strategy_settings.enable_zscore_strategy,
+                "VBO": symbol_strategy_settings.enable_vbo_strategy,
+                "AMT_OF": symbol_strategy_settings.enable_amt_of_strategy
+            }
+            
+            quick_report = quick_signal_check(symbol, all_signals, strategies_enabled_dict)
+            
+            # Краткое логирование (только если есть свежие сигналы)
+            if quick_report["fresh_signals"] > 0:
+                _log(f"📈 Свежих сигналов: {quick_report['fresh_signals']}/{quick_report['total_signals']}", symbol)
+            elif quick_report["total_signals"] > 0:
+                _log(f"⚠️ Все сигналы не свежие: {quick_report['total_signals']} сигналов, но 0 свежих", symbol)
+            # ========== ДИАГНОСТИКА СИГНАЛОВ (КОНЕЦ) ==========
+
             # Разделяем сигналы по стратегиям
             # Только LONG и SHORT сигналы (HOLD игнорируем)
             from bot.strategy import Action as StrategyAction
@@ -5098,6 +5037,25 @@ def run_live_from_api(
             fresh_liquidity_signals = [s for s in liquidity_signals_only if is_signal_fresh(s, df_ready)]
             fresh_smc_signals = [s for s in smc_signals_only if is_signal_fresh(s, df_ready)]
             fresh_ict_signals = [s for s in ict_signals_only if is_signal_fresh(s, df_ready)]
+            fresh_liquidation_hunter_signals = [s for s in liquidation_hunter_signals_only if is_signal_fresh(s, df_ready)]
+            fresh_zscore_signals = [s for s in zscore_signals_only if is_signal_fresh(s, df_ready)]
+            fresh_vbo_signals = [s for s in vbo_signals_only if is_signal_fresh(s, df_ready)]
+            
+            # Логируем статистику по свежести сигналов
+            if main_strategy_signals:
+                _log(f"📊 TREND/FLAT: {len(fresh_main_signals)}/{len(main_strategy_signals)} свежих сигналов", symbol)
+            if ml_signals_only:
+                _log(f"📊 ML: {len(fresh_ml_signals)}/{len(ml_signals_only)} свежих сигналов", symbol)
+            if smc_signals_only:
+                _log(f"📊 SMC: {len(fresh_smc_signals)}/{len(smc_signals_only)} свежих сигналов", symbol)
+            if ict_signals_only:
+                _log(f"📊 ICT: {len(fresh_ict_signals)}/{len(ict_signals_only)} свежих сигналов", symbol)
+            if liquidation_hunter_signals_only:
+                _log(f"📊 Liquidation Hunter: {len(fresh_liquidation_hunter_signals)}/{len(liquidation_hunter_signals_only)} свежих сигналов", symbol)
+            if zscore_signals_only:
+                _log(f"📊 Z-Score: {len(fresh_zscore_signals)}/{len(zscore_signals_only)} свежих сигналов", symbol)
+            if vbo_signals_only:
+                _log(f"📊 VBO: {len(fresh_vbo_signals)}/{len(vbo_signals_only)} свежих сигналов", symbol)
             
             # Убрано verbose сообщение о том, что сигналы не свежие - это нормальное поведение
             
@@ -5108,12 +5066,6 @@ def run_live_from_api(
             if fresh_ml_signals:
                 fresh_ml_signals.sort(key=get_timestamp_for_sort)  # Сортировка по возрастанию timestamp
             
-            # Убрано verbose диагностическое сообщение - логируется только при проблемах
-            if fresh_smc_signals:
-                sig = fresh_smc_signals[-1]
-                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                _log(f"    Latest SMC: {sig.action.value} @ ${sig.price:.2f} - {sig.reason} [{ts_str}]", symbol)
-            _log(f"  • Total actionable: {len(all_signals)} signals", symbol)
             if ml_filtered:
                 _log(f"  • ML filtered out: {len(ml_filtered)} weak signals", symbol)
             
@@ -5902,28 +5854,6 @@ def run_live_from_api(
                 "vbo": vbo_sig_latest,
             }
             
-            # Логируем все доступные сигналы для отладки
-            if zscore_sig_latest:
-                is_fresh_zscore = is_signal_fresh(zscore_sig_latest, df_ready)
-                # Дополнительно проверяем возраст от текущего времени для более точной оценки
-                age_from_now_minutes = None
-                try:
-                    if isinstance(zscore_sig_latest.timestamp, pd.Timestamp):
-                        signal_ts = zscore_sig_latest.timestamp
-                        if signal_ts.tzinfo is None:
-                            signal_ts = signal_ts.tz_localize('UTC')
-                        else:
-                            signal_ts = signal_ts.tz_convert('UTC')
-                        current_time_utc = datetime.now(timezone.utc)
-                        age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
-                except Exception:
-                    pass
-                
-                ts_str_zscore = zscore_sig_latest.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(zscore_sig_latest.timestamp, 'strftime') else str(zscore_sig_latest.timestamp)
-                age_str = f", age: {age_from_now_minutes:.1f} min" if age_from_now_minutes is not None else ""
-                # Сигнал считается действительно свежим только если он свежий по функции И возраст <= 15 минут
-                is_really_fresh = is_fresh_zscore and (age_from_now_minutes is None or age_from_now_minutes <= 15)
-                _log(f"🔍 ZSCORE signal available: {zscore_sig_latest.action.value} @ ${zscore_sig_latest.price:.2f} ({zscore_sig_latest.reason}) [{ts_str_zscore}] fresh={is_really_fresh} (is_fresh={is_fresh_zscore}{age_str})", symbol)
             
             # Для обратной совместимости сохраняем main_sig и ml_sig
             main_sig = trend_sig if trend_sig else flat_sig
@@ -6087,110 +6017,42 @@ def run_live_from_api(
                     break
                 continue
             
-            # 3. Выбираем основной сигнал на основе приоритета и свежести
-            print(f"[live] 🔍 [{symbol}] Signal selection: {len(available_signals)} available signals")
-            is_fallback_signal = False  # Флаг для fallback сигналов (когда нет свежих)
-            for name, s in available_signals:
-                is_fresh = is_signal_fresh(s, df_ready)
-                # Дополнительно проверяем возраст от текущего времени для более точной оценки
-                age_from_now_minutes = None
-                is_strictly_fresh = False
-                try:
-                    if isinstance(s.timestamp, pd.Timestamp):
-                        signal_ts = s.timestamp
-                        if signal_ts.tzinfo is None:
-                            signal_ts = signal_ts.tz_localize('UTC')
-                        else:
-                            signal_ts = signal_ts.tz_convert('UTC')
-                        current_time_utc = datetime.now(timezone.utc)
-                        age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
-                        is_strictly_fresh = age_from_now_minutes <= 15
-                except Exception:
-                    pass
-                
-                ts_str = s.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(s.timestamp, 'strftime') else str(s.timestamp)
-                age_str = f", age: {age_from_now_minutes:.1f} min" if age_from_now_minutes is not None else ""
-                # Показываем оба значения: is_fresh (от функции) и is_strictly_fresh (строгая проверка возраста)
-                print(f"[live]   - {name.upper()}: {s.action.value} @ ${s.price:.2f} ({s.reason}) [{ts_str}] fresh={is_strictly_fresh} (is_fresh={is_fresh}{age_str})")
             
             if len(available_signals) == 1:
                 sig = available_signals[0][1]
-                strategy_name = available_signals[0][0]
-                # Проверяем, является ли единственный сигнал свежим
                 if not is_signal_fresh(sig, df_ready):
-                    # КРИТИЧЕСКИ ВАЖНО: Не обрабатываем старые сигналы, даже если это единственный доступный
                     sig = None
-                    ts_str = available_signals[0][1].timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(available_signals[0][1].timestamp, 'strftime') else str(available_signals[0][1].timestamp)
-                    print(f"[live] ⏳ Only one signal available from {strategy_name.upper()}, but it's not fresh (timestamp: {ts_str}). Waiting for fresh signals (max age: 15 minutes)...")
-                else:
-                    print(f"[live] ✅ Selected {strategy_name.upper()} signal: {sig.action.value} ({sig.reason}) @ ${sig.price:.2f}")
             else:
-                # 1. Сначала определяем свежие сигналы
                 fresh_available = [(name, s) for name, s in available_signals if is_signal_fresh(s, df_ready)]
-                if not df_ready.empty:
-                    last_candle_ts = df_ready.index[-1]
-                    last_candle_str = last_candle_ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(last_candle_ts, 'strftime') else str(last_candle_ts)
-                    print(f"[live] 🔍 [{symbol}] Fresh signals: {len(fresh_available)}/{len(available_signals)} (last candle: {last_candle_str})")
-                else:
-                    print(f"[live] 🔍 [{symbol}] Fresh signals: {len(fresh_available)}/{len(available_signals)}")
                 
                 if strategy_priority == "confluence":
-                    # Режим Конфлюэнции: Требуется подтверждение минимум от двух стратегий
-                    # Но разрешаем открытие при 1 свежем сигнале от приоритетной стратегии (SMC, ML), если нет конфликта
                     long_fresh = [s for name, s in fresh_available if s.action == Action.LONG]
                     short_fresh = [s for name, s in fresh_available if s.action == Action.SHORT]
                     
                     if len(long_fresh) >= 2:
                         long_fresh.sort(key=get_timestamp_for_sort)
                         sig = long_fresh[-1]
-                        print(f"[live] 💎 CONFLUENCE LONG: {len(long_fresh)} strategies agree! Using latest: {sig.reason}")
                     elif len(short_fresh) >= 2:
                         short_fresh.sort(key=get_timestamp_for_sort)
                         sig = short_fresh[-1]
-                        print(f"[live] 💎 CONFLUENCE SHORT: {len(short_fresh)} strategies agree! Using latest: {sig.reason}")
-                    elif long_fresh and short_fresh:
-                        print(f"[live] ⚠️ Confluence conflict: LONG vs SHORT fresh signals. Skipping.")
-                        sig = None
                     elif len(long_fresh) == 1 and not short_fresh:
-                        # 1 свежий LONG сигнал, нет конфликта - проверяем приоритет
                         sig = long_fresh[0]
                         sig_name = next((name for name, s in fresh_available if s == sig), "Unknown")
-                        # Проверяем, что это приоритетная стратегия (SMC или ML)
-                        if sig_name.lower() in ["smc", "ml"]:
-                            print(f"[live] 💎 CONFLUENCE LONG (PRIORITY): 1 {sig_name.upper()} signal, no conflict. Using: {sig.reason}")
-                        else:
-                            print(f"[live] ⏳ Confluence: 1 fresh signal ({sig_name}), but not from priority strategy (SMC/ML). Waiting for confirmation.")
+                        if sig_name.lower() not in ["smc", "ml"]:
                             sig = None
                     elif len(short_fresh) == 1 and not long_fresh:
-                        # 1 свежий SHORT сигнал, нет конфликта - проверяем приоритет
                         sig = short_fresh[0]
                         sig_name = next((name for name, s in fresh_available if s == sig), "Unknown")
-                        # Проверяем, что это приоритетная стратегия (SMC или ML)
-                        if sig_name.lower() in ["smc", "ml"]:
-                            print(f"[live] 💎 CONFLUENCE SHORT (PRIORITY): 1 {sig_name.upper()} signal, no conflict. Using: {sig.reason}")
-                        else:
-                            print(f"[live] ⏳ Confluence: 1 fresh signal ({sig_name}), but not from priority strategy (SMC/ML). Waiting for confirmation.")
+                        if sig_name.lower() not in ["smc", "ml"]:
                             sig = None
                     else:
-                        print(f"[live] ⏳ Confluence: Waiting for confirmation (fresh: {len(fresh_available)}).")
                         sig = None
                 elif strategy_priority == "hybrid":
-                    # Гибридный режим: Выбираем самый свежий из всех доступных СВЕЖИХ сигналов
-                    # БЕЗ приоритета какой-то определенной стратегии
-                    print(f"[live] 🔍 Hybrid mode: {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                     if fresh_available:
-                        # Если есть свежие сигналы - выбираем самый свежий по timestamp
-                        # КРИТИЧЕСКИ ВАЖНО: Выбираем ТОЛЬКО из свежих сигналов (не старше 15 минут)
-                        # В hybrid mode НЕТ приоритета стратегии - выбираем просто самый свежий сигнал
                         fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                         sig = fresh_available[-1][1]
-                        strategy_name = fresh_available[-1][0]
-                        ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                        print(f"[live] ✅ Hybrid FRESH: Selected {strategy_name.upper()} signal (no strategy priority, using freshest): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                     else:
-                        # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
                         sig = None
-                        print(f"[live] ⏳ Hybrid mode: No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
                 elif strategy_priority == "confluence":
                     # Режим Конфлюэнции уже обработан выше, не должно сюда попасть
                     sig = None
@@ -6343,24 +6205,12 @@ def run_live_from_api(
                             print("[live] ⚠️ Priority mode (no position): No signals available")
                     else:
                         # Позиция есть
-                        # В hybrid mode при наличии позиции тоже выбираем самый свежий сигнал без приоритета стратегии
                         if strategy_priority == "hybrid":
-                            # Hybrid mode: Выбираем самый свежий из всех доступных СВЕЖИХ сигналов
-                            # БЕЗ приоритета какой-то определенной стратегии, даже при наличии открытой позиции
-                            print(f"[live] 🔍 Hybrid mode (with position): {len(fresh_available)} fresh, {len(available_signals)} total signals available")
                             if fresh_available:
-                                # Если есть свежие сигналы - выбираем самый свежий по timestamp
-                                # КРИТИЧЕСКИ ВАЖНО: Выбираем ТОЛЬКО из свежих сигналов (не старше 15 минут)
-                                # В hybrid mode НЕТ приоритета стратегии - выбираем просто самый свежий сигнал
                                 fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                                 sig = fresh_available[-1][1]
-                                strategy_name = fresh_available[-1][0]
-                                ts_str = sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(sig.timestamp, 'strftime') else str(sig.timestamp)
-                                print(f"[live] ✅ Hybrid FRESH (with position): Selected {strategy_name.upper()} signal (no strategy priority, using freshest): {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]")
                             else:
-                                # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
                                 sig = None
-                                print(f"[live] ⏳ Hybrid mode (with position): No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...")
                         else:
                             # Позиция есть - приоритет защищает её (для режимов с приоритетом конкретной стратегии)
                             # Получаем entry_reason для определения стратегии, которая открыла позицию
@@ -6379,25 +6229,8 @@ def run_live_from_api(
                         position_strategy_type = get_strategy_type_from_signal(entry_reason) if entry_reason else None
                         is_priority_position = position_strategy_type == strategy_priority
                         
-                        # Логируем информацию о позиции и приоритете
-                        print(f"[live] 🔍 [{symbol}] Position analysis:")
-                        print(f"[live]   Position strategy: {position_strategy_type or 'unknown'}")
-                        print(f"[live]   Priority strategy: {strategy_priority}")
-                        print(f"[live]   Is priority position: {is_priority_position}")
-                        print(f"[live]   Position bias: {current_position_bias.value if current_position_bias else 'None'}")
-                        print(f"[live]   Available strategy signals: {list(strategy_signals.keys())}")
-                        
                         if is_priority_position:
-                            # Позиция открыта по приоритетной стратегии - защищаем её
-                            # Игнорируем противоположные сигналы от других стратегий
-                            # Разрешаем только сигналы в том же направлении (для усиления) или свежий сигнал от приоритетной стратегии (для пересмотра)
                             priority_sig = strategy_signals.get(strategy_priority)
-                            
-                            print(f"[live]   Priority signal from {strategy_priority}: {'Found' if priority_sig else 'Not found'}")
-                            if priority_sig:
-                                print(f"[live]     Action: {priority_sig.action.value}, Price: ${priority_sig.price:.2f}, Reason: {priority_sig.reason}")
-                                ts_str = priority_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(priority_sig.timestamp, 'strftime') else str(priority_sig.timestamp)
-                                print(f"[live]     Timestamp: {ts_str}")
                             
                             # Проверяем свежесть приоритетного сигнала
                             priority_sig_fresh = False
@@ -6432,23 +6265,14 @@ def run_live_from_api(
                             # КРИТИЧЕСКИ ВАЖНО: Только свежие сигналы (не старше 15 минут)
                             if priority_sig and priority_sig_fresh:
                                 sig = priority_sig
-                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
-                                print(f"[live] ✅ Priority position: Fresh {strategy_priority.upper()} signal{age_str} - can review position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
-                                # Нет свежего сигнала от приоритетной стратегии
-                                # Ищем сигналы в том же направлении для усиления позиции
-                                same_direction_signals = [(name, s) for name, s in fresh_available 
+                                same_direction_signals = [(name, s) for name, s in fresh_available
                                                          if s.action.value == current_position_bias.value]
                                 if same_direction_signals:
-                                    # Есть сигналы в том же направлении - используем самый свежий для усиления
                                     same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                                     sig = same_direction_signals[-1][1]
-                                    strategy_name = same_direction_signals[-1][0]
-                                    print(f"[live] ✅ Priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
                                 else:
-                                    # Нет сигналов для усиления - не обрабатываем противоположные сигналы
                                     sig = None
-                                    print(f"[live] 🛡️ Priority position: Protected from opposite signals. Waiting for same direction or fresh priority signal.")
                         else:
                             # Позиция открыта НЕ по приоритетной стратегии
                             # Сначала проверяем сигналы от той же стратегии, что открыла позицию (SAME STRATEGY REVERSAL)
@@ -6486,11 +6310,6 @@ def run_live_from_api(
                             # Новый свежий сигнал от приоритетной стратегии может закрыть/развернуть позицию
                             priority_sig = strategy_signals.get(strategy_priority)
                             
-                            print(f"[live]   Priority signal from {strategy_priority}: {'Found' if priority_sig else 'Not found'}")
-                            if priority_sig:
-                                print(f"[live]     Action: {priority_sig.action.value}, Price: ${priority_sig.price:.2f}, Reason: {priority_sig.reason}")
-                                ts_str = priority_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(priority_sig.timestamp, 'strftime') else str(priority_sig.timestamp)
-                                print(f"[live]     Timestamp: {ts_str}")
                             
                             # Проверяем свежесть приоритетного сигнала
                             priority_sig_fresh = False
@@ -6537,45 +6356,25 @@ def run_live_from_api(
                             # 4. Свежие противоположные сигналы от других стратегий
                             
                             if same_strategy_sig and same_strategy_sig_age <= 60:
-                                # Есть противоположный сигнал от той же стратегии, что открыла позицию - используем его (приоритет #1)
                                 sig = same_strategy_sig
-                                age_str = f" (age: {same_strategy_sig_age:.1f} min)" if same_strategy_sig_age < float('inf') else ""
-                                freshness_note = "Fresh" if same_strategy_sig_fresh else "Not fresh but from same strategy"
-                                print(f"[live] ✅ Non-priority position: {freshness_note} {position_strategy_type.upper()} signal{age_str} (SAME STRATEGY REVERSAL) - closing and opening new position: {same_strategy_sig.action.value} @ ${same_strategy_sig.price:.2f} ({same_strategy_sig.reason})")
                             elif priority_sig and (priority_sig_fresh or (is_opposite_priority and age_from_now_minutes <= 60)):
-                                # Есть сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
                                 sig = priority_sig
-                                age_str = f" (age: {age_from_now_minutes:.1f} min)" if age_from_now_minutes < float('inf') else ""
-                                freshness_note = "Fresh" if priority_sig_fresh else "Not fresh but opposite from priority strategy"
-                                print(f"[live] ✅ Non-priority position: {freshness_note} {strategy_priority.upper()} signal{age_str} - can review/close position: {priority_sig.action.value} @ ${priority_sig.price:.2f} ({priority_sig.reason})")
                             else:
-                                # Нет свежего сигнала от приоритетной стратегии (или противоположный сигнал старше 1 часа)
-                                # Сначала проверяем противоположные свежие сигналы от других стратегий (для закрытия/разворота)
                                 opposite_action = Action.LONG if current_position_bias == Bias.SHORT else Action.SHORT
-                                opposite_fresh_signals = [(name, s) for name, s in fresh_available 
+                                opposite_fresh_signals = [(name, s) for name, s in fresh_available
                                                           if s.action == opposite_action]
                                 if opposite_fresh_signals:
-                                    # Есть свежий противоположный сигнал - используем его для закрытия/разворота позиции
                                     opposite_fresh_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                                     sig = opposite_fresh_signals[-1][1]
-                                    strategy_name = opposite_fresh_signals[-1][0]
-                                    print(f"[live] ✅ Non-priority position: Fresh opposite signal from {strategy_name.upper()} - can close/reverse position: {sig.action.value} @ ${sig.price:.2f} ({sig.reason})")
                                 else:
-                                    # Нет противоположных свежих сигналов - ищем сигналы в том же направлении для усиления позиции
-                                    same_direction_signals = [(name, s) for name, s in fresh_available 
-                                                             if s.action.value == current_position_bias.value]
+                                    same_direction_signals = [(name, s) for name, s in fresh_available
+                                                              if s.action.value == current_position_bias.value]
                                     if same_direction_signals:
-                                        # Есть сигналы в том же направлении - используем самый свежий для усиления
                                         same_direction_signals.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                                         sig = same_direction_signals[-1][1]
-                                        strategy_name = same_direction_signals[-1][0]
-                                        # ВАЖНО: Устанавливаем флаг для добавления к позиции, а не открытия новой
                                         should_add_to_position = True
-                                        print(f"[live] ✅ Non-priority position: Same direction signal from {strategy_name.upper()} for position enhancement: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) - will ADD to position")
                                     else:
-                                        # Нет сигналов для усиления - не обрабатываем противоположные сигналы
                                         sig = None
-                                        print(f"[live] ⏸️ Non-priority position: No same direction signals. Waiting for fresh priority signal or same direction signal.")
 
             # 4. Проверяем подтверждение (agreement) для добавления к позиции
             if sig and sig.action != Action.HOLD:
@@ -6607,9 +6406,7 @@ def run_live_from_api(
             # Если свежих сигналов нет - бот ждет новых сигналов, НЕ открывает позиции по старым
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
-            strategy_name_for_log = get_strategy_type_from_signal(sig.reason).upper()
             strategy_type = get_strategy_type_from_signal(sig.reason)
-            print(f"[live] 🔍 Freshness check for {strategy_name_for_log} signal: is_fresh={is_fresh_check}, timestamp={ts}")
             
             # СТРОГИЙ критерий: ТОЛЬКО сигналы не старше 15 минут от текущего времени
             max_age_minutes = 15  # 15 минут - максимальный возраст сигнала для открытия позиции
@@ -9097,18 +8894,11 @@ def run_live_from_api(
             # ВАЖНО: Если обработан свежий сигнал ИЛИ есть свежие сигналы - используем минимальный интервал для немедленной проверки
             # Это гарантирует, что новые сигналы обрабатываются сразу же, как только попадают в историю
             if fresh_signal_processed:
-                # Минимальный интервал (1 секунда) для немедленной проверки новых сигналов после обработки свежего
                 wait_interval = 1.0
-                _log(f"⚡ Fresh signal was processed - using minimal interval ({wait_interval}s) to check for new signals immediately", symbol)
             elif fresh_signals_available:
-                # Минимальный интервал (1 секунда) если есть свежие сигналы, но они еще не обработаны
-                # Это позволяет обработать их в следующей итерации немедленно, без задержек
                 wait_interval = 1.0
-                _log(f"⚡ Fresh signals available - using minimal interval ({wait_interval}s) to process them immediately", symbol)
             else:
-                # Обычный интервал, если нет свежих сигналов
                 wait_interval = current_settings.live_poll_seconds
-                _log(f"⏳ No fresh signals - using normal interval ({wait_interval}s)", symbol)
             
             if _wait_with_stop_check(stop_event, wait_interval, symbol):
                 break

@@ -1,0 +1,25 @@
+{
+  "total_features": 13,
+  "observation_features": [
+    "close",
+    "volume",
+    "returns",
+    "volatility",
+    "volume_ratio",
+    "sma_20",
+    "sma_50",
+    "price_vs_sma20",
+    "sma20_vs_sma50",
+    "atr_percent",
+    "rsi_norm",
+    "adx_norm",
+    "momentum_norm"
+  ],
+  "data_shape": [
+    99996,
+    22
+  ],
+  "train_size": 69997,
+  "val_size": 14999,
+  "test_size": 15000
+}

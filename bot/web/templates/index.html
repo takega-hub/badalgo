@@ -1913,11 +1913,20 @@
                 const marketPhaseEl = document.getElementById('market-phase');
                 if (marketPhaseEl) {
                     let displayText = phaseValue !== '-' ? phaseValue.toUpperCase() : '-';
-                    if (bias) {
-                        // Оставляем красивое отображение BULLISH/BEARISH
+                    if (bias && phaseValue === 'trend') {
+                        // Окрашиваем только слово TREND в зависимости от bias
+                        const trendColor = biasLower === 'long' ? '#00ff88' : '#ff4444'; // Зеленый для LONG, красный для SHORT
+                        const biasText = biasLower === 'long' ? 'BULLISH' : 'BEARISH';
+                        displayText = `<span style="color: ${trendColor}; font-weight: bold;">TREND</span> (${biasText})`;
+                    } else if (bias) {
+                        // Для других фаз просто добавляем bias
                         displayText += ` (${biasLower === 'long' ? 'BULLISH' : 'BEARISH'})`;
+                        displayText = `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>`;
+                    } else {
+                        // Если нет bias, используем стандартный цвет
+                        displayText = phaseValue !== '-' ? `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>` : '-';
                     }
-                    marketPhaseEl.innerHTML = phaseValue !== '-' ? `<span style="color: ${phaseColor}; font-weight: bold;">${displayText}</span>` : '-';
+                    marketPhaseEl.innerHTML = displayText;
                 }
                 
                 // ADX (для выбранного символа, используем из bot_status)

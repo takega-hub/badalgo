@@ -983,6 +983,7 @@ def api_status():
                             "current_status": bot_state.get("current_status", "Stopped"),
                             "current_phase": bot_state.get("current_phase"),
                             "current_adx": bot_state.get("current_adx"),
+                            "current_bias": bot_state.get("current_bias"),
                             "last_action": bot_state.get("last_action"),
                             "last_action_time": bot_state.get("last_action_time"),
                             "last_signal": bot_state.get("last_signal"),

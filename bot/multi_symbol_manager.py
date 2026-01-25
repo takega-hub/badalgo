@@ -866,12 +866,14 @@ class MultiSymbolManager:
                 
                 current_phase = updates.get("current_phase")
                 current_adx = updates.get("current_adx")
+                current_bias = updates.get("current_bias")
                 
                 workers_status[symbol] = {
                     "is_running": worker.running,
                     "current_status": current_status,
                     "current_phase": current_phase,
                     "current_adx": current_adx,
+                    "current_bias": current_bias,
                     "last_action": updates.get("last_action"),
                     "last_action_time": updates.get("last_action_time"),
                     "last_signal": updates.get("last_signal"),
