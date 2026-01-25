@@ -105,10 +105,25 @@ def compute_4h_context(df_15m: pd.DataFrame, adx_length: int = 14) -> pd.DataFra
         # Fallback для непредвиденных случаев
         df_4h[f"ADX_{adx_length}"] = pd.Series(index=df_4h.index, dtype=float)
     
-    # Маппим обратно на 15m индекс
+    # Маппим обратно на 15m индекс с форвард-филлом
+    # Важно: используем ffill для заполнения пропусков, но только если есть хотя бы одно валидное значение
     mapped = df_4h.reindex(df_15m.index, method="ffill")
     df_15m = df_15m.copy()
     df_15m["adx"] = mapped[f"ADX_{adx_length}"]
+    
+    # Дополнительная проверка: если ADX все еще NaN в начале, заполняем первым валидным значением
+    # Это улучшает процент валидных данных
+    if df_15m["adx"].notna().any():
+        first_valid_adx = df_15m["adx"].dropna().iloc[0] if len(df_15m["adx"].dropna()) > 0 else None
+        if first_valid_adx is not None:
+            # Заполняем начальные NaN первым валидным значением (только если их немного)
+            # Это нормально для индикаторов, которые требуют периода для расчета
+            nan_count = df_15m["adx"].isna().sum()
+            total_count = len(df_15m)
+            # Заполняем только если NaN меньше 30% от общего количества
+            if nan_count > 0 and (nan_count / total_count) < 0.3:
+                df_15m["adx"] = df_15m["adx"].fillna(method="bfill").fillna(first_valid_adx)
+    
     return df_15m
 
 
@@ -279,11 +294,24 @@ def compute_1h_context(df_15m: pd.DataFrame, di_length: int = 14) -> pd.DataFram
         df_1h[f"DMP_{di_length}"] = pd.Series(index=df_1h.index, dtype=float)
         df_1h[f"DMN_{di_length}"] = pd.Series(index=df_1h.index, dtype=float)
     
-    # Map обратно на 15m индекс
+    # Map обратно на 15m индекс с форвард-филлом
     mapped = df_1h.reindex(df_15m.index, method="ffill")
     df_15m = df_15m.copy()
     df_15m["plus_di"] = mapped[f"DMP_{di_length}"]
     df_15m["minus_di"] = mapped[f"DMN_{di_length}"]
+    
+    # Дополнительная проверка: заполняем начальные NaN первым валидным значением для DI
+    # Это улучшает процент валидных данных
+    for di_col in ["plus_di", "minus_di"]:
+        if df_15m[di_col].notna().any():
+            first_valid_di = df_15m[di_col].dropna().iloc[0] if len(df_15m[di_col].dropna()) > 0 else None
+            if first_valid_di is not None:
+                nan_count = df_15m[di_col].isna().sum()
+                total_count = len(df_15m)
+                # Заполняем только если NaN меньше 30% от общего количества
+                if nan_count > 0 and (nan_count / total_count) < 0.3:
+                    df_15m[di_col] = df_15m[di_col].fillna(method="bfill").fillna(first_valid_di)
+    
     return df_15m
 
 

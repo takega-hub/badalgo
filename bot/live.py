@@ -4053,8 +4053,12 @@ def run_live_from_api(
                         current_settings.strategy.sma_length * 2,  # Для SMA
                         50  # Минимум для базовых индикаторов
                     )
+                    # Для ADX на 4H нужно больше данных: adx_length * 16 (15m -> 4H) + буфер
+                    adx_4h_required = (current_settings.strategy.adx_length + 5) * 16
+                    min_required = max(min_required, adx_4h_required)
+                    
                     if len(df_raw) < min_required:
-                        _log(f"⚠️ WARNING: Only {len(df_raw)} candles loaded, but {min_required} recommended for reliable indicators", symbol)
+                        _log(f"⚠️ WARNING: Only {len(df_raw)} candles loaded, but {min_required} recommended for reliable indicators (ADX requires ~{adx_4h_required} candles)", symbol)
                 else:
                     _log(f"⚠️ WARNING: Received EMPTY dataframe for {symbol}!", symbol)
                 
