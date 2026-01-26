@@ -38,7 +38,10 @@ try:
     from bot.ml.strategy_ml import build_ml_signals
 except Exception:
     build_ml_signals = None
-from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
+try:
+    from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
+except Exception:
+    build_liquidation_hunter_signals = None
 from bot.zscore_strategy import build_zscore_signals
 from bot.vbo_strategy import build_vbo_signals
 from bot.simulation import Simulator
@@ -553,6 +556,24 @@ def test_strategy_silent(strategy_name: str, symbol: str, days_back: int = 30) -
             # LIQUIDITY стратегия использует build_signals с use_liquidity=True
             signals = build_signals(df, settings.strategy, use_liquidity=True)
         elif strategy_name == "liquidation_hunter":
+            if build_liquidation_hunter_signals is None:
+                return StrategyResult(
+                    strategy=strategy_name,
+                    symbol=symbol,
+                    total_trades=0,
+                    profitable=0,
+                    losing=0,
+                    win_rate=0.0,
+                    total_pnl=0.0,
+                    avg_pnl=0.0,
+                    avg_win=0.0,
+                    avg_loss=0.0,
+                    max_win=0.0,
+                    max_loss=0.0,
+                    profit_factor=0.0,
+                    signals_count=0,
+                    error="liquidation_hunter_strategy module not available"
+                )
             signals = build_liquidation_hunter_signals(df, settings.strategy, symbol=symbol)
         elif strategy_name == "zscore":
             signals = build_zscore_signals(df, settings.strategy, symbol=symbol)

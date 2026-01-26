@@ -33,6 +33,9 @@ processed_signals.json
 processed_signals_*.json
 *.log
 
+# Dumps and temporary visualization files
+dumps/
+
 # OS
 .DS_Store
 Thumbs.db

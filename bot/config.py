@@ -207,11 +207,10 @@ class SymbolStrategySettings:
     enable_liquidity_sweep_strategy: bool = False
     enable_smc_strategy: bool = False
     enable_ict_strategy: bool = False
-    enable_liquidation_hunter_strategy: bool = False
     enable_zscore_strategy: bool = False
     enable_vbo_strategy: bool = False
     enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "amt_of", "hybrid", "confluence"
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "hybrid", "confluence"
     
     def to_dict(self) -> Dict:
         """Преобразует настройки в словарь"""
@@ -223,7 +222,6 @@ class SymbolStrategySettings:
             "enable_liquidity_sweep_strategy": self.enable_liquidity_sweep_strategy,
             "enable_smc_strategy": self.enable_smc_strategy,
             "enable_ict_strategy": self.enable_ict_strategy,
-            "enable_liquidation_hunter_strategy": self.enable_liquidation_hunter_strategy,
             "enable_zscore_strategy": self.enable_zscore_strategy,
             "enable_vbo_strategy": self.enable_vbo_strategy,
             "enable_amt_of_strategy": self.enable_amt_of_strategy,
@@ -241,7 +239,6 @@ class SymbolStrategySettings:
             enable_liquidity_sweep_strategy=data.get("enable_liquidity_sweep_strategy", False),
             enable_smc_strategy=data.get("enable_smc_strategy", False),
             enable_ict_strategy=data.get("enable_ict_strategy", False),
-            enable_liquidation_hunter_strategy=data.get("enable_liquidation_hunter_strategy", False),
             enable_zscore_strategy=data.get("enable_zscore_strategy", False),
             enable_vbo_strategy=data.get("enable_vbo_strategy", False),
             enable_amt_of_strategy=data.get("enable_amt_of_strategy", False),
@@ -284,12 +281,11 @@ class AppSettings:
     enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности) - ОТКЛЮЧЕНА: не дает результатов
     enable_smc_strategy: bool = False  # Smart Money Concepts стратегия
     enable_ict_strategy: bool = False  # ICT Silver Bullet стратегия
-    enable_liquidation_hunter_strategy: bool = False  # Liquidation Hunter стратегия
     enable_zscore_strategy: bool = False  # Z-Score стратегия
     enable_vbo_strategy: bool = False  # VBO (Volatility Breakout) стратегия
     enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
     # Приоритетная стратегия при конфликте сигналов (глобальная, используется если нет настроек для конкретной пары)
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "amt_of", "hybrid", "confluence" (liquidity отключена)
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "hybrid", "confluence" (liquidity отключена)
     # Настройки стратегий для каждой пары отдельно
     symbol_strategy_settings: Dict[str, SymbolStrategySettings] = field(default_factory=dict)  # {"BTCUSDT": SymbolStrategySettings(...), ...}
     
@@ -307,7 +303,6 @@ class AppSettings:
             enable_liquidity_sweep_strategy=self.enable_liquidity_sweep_strategy,
             enable_smc_strategy=self.enable_smc_strategy,
             enable_ict_strategy=self.enable_ict_strategy,
-            enable_liquidation_hunter_strategy=self.enable_liquidation_hunter_strategy,
             enable_zscore_strategy=self.enable_zscore_strategy,
             enable_vbo_strategy=self.enable_vbo_strategy,
             enable_amt_of_strategy=self.enable_amt_of_strategy,
@@ -428,11 +423,6 @@ def load_settings() -> AppSettings:
     enable_ict = enable_ict_raw.strip().lower() if enable_ict_raw else ""
     
     # Загружаем настройки новых стратегий
-    enable_liquidation_hunter_raw = os.getenv("ENABLE_LIQUIDATION_HUNTER_STRATEGY", "")
-    if not enable_liquidation_hunter_raw:
-        enable_liquidation_hunter_raw = cleaned_env_values.get("ENABLE_LIQUIDATION_HUNTER_STRATEGY", "")
-    enable_liquidation_hunter = enable_liquidation_hunter_raw.strip().lower() if enable_liquidation_hunter_raw else ""
-    
     enable_zscore_raw = os.getenv("ENABLE_ZSCORE_STRATEGY", "")
     if not enable_zscore_raw:
         enable_zscore_raw = cleaned_env_values.get("ENABLE_ZSCORE_STRATEGY", "")
@@ -567,9 +557,6 @@ def load_settings() -> AppSettings:
     if "ENABLE_ICT_STRATEGY" in cleaned_env_values or enable_ict_raw:
         settings.enable_ict_strategy = enable_ict in ("true", "1", "yes")
     
-    if "ENABLE_LIQUIDATION_HUNTER_STRATEGY" in cleaned_env_values or enable_liquidation_hunter_raw:
-        settings.enable_liquidation_hunter_strategy = enable_liquidation_hunter in ("true", "1", "yes")
-    
     if "ENABLE_ZSCORE_STRATEGY" in cleaned_env_values or enable_zscore_raw:
         settings.enable_zscore_strategy = enable_zscore in ("true", "1", "yes")
     
@@ -586,7 +573,6 @@ def load_settings() -> AppSettings:
     print(f"  ENABLE_LIQUIDITY_SWEEP_STRATEGY='{enable_liquidity_raw}' -> {settings.enable_liquidity_sweep_strategy}")
     print(f"  ENABLE_SMC_STRATEGY='{enable_smc_raw}' -> {settings.enable_smc_strategy}")
     print(f"  ENABLE_ICT_STRATEGY='{enable_ict_raw}' -> {settings.enable_ict_strategy}")
-    print(f"  ENABLE_LIQUIDATION_HUNTER_STRATEGY='{enable_liquidation_hunter_raw}' -> {settings.enable_liquidation_hunter_strategy}")
     print(f"  ENABLE_ZSCORE_STRATEGY='{enable_zscore_raw}' -> {settings.enable_zscore_strategy}")
     print(f"  ENABLE_VBO_STRATEGY='{enable_vbo_raw}' -> {settings.enable_vbo_strategy}")
     
@@ -595,7 +581,7 @@ def load_settings() -> AppSettings:
     if not strategy_priority_raw:
         strategy_priority_raw = cleaned_env_values.get("STRATEGY_PRIORITY", "")
     strategy_priority = strategy_priority_raw.strip().lower() if strategy_priority_raw else ""
-    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "ict", "liquidation_hunter", "zscore", "vbo", "hybrid", "confluence")  # liquidity убрана - стратегия отключена
+    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "hybrid", "confluence")  # liquidity и liquidation_hunter убраны - стратегии отключены
     if strategy_priority in allowed_priorities:
         settings.strategy_priority = strategy_priority
         print(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")

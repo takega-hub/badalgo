@@ -50,7 +50,6 @@ from bot.web.history import add_signal, add_trade, check_recent_loss_trade
 from bot.ml.strategy_ml import build_ml_signals
 from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
-from bot.liquidation_hunter_strategy import build_liquidation_hunter_signals
 from bot.zscore_strategy import build_zscore_signals
 from bot.vbo_strategy import build_vbo_signals
 from bot.amt_orderflow_strategy import (
@@ -58,8 +57,6 @@ from bot.amt_orderflow_strategy import (
     AbsorptionConfig,
     VolumeProfileConfig,
     generate_amt_signals,
-    LhOrderflowConfig,
-    generate_lh_orderflow_signals,
     build_volume_profile_from_ohlcv,
     _parse_trades,
     _compute_cvd_metrics,
@@ -522,8 +519,6 @@ def _calculate_tp_sl_for_signal(
             strategy_type = "trend"
         elif sig.reason.startswith("range_"):
             strategy_type = "flat"
-        elif sig.reason.startswith("liquidation_hunter_"):
-            strategy_type = "liquidation_hunter"
         elif sig.reason.startswith("zscore_"):
             strategy_type = "zscore"
         elif sig.reason.startswith("vbo_"):
@@ -693,89 +688,6 @@ def _calculate_tp_sl_for_signal(
             
             return take_profit, stop_loss
             
-        elif strategy_type == "liquidation_hunter":
-            # Для Liquidation Hunter стратегии (mean reversion) используем TP/SL,
-            # с особым режимом для orderflow‑сигналов lh_of_* (TP=POC из reason)
-            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
-            
-            tp_pct_from_price = 0.025  # 2.5% от цены = 25% от маржи при 10x
-            sl_pct_from_price = 0.010   # 1.0% от цены = 10% от маржи при 10x
-            
-            # Проверяем, не превышают ли настройки максимальные границы
-            max_tp_pct_margin = settings.risk.take_profit_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'take_profit_pct') else 0.30
-            max_sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
-            
-            # Нормализуем проценты
-            if max_tp_pct_margin > 1.0:
-                max_tp_pct_margin = max_tp_pct_margin / 100.0
-            if max_sl_pct_margin > 1.0:
-                max_sl_pct_margin = max_sl_pct_margin / 100.0
-            
-            max_tp_pct = max_tp_pct_margin / leverage
-            max_sl_pct = max_sl_pct_margin / leverage
-            
-            # Ограничиваем нашими значениями, но не превышаем максимумы
-            tp_pct_from_price = min(tp_pct_from_price, max_tp_pct)
-            sl_pct_from_price = min(sl_pct_from_price, max_sl_pct)
-            
-            # 1) Попытка вытащить POC из orderflow‑reason (lh_of_*_poc_X)
-            poc_from_reason = None
-            reason = getattr(sig, "reason", "") or ""
-            if reason.startswith("lh_of_") and "_poc_" in reason:
-                try:
-                    poc_part = reason.split("_poc_")[-1]
-                    poc_from_reason = float(poc_part)
-                except Exception:
-                    poc_from_reason = None
-            
-            # 2) Базовые TP/SL (SR‑уровни или проценты)
-            if use_sr_levels:
-                if sig.action == Action.LONG:
-                    if nearest_resistance and nearest_resistance > entry_price:
-                        resistance_tp_pct = (nearest_resistance - entry_price) / entry_price
-                        take_profit = nearest_resistance if resistance_tp_pct <= tp_pct_from_price else entry_price * (1 + tp_pct_from_price)
-                    else:
-                        take_profit = entry_price * (1 + tp_pct_from_price)
-                    
-                    if nearest_support and nearest_support < entry_price:
-                        support_sl_pct = (entry_price - nearest_support) / entry_price
-                        stop_loss = nearest_support if support_sl_pct <= sl_pct_from_price else entry_price * (1 - sl_pct_from_price)
-                    else:
-                        stop_loss = entry_price * (1 - sl_pct_from_price)
-                else:  # SHORT
-                    if nearest_support and nearest_support < entry_price:
-                        support_tp_pct = (entry_price - nearest_support) / entry_price
-                        take_profit = nearest_support if support_tp_pct <= tp_pct_from_price else entry_price * (1 - tp_pct_from_price)
-                    else:
-                        take_profit = entry_price * (1 - tp_pct_from_price)
-                    
-                    if nearest_resistance and nearest_resistance > entry_price:
-                        resistance_sl_pct = (nearest_resistance - entry_price) / entry_price
-                        stop_loss = nearest_resistance if resistance_sl_pct <= sl_pct_from_price else entry_price * (1 + sl_pct_from_price)
-                    else:
-                        stop_loss = entry_price * (1 + sl_pct_from_price)
-            else:
-                if sig.action == Action.LONG:
-                    take_profit = entry_price * (1 + tp_pct_from_price)
-                    stop_loss = entry_price * (1 - sl_pct_from_price)
-                else:  # SHORT
-                    take_profit = entry_price * (1 - tp_pct_from_price)
-                    stop_loss = entry_price * (1 + sl_pct_from_price)
-
-            # 3) Если это orderflow‑сигнал и POC известен — переопределяем TP = POC
-            if poc_from_reason is not None:
-                take_profit = poc_from_reason
-            
-            # Логируем расчет
-            risk = abs(entry_price - stop_loss)
-            reward = abs(take_profit - entry_price)
-            rr_ratio = reward / risk if risk > 0 else 0
-            
-            print(f"[live] 📊 LIQUIDATION_HUNTER TP/SL: TP=${take_profit:.2f} (+{((take_profit - entry_price) / entry_price * 100):.2f}%), SL=${stop_loss:.2f} ({((stop_loss - entry_price) / entry_price * 100):.2f}%), RR={rr_ratio:.2f}:1")
-            print(f"[live]   → TP: {tp_pct_from_price*100:.2f}% from price ({tp_pct_from_price*leverage*100:.1f}% from margin), SL: {sl_pct_from_price*100:.2f}% from price ({sl_pct_from_price*leverage*100:.1f}% from margin)")
-            
-            return take_profit, stop_loss
-        
         elif strategy_type == "vbo":
             # Для VBO стратегии (Volatility Breakout) используем сбалансированные TP/SL
             # VBO ловит пробои волатильности, но слишком широкий TP может привести к закрытию по SL
@@ -1383,8 +1295,6 @@ def _ensure_tp_sl_set(
                     # Определяем название стратегии из entry_reason
                     if entry_reason.startswith("ml_"):
                         strategy_name = "ML"
-                    elif entry_reason.startswith("liquidation_hunter_"):
-                        strategy_name = "LIQUIDATION_HUNTER"
                     elif entry_reason.startswith("zscore_"):
                         strategy_name = "ZSCORE"
                     elif entry_reason.startswith("vbo_"):
@@ -2775,122 +2685,12 @@ def get_strategy_type_from_signal(signal_reason: str) -> str:
         return "smc"
     elif reason_lower.startswith("ict_"):
         return "ict"
-    elif reason_lower.startswith("liquidation_hunter_"):
-        return "liquidation_hunter"
     elif reason_lower.startswith("zscore_"):
         return "zscore"
     elif reason_lower.startswith("vbo_"):
         return "vbo"
     else:
         return "unknown"
-
-
-def _check_liquidation_hunter_confirmation(
-    signal: Any,
-    all_liquidation_hunter_signals: List[Any],
-    confirmation_window_minutes: int = 5,
-    min_confirmations: int = 2,
-    symbol: Optional[str] = None
-) -> Tuple[bool, int, List[Any]]:
-    """
-    Проверяет, есть ли достаточное количество подтверждающих сигналов liquidation_hunter
-    в одном направлении за указанный период времени.
-    
-    Args:
-        signal: Сигнал, который нужно проверить
-        all_liquidation_hunter_signals: Все сигналы liquidation_hunter
-        confirmation_window_minutes: Окно времени для подтверждения (по умолчанию 5 минут)
-        min_confirmations: Минимальное количество подтверждений (по умолчанию 2)
-        symbol: Символ для логирования
-    
-    Returns:
-        Tuple[bool, int, List[Any]]: (is_confirmed, confirmation_count, confirming_signals)
-        - is_confirmed: True если есть достаточное количество подтверждений
-        - confirmation_count: Количество подтверждающих сигналов
-        - confirming_signals: Список подтверждающих сигналов
-    """
-    if not signal or not all_liquidation_hunter_signals:
-        return False, 0, []
-    
-    try:
-        # Получаем timestamp сигнала
-        signal_ts = signal.timestamp
-        if isinstance(signal_ts, pd.Timestamp):
-            if signal_ts.tzinfo is None:
-                signal_ts = signal_ts.tz_localize('UTC')
-            else:
-                signal_ts = signal_ts.tz_convert('UTC')
-            signal_time = signal_ts.to_pydatetime()
-        else:
-            signal_time = signal_ts
-        
-        # Вычисляем временное окно: 5 минут ДО текущего сигнала (включая сам сигнал)
-        window_start = signal_time - timedelta(minutes=confirmation_window_minutes)
-        window_end = signal_time
-        
-        # Фильтруем сигналы в том же направлении в пределах временного окна
-        confirming_signals = []
-        for sig in all_liquidation_hunter_signals:
-            # Проверяем, что сигнал в том же направлении
-            if sig.action != signal.action:
-                continue
-            
-            # Получаем timestamp сигнала
-            try:
-                sig_ts = sig.timestamp
-                if isinstance(sig_ts, pd.Timestamp):
-                    if sig_ts.tzinfo is None:
-                        sig_ts = sig_ts.tz_localize('UTC')
-                    else:
-                        sig_ts = sig_ts.tz_convert('UTC')
-                    sig_time_check = sig_ts.to_pydatetime()
-                elif isinstance(sig_ts, datetime):
-                    if sig_ts.tzinfo is None:
-                        sig_time_check = sig_ts.replace(tzinfo=timezone.utc)
-                    else:
-                        sig_time_check = sig_ts
-                else:
-                    continue  # Пропускаем сигналы с неподдерживаемым форматом timestamp
-                
-                # Проверяем, что сигнал в пределах временного окна (включая границы)
-                if window_start <= sig_time_check <= window_end:
-                    confirming_signals.append(sig)
-            except Exception:
-                continue  # Пропускаем сигналы с ошибками в timestamp
-        
-        # Сортируем по времени (от старых к новым) для логирования
-        def get_sortable_timestamp(s):
-            try:
-                ts = s.timestamp
-                if isinstance(ts, pd.Timestamp):
-                    if ts.tzinfo is None:
-                        ts = ts.tz_localize('UTC')
-                    else:
-                        ts = ts.tz_convert('UTC')
-                    return ts.to_pydatetime()
-                elif isinstance(ts, datetime):
-                    return ts
-                return ts
-            except Exception:
-                return datetime.min.replace(tzinfo=timezone.utc)
-        
-        confirming_signals.sort(key=get_sortable_timestamp)
-        
-        confirmation_count = len(confirming_signals)
-        is_confirmed = confirmation_count >= min_confirmations
-        
-        if symbol:
-            if is_confirmed:
-                _log(f"✅ LIQUIDATION_HUNTER confirmation: {confirmation_count} signals in {signal.action.value} direction within {confirmation_window_minutes} minutes", symbol)
-            else:
-                _log(f"⚠️ LIQUIDATION_HUNTER confirmation FAILED: only {confirmation_count} signals in {signal.action.value} direction (need {min_confirmations}) within {confirmation_window_minutes} minutes", symbol)
-        
-        return is_confirmed, confirmation_count, confirming_signals
-    
-    except Exception as e:
-        if symbol:
-            _log(f"⚠️ Error checking LIQUIDATION_HUNTER confirmation: {e}", symbol)
-        return False, 0, []
 
 
 def _determine_strategy_with_fallback(
@@ -3567,7 +3367,6 @@ def run_live_from_api(
         f"Liquidity={symbol_strategy_settings.enable_liquidity_sweep_strategy}, "
         f"SMC={symbol_strategy_settings.enable_smc_strategy}, "
         f"ICT={symbol_strategy_settings.enable_ict_strategy}, "
-        f"LiquidationHunter={symbol_strategy_settings.enable_liquidation_hunter_strategy}, "
         f"ZScore={symbol_strategy_settings.enable_zscore_strategy}, "
         f"VBO={symbol_strategy_settings.enable_vbo_strategy}, "
         f"AMT_OF={symbol_strategy_settings.enable_amt_of_strategy}"
@@ -4048,7 +3847,7 @@ def run_live_from_api(
                     _log(f"📥 Loaded {len(df_raw)} candles (limit={current_settings.kline_limit}, timeframe={interval})", symbol)
                     # Проверяем достаточность данных для расчета индикаторов
                     min_required = max(
-                        200,  # Минимум для SMC/ICT/Liquidation Hunter
+                        200,  # Минимум для SMC/ICT
                         current_settings.strategy.ema_slow_length * 2,  # Для EMA
                         current_settings.strategy.sma_length * 2,  # Для SMA
                         50  # Минимум для базовых индикаторов
@@ -4304,8 +4103,6 @@ def run_live_from_api(
                     return "smc"
                 elif reason_lower.startswith("ict_"):
                     return "ict"
-                elif reason_lower.startswith("liquidation_hunter_"):
-                    return "liquidation_hunter"
                 elif reason_lower.startswith("zscore_"):
                     return "zscore"
                 elif reason_lower.startswith("vbo_"):
@@ -4511,92 +4308,6 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ ICT strategy is DISABLED for {symbol}", symbol)
-            # Liquidation Hunter стратегия
-            if symbol_strategy_settings.enable_liquidation_hunter_strategy:
-                try:
-                    if len(df_ready) >= 200:
-                        # Обновляем статус перед долгой операцией
-                        update_worker_status(symbol, current_status="Running", last_action="Generating Liquidation Hunter signals...")
-                        if stop_event.is_set():
-                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
-                            break
-                        # Промежуточное обновление статуса во время генерации
-                        try:
-                            from bot.multi_symbol_manager import update_worker_status
-                            update_worker_status(symbol, current_status="Running", last_action="Analyzing liquidation data...", error=None)
-                        except ImportError:
-                            pass
-                        liquidation_hunter_signals = build_liquidation_hunter_signals(df_ready, current_settings.strategy, symbol=symbol)
-
-                        # Дополнительно: orderflow‑вариант Liquidation Hunter через CVD + Volume Profile (lh_of_*)
-                        try:
-                            current_price = float(df_ready["close"].iloc[-1])
-                            vp_cfg_lh = VolumeProfileConfig(
-                                price_step=current_settings.strategy.amt_of_price_step,
-                                value_area_pct=current_settings.strategy.amt_of_value_area_pct,
-                                session_start_utc=current_settings.strategy.amt_of_session_start_utc,
-                                session_end_utc=current_settings.strategy.amt_of_session_end_utc,
-                            )
-                            lh_of_cfg = LhOrderflowConfig()
-                            lh_of_signals = generate_lh_orderflow_signals(
-                                client=client,
-                                symbol=symbol,
-                                df_ohlcv=df_ready,
-                                vp_config=vp_cfg_lh,
-                                cfg=lh_of_cfg,
-                            )
-                            if lh_of_signals:
-                                liquidation_hunter_signals.extend(lh_of_signals)
-                        except Exception as e:
-                            _log(f"⚠️ Error generating orderflow LH signals: {e}", symbol)
-                        # Обновляем статус после генерации
-                        update_worker_status(symbol, current_status="Running", last_action="Liquidation Hunter signals generated")
-                        from bot.strategy import Action as StrategyActionLH
-                        liquidation_hunter_generated = [
-                            s for s in liquidation_hunter_signals
-                            if s.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT)
-                        ]
-                        
-                        if liquidation_hunter_generated:
-                            _log(f"📊 Liquidation Hunter strategy: generated {len(liquidation_hunter_generated)} actionable signals (total: {len(liquidation_hunter_signals)})", symbol)
-                        else:
-                            _log(f"⚠️ Liquidation Hunter strategy: enabled but generated 0 actionable signals (total: {len(liquidation_hunter_signals)})", symbol)
-                        
-                        for sig in liquidation_hunter_generated:
-                            all_signals.append(sig)
-                            # Сохраняем сигнал в историю
-                            try:
-                                ts_log = sig.timestamp
-                                if isinstance(ts_log, pd.Timestamp):
-                                    if ts_log.tzinfo is None:
-                                        ts_log = ts_log.tz_localize('UTC')
-                                    else:
-                                        ts_log = ts_log.tz_convert('UTC')
-                                    ts_log = ts_log.to_pydatetime()
-                                
-                                # ВАЖНО: Если сигнал соответствует последней свече - обновляем timestamp на текущее время
-                                # Это гарантирует, что сигнал будет считаться свежим и обработан немедленно
-                                ts_log = update_signal_timestamp_if_fresh(ts_log, "Liquidation Hunter")
-                                
-                                add_signal(
-                                    action=sig.action.value,
-                                    reason=sig.reason,
-                                    price=sig.price,
-                                    timestamp=ts_log,
-                                    symbol=symbol,
-                                    strategy_type="liquidation_hunter",
-                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
-                                )
-                            except Exception as e:
-                                _log(f"⚠️ Failed to save Liquidation Hunter signal to history: {e}", symbol)
-                    else:
-                        _log(f"⚠️ Liquidation Hunter strategy requires more history. Current: {len(df_ready)} candles (need >= 200)", symbol)
-                except Exception as e:
-                    _log(f"❌ Error in Liquidation Hunter strategy: {e}", symbol)
-                    import traceback
-                    traceback.print_exc()
-            else:
-                _log(f"⚠️ Liquidation Hunter strategy is DISABLED for {symbol}", symbol)
             # Z-Score стратегия
             if symbol_strategy_settings.enable_zscore_strategy:
                 try:
@@ -4920,7 +4631,6 @@ def run_live_from_api(
                 "MOMENTUM": symbol_strategy_settings.enable_momentum_strategy,
                 "SMC": symbol_strategy_settings.enable_smc_strategy,
                 "ICT": symbol_strategy_settings.enable_ict_strategy,
-                "LIQUIDATION_HUNTER": symbol_strategy_settings.enable_liquidation_hunter_strategy,
                 "ZSCORE": symbol_strategy_settings.enable_zscore_strategy,
                 "VBO": symbol_strategy_settings.enable_vbo_strategy,
                 "AMT_OF": symbol_strategy_settings.enable_amt_of_strategy
@@ -4966,11 +4676,6 @@ def run_live_from_api(
             ict_signals_only = [
                 s for s in all_signals
                 if s.reason.startswith("ict_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
-            ]
-            liquidation_hunter_signals_only = [
-                s for s in all_signals
-                if s.reason.startswith("liquidation_hunter_")
-                and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
             ]
             zscore_signals_only = [
                 s for s in all_signals
@@ -5041,7 +4746,6 @@ def run_live_from_api(
             fresh_liquidity_signals = [s for s in liquidity_signals_only if is_signal_fresh(s, df_ready)]
             fresh_smc_signals = [s for s in smc_signals_only if is_signal_fresh(s, df_ready)]
             fresh_ict_signals = [s for s in ict_signals_only if is_signal_fresh(s, df_ready)]
-            fresh_liquidation_hunter_signals = [s for s in liquidation_hunter_signals_only if is_signal_fresh(s, df_ready)]
             fresh_zscore_signals = [s for s in zscore_signals_only if is_signal_fresh(s, df_ready)]
             fresh_vbo_signals = [s for s in vbo_signals_only if is_signal_fresh(s, df_ready)]
             
@@ -5054,8 +4758,6 @@ def run_live_from_api(
                 _log(f"📊 SMC: {len(fresh_smc_signals)}/{len(smc_signals_only)} свежих сигналов", symbol)
             if ict_signals_only:
                 _log(f"📊 ICT: {len(fresh_ict_signals)}/{len(ict_signals_only)} свежих сигналов", symbol)
-            if liquidation_hunter_signals_only:
-                _log(f"📊 Liquidation Hunter: {len(fresh_liquidation_hunter_signals)}/{len(liquidation_hunter_signals_only)} свежих сигналов", symbol)
             if zscore_signals_only:
                 _log(f"📊 Z-Score: {len(fresh_zscore_signals)}/{len(zscore_signals_only)} свежих сигналов", symbol)
             if vbo_signals_only:
@@ -5271,14 +4973,6 @@ def run_live_from_api(
                     ict_sig_save = ict_signals_only[-1] if ict_signals_only else None
                     if ict_sig_save:
                         save_latest_signal_to_history(ict_sig_save, "ICT", "ICT_LATEST")
-                
-                # Liquidation Hunter стратегия
-                liquidation_hunter_sig_save = None
-                if liquidation_hunter_signals_only:
-                    liquidation_hunter_signals_only.sort(key=get_timestamp_for_sort)
-                    liquidation_hunter_sig_save = liquidation_hunter_signals_only[-1] if liquidation_hunter_signals_only else None
-                    if liquidation_hunter_sig_save:
-                        save_latest_signal_to_history(liquidation_hunter_sig_save, "LIQUIDATION_HUNTER", "LIQUIDATION_HUNTER_LATEST")
                 
                 # Z-Score стратегия
                 zscore_sig_save = None
@@ -5507,9 +5201,9 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional MOMENTUM signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от LIQUIDITY стратегии
-                from bot.liquidation_hunter_strategy import Action as StrategyActionLH  # локальный alias
+                from bot.strategy import Action as StrategyActionLiquidity  # локальный alias
                 for sig in liquidity_signals_only:
-                    if sig.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT):
+                    if sig.action in (StrategyActionLiquidity.LONG, StrategyActionLiquidity.SHORT):
                         # Пропускаем только если это latest сигнал и он уже был сохранен выше
                         if sig == liquidity_sig_latest and liquidity_sig_latest:
                             continue
@@ -5540,42 +5234,6 @@ def run_live_from_api(
                             additional_saved += 1
                         except Exception as e:
                             _log(f"⚠️ Failed to save additional LIQUIDITY signal to history: {e}", symbol)
-                
-                # Сохраняем все сигналы от Liquidation Hunter стратегии
-                # Используем локальный alias для Action из liquidation_hunter стратегии
-                from bot.liquidation_hunter_strategy import Action as StrategyActionLH
-                for sig in liquidation_hunter_signals_only:
-                    if sig.action in (StrategyActionLH.LONG, StrategyActionLH.SHORT):
-                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
-                        if sig == liquidation_hunter_sig_save and liquidation_hunter_sig_save:
-                            continue
-                        try:
-                            strategy_type = get_strategy_type_from_signal(sig.reason)
-                            ts_log = sig.timestamp
-                            if isinstance(ts_log, pd.Timestamp):
-                                if ts_log.tzinfo is None:
-                                    ts_log = ts_log.tz_localize('UTC')
-                                else:
-                                    ts_log = ts_log.tz_convert('UTC')
-                                ts_log = ts_log.to_pydatetime()
-                            
-                            # ВАЖНО: Если сигнал соответствует последней свече - обновляем timestamp на текущее время
-                            # Это гарантирует, что сигнал будет считаться свежим и обработан немедленно
-                            ts_log = update_signal_timestamp_if_fresh(ts_log)
-                            
-                            sig_signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
-                            add_signal(
-                                action=sig.action.value,
-                                reason=sig.reason,
-                                price=sig.price,
-                                timestamp=ts_log,
-                                symbol=symbol,
-                                strategy_type=strategy_type,
-                                signal_id=sig_signal_id,
-                            )
-                            additional_saved += 1
-                        except Exception as e:
-                            _log(f"⚠️ Failed to save additional LIQUIDATION_HUNTER signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от Z-Score стратегии
                 # Используем локальный alias для Action из ZSCORE стратегии
@@ -5757,90 +5415,6 @@ def run_live_from_api(
             liquidity_sig = get_latest_fresh_signal(liquidity_signals_only, df_ready)
             smc_sig_latest = get_latest_fresh_signal(smc_signals_only, df_ready)
             ict_sig_latest = get_latest_fresh_signal(ict_signals_only, df_ready)
-            liquidation_hunter_sig_latest = get_latest_fresh_signal(liquidation_hunter_signals_only, df_ready)
-            
-            # ВАЖНО: Для liquidation_hunter требуется минимум 2 подтверждающих сигнала в одном направлении за 5 минут
-            # Загружаем сигналы из истории для проверки подтверждения
-            if liquidation_hunter_sig_latest:
-                try:
-                    from bot.web.history import get_signals
-                    # Получаем сигналы liquidation_hunter из истории за последние 10 минут (для проверки подтверждения)
-                    history_signals_raw = get_signals(limit=100, symbol_filter=symbol)
-                    history_liquidation_hunter_signals = []
-                    
-                    for hist_sig in history_signals_raw:
-                        hist_reason = hist_sig.get("reason", "")
-                        hist_strategy = hist_sig.get("strategy_type", "").lower()
-                        if hist_reason.startswith("liquidation_hunter_") or hist_strategy == "liquidation_hunter":
-                            # Создаем объект сигнала из истории для проверки
-                            hist_action_str = hist_sig.get("action", "").lower()
-                            if hist_action_str in ("long", "short"):
-                                hist_action = Action.LONG if hist_action_str == "long" else Action.SHORT
-                                
-                                # Парсим timestamp из истории
-                                hist_timestamp_str = hist_sig.get("timestamp", "")
-                                try:
-                                    if isinstance(hist_timestamp_str, str):
-                                        # Пробуем разные форматы
-                                        try:
-                                            hist_ts = datetime.fromisoformat(hist_timestamp_str.replace('Z', '+00:00'))
-                                        except:
-                                            try:
-                                                hist_ts = pd.to_datetime(hist_timestamp_str, utc=True).to_pydatetime()
-                                            except:
-                                                continue
-                                    else:
-                                        hist_ts = hist_timestamp_str
-                                    
-                                    # Создаем простой объект сигнала для проверки
-                                    class HistorySignal:
-                                        def __init__(self, action, price, reason, timestamp):
-                                            self.action = action
-                                            self.price = price
-                                            self.reason = reason
-                                            self.timestamp = timestamp
-                                    
-                                    hist_signal_obj = HistorySignal(
-                                        action=hist_action,
-                                        price=float(hist_sig.get("price", 0)),
-                                        reason=hist_reason,
-                                        timestamp=hist_ts
-                                    )
-                                    history_liquidation_hunter_signals.append(hist_signal_obj)
-                                except Exception:
-                                    continue
-                    
-                    # Объединяем сигналы из текущего цикла и из истории
-                    all_liquidation_hunter_for_confirmation = list(liquidation_hunter_signals_only) + history_liquidation_hunter_signals
-                    
-                    is_confirmed, confirmation_count, confirming_signals = _check_liquidation_hunter_confirmation(
-                        signal=liquidation_hunter_sig_latest,
-                        all_liquidation_hunter_signals=all_liquidation_hunter_for_confirmation,
-                        confirmation_window_minutes=5,
-                        min_confirmations=2,
-                        symbol=symbol
-                    )
-                    if not is_confirmed:
-                        _log(f"⛔ LIQUIDATION_HUNTER signal REJECTED: insufficient confirmations ({confirmation_count}/2) for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
-                        liquidation_hunter_sig_latest = None  # Отклоняем сигнал без достаточного подтверждения
-                    else:
-                        _log(f"✅ LIQUIDATION_HUNTER signal CONFIRMED: {confirmation_count} confirmations for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
-                except Exception as e:
-                    _log(f"⚠️ Error checking LIQUIDATION_HUNTER confirmation from history: {e}", symbol)
-                    # В случае ошибки используем только сигналы из текущего цикла
-                    is_confirmed, confirmation_count, confirming_signals = _check_liquidation_hunter_confirmation(
-                        signal=liquidation_hunter_sig_latest,
-                        all_liquidation_hunter_signals=liquidation_hunter_signals_only,
-                        confirmation_window_minutes=5,
-                        min_confirmations=2,
-                        symbol=symbol
-                    )
-                    if not is_confirmed:
-                        _log(f"⛔ LIQUIDATION_HUNTER signal REJECTED: insufficient confirmations ({confirmation_count}/2) for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
-                        liquidation_hunter_sig_latest = None
-                    else:
-                        _log(f"✅ LIQUIDATION_HUNTER signal CONFIRMED: {confirmation_count} confirmations for {liquidation_hunter_sig_latest.action.value} @ ${liquidation_hunter_sig_latest.price:.2f}", symbol)
-            
             zscore_sig_latest = get_latest_fresh_signal(zscore_signals_only, df_ready)
             vbo_sig_latest = get_latest_fresh_signal(vbo_signals_only, df_ready)
             
@@ -5853,7 +5427,6 @@ def run_live_from_api(
                 "liquidity": liquidity_sig,
                 "smc": smc_sig_latest,
                 "ict": ict_sig_latest,
-                "liquidation_hunter": liquidation_hunter_sig_latest,
                 "zscore": zscore_sig_latest,
                 "vbo": vbo_sig_latest,
             }

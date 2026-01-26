@@ -44,11 +44,9 @@ try:
         generate_report_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(generate_report_module)
         optimize_strategies_auto = generate_report_module.optimize_strategies_auto
-        print(f"[web] ✅ Successfully imported optimize_strategies_auto from {generate_report_path}")
     else:
         # Fallback на обычный импорт
         from generate_report import optimize_strategies_auto
-        print(f"[web] ✅ Successfully imported optimize_strategies_auto (fallback)")
 except Exception as e:
     print(f"[web] ⚠️ Error importing optimize_strategies_auto: {e}")
     import traceback
@@ -255,7 +253,6 @@ def _save_settings_to_env(settings: AppSettings):
             'ENABLE_LIQUIDITY_SWEEP_STRATEGY',
             'ENABLE_SMC_STRATEGY',
             'ENABLE_ICT_STRATEGY',
-            'ENABLE_LIQUIDATION_HUNTER_STRATEGY',
             'ENABLE_ZSCORE_STRATEGY',
             'ENABLE_VBO_STRATEGY',
             'ENABLE_AMT_OF_STRATEGY',
@@ -295,7 +292,6 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY'] = str(settings.enable_liquidity_sweep_strategy).lower()
         env_dict['ENABLE_SMC_STRATEGY'] = str(settings.enable_smc_strategy).lower()
         env_dict['ENABLE_ICT_STRATEGY'] = str(settings.enable_ict_strategy).lower()
-        env_dict['ENABLE_LIQUIDATION_HUNTER_STRATEGY'] = str(settings.enable_liquidation_hunter_strategy).lower()
         env_dict['ENABLE_ZSCORE_STRATEGY'] = str(settings.enable_zscore_strategy).lower()
         env_dict['ENABLE_VBO_STRATEGY'] = str(settings.enable_vbo_strategy).lower()
         env_dict['ENABLE_AMT_OF_STRATEGY'] = str(settings.enable_amt_of_strategy).lower()
@@ -383,7 +379,6 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ENABLE_LIQUIDITY_SWEEP_STRATEGY={env_dict['ENABLE_LIQUIDITY_SWEEP_STRATEGY']}\n")
             f.write(f"ENABLE_SMC_STRATEGY={env_dict['ENABLE_SMC_STRATEGY']}\n")
             f.write(f"ENABLE_ICT_STRATEGY={env_dict['ENABLE_ICT_STRATEGY']}\n")
-            f.write(f"ENABLE_LIQUIDATION_HUNTER_STRATEGY={env_dict['ENABLE_LIQUIDATION_HUNTER_STRATEGY']}\n")
             f.write(f"ENABLE_ZSCORE_STRATEGY={env_dict['ENABLE_ZSCORE_STRATEGY']}\n")
             f.write(f"ENABLE_VBO_STRATEGY={env_dict['ENABLE_VBO_STRATEGY']}\n")
             f.write(f"ENABLE_AMT_OF_STRATEGY={env_dict['ENABLE_AMT_OF_STRATEGY']}\n")
@@ -1239,7 +1234,6 @@ def api_get_settings():
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
                 "enable_ict_strategy": settings.enable_ict_strategy,
-                "enable_liquidation_hunter_strategy": settings.enable_liquidation_hunter_strategy,
                 "enable_zscore_strategy": settings.enable_zscore_strategy,
                 "enable_vbo_strategy": settings.enable_vbo_strategy,
                 "enable_amt_of_strategy": settings.enable_amt_of_strategy,
@@ -1327,7 +1321,7 @@ def api_update_settings():
                     if key in ("enable_trend_strategy", "enable_flat_strategy", "enable_ml_strategy", 
                                "enable_momentum_strategy", 
                                "enable_liquidity_sweep_strategy", "enable_smc_strategy", "enable_ict_strategy",
-                               "enable_liquidation_hunter_strategy", "enable_zscore_strategy", "enable_vbo_strategy",
+                               "enable_zscore_strategy", "enable_vbo_strategy",
                                "enable_amt_of_strategy",
                                "ml_stability_filter"):
                         setattr(settings, key, bool(value))
@@ -1361,7 +1355,7 @@ def api_update_settings():
                     elif key == "strategy_priority":
                         # Проверяем допустимые значения приоритета стратегии
                         allowed_priorities = ["trend", "flat", "ml", "momentum", "smc", "ict",
-                                              "liquidation_hunter", "zscore", "vbo", "amt_of",
+                                              "zscore", "vbo", "amt_of",
                                               "hybrid", "confluence"]
                         if value in allowed_priorities:
                             setattr(settings, key, value)
@@ -1467,7 +1461,6 @@ def api_update_settings():
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
                 "enable_ict_strategy": settings.enable_ict_strategy,
-                "enable_liquidation_hunter_strategy": settings.enable_liquidation_hunter_strategy,
                 "enable_zscore_strategy": settings.enable_zscore_strategy,
                 "enable_vbo_strategy": settings.enable_vbo_strategy,
                 "enable_amt_of_strategy": settings.enable_amt_of_strategy,
@@ -1515,9 +1508,24 @@ def api_update_symbol_strategy_settings(symbol: str):
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        # Загружаем существующие настройки для символа, чтобы не потерять данные
+        # которые не были переданы в запросе (например, если сохранение идет только через чекбоксы)
+        # Это важно, потому что есть две функции сохранения:
+        # 1. saveStrategySelection() - отправляет только флаги включения стратегий
+        # 2. saveSymbolStrategySettings() - отправляет полный JSON объект
+        # Объединение гарантирует, что данные не будут потеряны при использовании любой из функций
+        existing_settings = settings.get_strategy_settings_for_symbol(symbol)
+        existing_dict = existing_settings.to_dict()
+        
+        # Объединяем существующие настройки с новыми данными
+        # Новые данные имеют приоритет, но если поле отсутствует в новых данных,
+        # сохраняем существующее значение
+        merged_data = existing_dict.copy()
+        merged_data.update(data)
+        
         # Попытка создать объект настроек (выполнит базовую десериализацию)
         try:
-            symbol_settings = SymbolStrategySettings.from_dict(data)
+            symbol_settings = SymbolStrategySettings.from_dict(merged_data)
         except Exception as e:
             return jsonify({"error": "Invalid settings payload", "details": str(e)}), 400
 
@@ -1527,7 +1535,7 @@ def api_update_symbol_strategy_settings(symbol: str):
         # boolean flags that should be booleans when present
         bool_fields = [
             'enable_trend_strategy', 'enable_flat_strategy', 'enable_ml_strategy', 'enable_momentum_strategy',
-            'enable_smc_strategy', 'enable_ict_strategy', 'enable_liquidation_hunter_strategy',
+            'enable_smc_strategy', 'enable_ict_strategy',
             'enable_zscore_strategy', 'enable_vbo_strategy', 'enable_amt_of_strategy'
         ]
         for f in bool_fields:
@@ -1720,7 +1728,7 @@ def _run_optimization_async(symbols, days, min_pnl, min_win_rate, auto_apply):
     from generate_report import test_strategy_silent
     
     try:
-        all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "liquidation_hunter", "zscore", "vbo"]
+        all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "zscore", "vbo"]
         total_tests = len(all_strategies) * len(symbols)
         
         with optimization_lock:
@@ -1828,7 +1836,7 @@ def api_optimize_strategies():
         days = data.get("days", 30)
         min_pnl = data.get("min_pnl", 0.0)
         min_win_rate = data.get("min_win_rate", 0.0)
-        auto_apply = data.get("auto_apply", True)
+        auto_apply = data.get("auto_apply", False)
         
         # Получаем список символов для оптимизации
         symbols = data.get("symbols", None)
@@ -1895,7 +1903,6 @@ def api_all_strategy_stats():
         "liquidity": get_strategy_stats(strategy_type="liquidity"),
         "smc": get_strategy_stats(strategy_type="smc"),
         "ict": get_strategy_stats(strategy_type="ict"),
-        "liquidation_hunter": get_strategy_stats(strategy_type="liquidation_hunter"),
         "zscore": get_strategy_stats(strategy_type="zscore"),
         "vbo": get_strategy_stats(strategy_type="vbo"),
         "all": get_strategy_stats(strategy_type=None),

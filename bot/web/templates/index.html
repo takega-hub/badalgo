@@ -870,14 +870,6 @@
                 
                 <div class="stat-item" style="margin-bottom: 15px;">
                     <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="checkbox" id="enable-liquidation-hunter-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
-                        <span style="font-size: 1.1em; font-weight: bold; color: #ff9500;">Liquidation Hunter</span>
-                        <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Охотник за ликвидациями)</span>
-                    </label>
-                </div>
-                
-                <div class="stat-item" style="margin-bottom: 15px;">
-                    <label style="display: flex; align-items: center; cursor: pointer;">
                         <input type="checkbox" id="enable-zscore-strategy" style="margin-right: 10px; width: 20px; height: 20px;">
                         <span style="font-size: 1.1em; font-weight: bold; color: #00ffaa;">Z-Score</span>
                         <span style="margin-left: 10px; color: #aaa; font-size: 0.9em;">(Статистический возврат к среднему)</span>
@@ -909,7 +901,6 @@
                         <option value="momentum">Momentum Breakout Priority</option>
                         <option value="smc">Smart Money Concepts Priority</option>
                         <option value="ict">ICT Silver Bullet Priority</option>
-                        <option value="liquidation_hunter">Liquidation Hunter Priority</option>
                         <option value="zscore">Z-Score Priority</option>
                         <option value="vbo">VBO Priority</option>
                         <option value="amt_of">AMT &amp; Order Flow Priority</option>
@@ -1407,7 +1398,6 @@
                     else if (reasonLower.startsWith('range_') || reasonLower.startsWith('flat_')) stratName = 'FLAT';
                     else if (reasonLower.startsWith('momentum_')) stratName = 'MOM';
                     else if (reasonLower.startsWith('liquidity_')) stratName = 'LIQ';
-                    else if (reasonLower.startsWith('liquidation_hunter_')) stratName = 'LIQ-H';
                     else if (reasonLower.startsWith('zscore_')) stratName = 'Z-SCORE';
                     else if (reasonLower.startsWith('vbo_')) stratName = 'VBO';
                     else stratName = 'SIG';
@@ -2116,7 +2106,6 @@
                             'momentum': '⚡ Momentum Strategy',
                             'smc': '🟣 Smart Money Concepts',
                             'ict': '🔴 ICT Silver Bullet',
-                            'liquidation_hunter': '🟠 Liquidation Hunter',
                             'zscore': '🟢 Z-Score',
                             'vbo': '🟣 VBO (Volatility Breakout)',
                             'amt_of': '⚫ AMT & Order Flow Scalper',
@@ -2148,7 +2137,7 @@
                             // Форматируем reason для лучшей читаемости
                             let formattedReason = entryReason;
                             // Убираем префиксы стратегий для краткости
-                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|liquidation_hunter_|zscore_|vbo_|amt_of_)/, '');
+                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|zscore_|vbo_|amt_of_)/, '');
                             // Заменяем подчеркивания на пробелы
                             formattedReason = formattedReason.replace(/_/g, ' ');
                             // Улучшаем читаемость специфичных паттернов
@@ -2967,8 +2956,6 @@
                     } else if (strategyType === 'ict') {
                         strategyDisplay = 'ICT';
                         strategyColor = '#ff6b6b';
-                    } else if (strategyType === 'liquidation_hunter') {
-                        strategyDisplay = 'LIQUIDATION HUNTER';
                         strategyColor = '#ff9500';
                     } else if (strategyType === 'zscore') {
                         strategyDisplay = 'Z-SCORE';
@@ -3243,7 +3230,6 @@
                         'momentum': '<span style="color: #00d4ff;">MOMENTUM</span>',
                         'smc': '<span style="color: #9d4edd;">SMC</span>',
                         'ict': '<span style="color: #ff6b6b;">ICT</span>',
-                        'liquidation_hunter': '<span style="color: #ff9500;">LIQUIDATION HUNTER</span>',
                         'zscore': '<span style="color: #00ffaa;">Z-SCORE</span>',
                         'vbo': '<span style="color: #ff00ff;">VBO</span>',
                         'unknown': '<span style="color: #aaa;">UNKNOWN</span>'
@@ -3276,7 +3262,6 @@
                         else if (reason.startsWith('range_') || reason.startsWith('flat_')) strategyType = 'flat';
                         else if (reason.startsWith('momentum_')) strategyType = 'momentum';
                         else if (reason.startsWith('ict_')) strategyType = 'ict';
-                        else if (reason.startsWith('liquidation_hunter_')) strategyType = 'liquidation_hunter';
                         else if (reason.startsWith('zscore_')) strategyType = 'zscore';
                         else if (reason.startsWith('vbo_')) strategyType = 'vbo';
                     }
@@ -4008,7 +3993,6 @@
                     const momentumCheckbox = document.getElementById('enable-momentum-strategy');
                     const smcCheckbox = document.getElementById('smcCheckbox');
                     const ictCheckbox = document.getElementById('enable-ict-strategy');
-                    const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
                     const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                     const vboCheckbox = document.getElementById('enable-vbo-strategy');
                     const amtOfCheckbox = document.getElementById('enable-amt-of-strategy');
@@ -4020,7 +4004,6 @@
                     if (momentumCheckbox) momentumCheckbox.checked = settings.enable_momentum_strategy || false;
                     if (smcCheckbox) smcCheckbox.checked = settings.enable_smc_strategy || false;
                     if (ictCheckbox) ictCheckbox.checked = settings.enable_ict_strategy || false;
-                    if (liquidationHunterCheckbox) liquidationHunterCheckbox.checked = settings.enable_liquidation_hunter_strategy || false;
                     if (zscoreCheckbox) zscoreCheckbox.checked = settings.enable_zscore_strategy || false;
                     if (vboCheckbox) vboCheckbox.checked = settings.enable_vbo_strategy || false;
                     if (amtOfCheckbox) amtOfCheckbox.checked = settings.enable_amt_of_strategy || false;
@@ -4031,95 +4014,6 @@
             }
         }
 
-        // --- Per-symbol JSON editor for symbol_strategy_settings.json ---
-        async function loadSymbolStrategySettings() {
-            const sel = document.getElementById('strategy-settings-symbol-select');
-            const statusEl = document.getElementById('symbol-settings-status');
-            const textarea = document.getElementById('symbol-strategy-json');
-            if (!sel || !textarea) return;
-            const symbol = sel.value || 'BTCUSDT';
-            if (statusEl) statusEl.textContent = 'Loading...';
-            try {
-                const resp = await fetch(`/api/settings/symbol/${encodeURIComponent(symbol)}`);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const data = await resp.json();
-                if (!data.success) throw new Error(data.error || 'No data');
-                // Pretty-print settings object
-                const pretty = JSON.stringify(data.settings, null, 4);
-                textarea.value = pretty;
-                if (statusEl) { statusEl.style.color = '#00ff88'; statusEl.textContent = 'Loaded'; }
-            } catch (e) {
-                console.error('Error loading symbol settings:', e);
-                if (statusEl) { statusEl.style.color = '#ff4444'; statusEl.textContent = 'Error loading'; }
-                alert('Error loading symbol settings: ' + (e.message || e));
-            }
-        }
-
-        async function saveSymbolStrategySettings() {
-            const sel = document.getElementById('strategy-settings-symbol-select');
-            const statusEl = document.getElementById('symbol-settings-status');
-            const textarea = document.getElementById('symbol-strategy-json');
-            if (!sel || !textarea) return;
-            const symbol = sel.value || 'BTCUSDT';
-            let payload;
-            try {
-                payload = JSON.parse(textarea.value);
-            } catch (e) {
-                alert('Invalid JSON: ' + e.message);
-                return;
-            }
-            if (statusEl) { statusEl.style.color = '#aaa'; statusEl.textContent = 'Saving...'; }
-            try {
-                const resp = await fetch(`/api/settings/symbol/${encodeURIComponent(symbol)}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                });
-                const data = await resp.json();
-                if (!resp.ok || !data.success) {
-                    const err = data.error || `HTTP ${resp.status}`;
-                    throw new Error(err);
-                }
-                if (statusEl) { statusEl.style.color = '#00ff88'; statusEl.textContent = 'Saved'; }
-                // Update shared UI
-                try { loadStrategySettingsForSymbol(); loadSymbolSettings(); } catch(_){}
-            } catch (e) {
-                console.error('Error saving symbol settings:', e);
-                if (statusEl) { statusEl.style.color = '#ff4444'; statusEl.textContent = 'Save failed'; }
-                alert('Error saving symbol settings: ' + (e.message || e));
-            }
-        }
-
-        function revertSymbolStrategySettings() {
-            loadSymbolStrategySettings();
-            const statusEl = document.getElementById('symbol-settings-status');
-            if (statusEl) { statusEl.style.color = '#aaa'; statusEl.textContent = 'Reverted'; }
-        }
-
-        async function copySymbolSettingsToAll() {
-            const sel = document.getElementById('strategy-settings-symbol-select');
-            if (!sel) return;
-            const symbol = sel.value || 'BTCUSDT';
-            if (!confirm(`Copy settings for ${symbol} to all symbols (BTCUSDT, ETHUSDT, SOLUSDT)?`)) return;
-            try {
-                const resp = await fetch(`/api/settings/symbol/${encodeURIComponent(symbol)}/copy-to-all`, { method: 'POST' });
-                const data = await resp.json();
-                if (!resp.ok || !data.success) throw new Error(data.error || `HTTP ${resp.status}`);
-                alert(`Settings for ${symbol} copied to all symbols`);
-                // Reload editor for current symbol
-                loadSymbolStrategySettings();
-            } catch (e) {
-                console.error('Error copying settings to all:', e);
-                alert('Error copying settings: ' + (e.message || e));
-            }
-        }
-
-        // Auto-load when select changes
-        try {
-            const editorSelect = document.getElementById('strategy-settings-symbol-select');
-            if (editorSelect) editorSelect.addEventListener('change', loadSymbolStrategySettings);
-        } catch (e) {}
-        
         async function copyStrategySettingsToAllSymbols() {
             const symbolSelect = document.getElementById('strategy-symbol-select');
             if (!symbolSelect) return;
@@ -4293,7 +4187,7 @@
                     days: days,
                     min_pnl: minPnl,
                     min_win_rate: minWinRate,
-                    auto_apply: true
+                    auto_apply: false
                 };
                 console.log('[optimizeStrategies] Request data:', requestData);
                 
@@ -4351,7 +4245,6 @@
                     const momentumCheckbox = document.getElementById('enable-momentum-strategy');
                     const smcCheckbox = document.getElementById('smcCheckbox');
                     const ictCheckbox = document.getElementById('enable-ict-strategy');
-                    const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
                     const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                     const vboCheckbox = document.getElementById('enable-vbo-strategy');
                     
@@ -4382,9 +4275,6 @@
                     }
                     if (ictCheckbox) {
                         ictCheckbox.checked = toBool(data.app.enable_ict_strategy);
-                    }
-                    if (liquidationHunterCheckbox) {
-                        liquidationHunterCheckbox.checked = toBool(data.app.enable_liquidation_hunter_strategy);
                     }
                     if (zscoreCheckbox) {
                         zscoreCheckbox.checked = toBool(data.app.enable_zscore_strategy);
@@ -4691,46 +4581,6 @@
                     </div>
                 `;
                 
-                // Статистика для Liquidation Hunter стратегии
-                const liqHunterStats = data.liquidation_hunter || {};
-                html += `
-                    <div class="card" style="background: linear-gradient(135deg, rgba(255, 149, 0, 0.1) 0%, rgba(255, 149, 0, 0.05) 100%); border: 1px solid rgba(255, 149, 0, 0.3);">
-                        <h3 style="color: #ff9500; margin-bottom: 15px;">🟠 Liquidation Hunter</h3>
-                        <div class="stat-item">
-                            <span class="stat-label">Total Trades:</span>
-                            <span class="stat-value">${liqHunterStats.total_trades || 0}</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Win Rate:</span>
-                            <span class="stat-value" style="color: ${(liqHunterStats.win_rate || 0) >= 50 ? '#00ff88' : '#ff4444'}">${formatPercent(liqHunterStats.win_rate || 0)}</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Winning Trades:</span>
-                            <span class="stat-value" style="color: #00ff88">${liqHunterStats.winning_trades || 0}</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Losing Trades:</span>
-                            <span class="stat-value" style="color: #ff4444">${liqHunterStats.losing_trades || 0}</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Total PnL:</span>
-                            <span class="stat-value" style="color: ${(liqHunterStats.total_pnl || 0) >= 0 ? '#00ff88' : '#ff4444'}">${formatNumber(liqHunterStats.total_pnl || 0)} USDT</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Avg PnL:</span>
-                            <span class="stat-value">${formatNumber(liqHunterStats.avg_pnl || 0)} USDT</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Avg Win:</span>
-                            <span class="stat-value" style="color: #00ff88">${formatNumber(liqHunterStats.avg_win || 0)} USDT</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Avg Loss:</span>
-                            <span class="stat-value" style="color: #ff4444">${formatNumber(liqHunterStats.avg_loss || 0)} USDT</span>
-                        </div>
-                    </div>
-                `;
-                
                 // Статистика для Z-Score стратегии
                 const zscoreStats = data.zscore || {};
                 html += `
@@ -4877,7 +4727,6 @@
                 const momentumCheckbox = document.getElementById('enable-momentum-strategy');
                 const smcCheckbox = document.getElementById('smcCheckbox');
                 const ictCheckbox = document.getElementById('enable-ict-strategy');
-                const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
                 const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                 const vboCheckbox = document.getElementById('enable-vbo-strategy');
                 const amtOfCheckbox = document.getElementById('enable-amt-of-strategy');
@@ -4905,7 +4754,6 @@
                     enable_liquidity_sweep_strategy: false,  // Стратегия отключена
                     enable_smc_strategy: smcCheckbox ? smcCheckbox.checked : false,
                     enable_ict_strategy: ictCheckbox ? ictCheckbox.checked : false,
-                    enable_liquidation_hunter_strategy: liquidationHunterCheckbox ? liquidationHunterCheckbox.checked : false,
                     enable_zscore_strategy: zscoreCheckbox ? zscoreCheckbox.checked : false,
                     enable_vbo_strategy: vboCheckbox ? vboCheckbox.checked : false,
                     enable_amt_of_strategy: amtOfCheckbox ? amtOfCheckbox.checked : false,
@@ -4931,7 +4779,6 @@
                         'momentum': 'Momentum Breakout Priority',
                         'smc': 'Smart Money Concepts Priority',
                         'ict': 'ICT Silver Bullet Priority',
-                        'liquidation_hunter': 'Liquidation Hunter Priority',
                         'zscore': 'Z-Score Priority',
                         'vbo': 'VBO Priority',
                         'hybrid': 'Hybrid (Latest Signal)',
@@ -4944,7 +4791,6 @@
                     if (momentumCheckbox && momentumCheckbox.checked) enabledStrategies.push('Momentum');
                     if (smcCheckbox && smcCheckbox.checked) enabledStrategies.push('Smart Money Concepts');
                     if (ictCheckbox && ictCheckbox.checked) enabledStrategies.push('ICT Silver Bullet');
-                    if (liquidationHunterCheckbox && liquidationHunterCheckbox.checked) enabledStrategies.push('Liquidation Hunter');
                     if (zscoreCheckbox && zscoreCheckbox.checked) enabledStrategies.push('Z-Score');
                     if (vboCheckbox && vboCheckbox.checked) enabledStrategies.push('VBO');
                     
@@ -4975,10 +4821,6 @@
                         const ictCheckbox = document.getElementById('enable-ict-strategy');
                         if (ictCheckbox && result.settings.enable_ict_strategy !== undefined) {
                             ictCheckbox.checked = result.settings.enable_ict_strategy;
-                        }
-                        const liquidationHunterCheckbox = document.getElementById('enable-liquidation-hunter-strategy');
-                        if (liquidationHunterCheckbox && result.settings.enable_liquidation_hunter_strategy !== undefined) {
-                            liquidationHunterCheckbox.checked = result.settings.enable_liquidation_hunter_strategy;
                         }
                         const zscoreCheckbox = document.getElementById('enable-zscore-strategy');
                         if (zscoreCheckbox && result.settings.enable_zscore_strategy !== undefined) {

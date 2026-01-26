@@ -509,7 +509,6 @@ class SignalDiagnostics:
             ("LIQUIDITY", "enable_liquidity_sweep_strategy"),
             ("SMC", "enable_smc_strategy"),
             ("ICT", "enable_ict_strategy"),
-            ("LIQUIDATION_HUNTER", "enable_liquidation_hunter_strategy"),
             ("ZSCORE", "enable_zscore_strategy"),
             ("VBO", "enable_vbo_strategy"),
             ("AMT_OF", "enable_amt_of_strategy"),
@@ -635,7 +634,6 @@ class SignalDiagnostics:
             ("liquidity_", "liquidity"),
             ("smc_", "smc"),
             ("ict_", "ict"),
-            ("liquidation_hunter_", "liquidation_hunter"),
             ("zscore_", "zscore"),
             ("vbo_", "vbo"),
             ("amt_of_", "amt_of"),
@@ -866,7 +864,7 @@ def print_signal_report(symbol: str, all_signals: List[Any], log_func=None):
         reason = getattr(sig, 'reason', 'unknown')
         # Определяем тип стратегии по префиксу
         strat = "unknown"
-        for prefix in ["ml_", "trend_", "range_", "momentum_", "smc_", "ict_", "liquidation_hunter_", "zscore_", "vbo_", "amt_of_"]:
+        for prefix in ["ml_", "trend_", "range_", "momentum_", "smc_", "ict_", "zscore_", "vbo_", "amt_of_"]:
             if reason.lower().startswith(prefix):
                 strat = prefix.rstrip("_")
                 break

@@ -450,8 +450,6 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
             strategy_type = "momentum"
         elif reason_lower.startswith("ict_"):
             strategy_type = "ict"
-        elif reason_lower.startswith("liquidation_hunter_"):
-            strategy_type = "liquidation_hunter"
         elif reason_lower.startswith("zscore_"):
             strategy_type = "zscore"
         elif reason_lower.startswith("vbo_"):
@@ -789,8 +787,6 @@ def get_signals(limit: int = 100, symbol_filter: Optional[str] = None, include_s
                 sig["strategy_type"] = "smc"
             elif reason.startswith("ict_"):
                 sig["strategy_type"] = "ict"
-            elif reason.startswith("liquidation_hunter_"):
-                sig["strategy_type"] = "liquidation_hunter"
             elif reason.startswith("zscore_"):
                 sig["strategy_type"] = "zscore"
             elif reason.startswith("vbo_"):
