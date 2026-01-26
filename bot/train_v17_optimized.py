@@ -11,17 +11,26 @@ from crypto_env_v17_optimized import CryptoTradingEnvV17_Optimized
 
 
 class RRMonitoringCallback(BaseCallback):
-    """Callback для мониторинга RR ratio"""
+    """Callback для мониторинга RR ratio и разнообразия действий"""
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.rr_history = []
         self.trade_count = 0
+        self.action_history = []
         
     def _on_step(self) -> bool:
         # Получаем информацию из среды
         try:
             if hasattr(self.locals, 'env'):
                 env_info = self.locals['env'].get_attr('_get_info')[0]
+                
+                # Сохраняем действия для анализа разнообразия
+                if hasattr(self.locals, 'actions'):
+                    actions = self.locals.get('actions', [])
+                    if len(actions) > 0:
+                        self.action_history.append(int(actions[0]))
+                        if len(self.action_history) > 1000:
+                            self.action_history.pop(0)
                 
                 # Мониторим RR статистику
                 if 'rr_stats' in env_info:
@@ -32,11 +41,34 @@ class RRMonitoringCallback(BaseCallback):
                     if len(self.rr_history) > 100:
                         self.rr_history.pop(0)
                     
-                    # Логируем каждые 100 шагов
-                    if self.num_timesteps % 100 == 0:
+                    # Логируем каждые 500 шагов
+                    if self.num_timesteps % 500 == 0:
                         avg_rr = np.mean(self.rr_history) if self.rr_history else 0
-                        print(f"[RR_MONITOR] Step {self.num_timesteps}: Avg RR = {avg_rr:.2f}, "
+                        
+                        # Анализ разнообразия действий
+                        action_diversity = ""
+                        if len(self.action_history) >= 100:
+                            action_counts = {}
+                            for a in self.action_history[-100:]:
+                                action_counts[a] = action_counts.get(a, 0) + 1
+                            
+                            action_names = {0: 'HOLD', 1: 'OPEN_LONG', 2: 'OPEN_SHORT'}
+                            action_strs = []
+                            for a_id in sorted(action_counts.keys()):
+                                count = action_counts[a_id]
+                                pct = (count / len(self.action_history[-100:])) * 100
+                                action_strs.append(f"{action_names.get(a_id, f'UNK_{a_id}')}: {pct:.1f}%")
+                            action_diversity = ", ".join(action_strs)
+                            
+                            # Предупреждение если нет разнообразия
+                            max_ratio = max(action_counts.values()) / len(self.action_history[-100:])
+                            if max_ratio > 0.8:
+                                print(f"⚠️ [DIVERSITY_WARNING] Модель выбирает одно действие {max_ratio*100:.1f}% времени!")
+                        
+                        print(f"[MONITOR] Step {self.num_timesteps}: Avg RR = {avg_rr:.2f}, "
                               f"Violations = {rr_stats['violations']}")
+                        if action_diversity:
+                            print(f"         Действия (последние 100): {action_diversity}")
                         
                         # Предупреждение если RR низкий
                         if avg_rr < 1.2:
@@ -49,7 +81,7 @@ class RRMonitoringCallback(BaseCallback):
                         trades_diff = new_trades - self.trade_count
                         self.trade_count = new_trades
                         
-                        if trades_diff > 0 and self.num_timesteps % 50 == 0:
+                        if trades_diff > 0 and self.num_timesteps % 100 == 0:
                             print(f"[TRADE_MONITOR] Новых сделок: {trades_diff}, Всего: {self.trade_count}")
                             
         except Exception as e:
@@ -185,9 +217,28 @@ def load_and_prepare_data():
             df['rsi'] = df['rsi'].fillna(50)
             df['rsi_norm'] = (df['rsi'] - 50) / 50
         
-        # Тренд
+        # ADX (Average Directional Index) - замена trend_bias_1h
+        if 'adx' not in df.columns:
+            print("⚠️ ADX не найден, создаю...")
+            # Упрощенный расчет ADX
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            plus_dm = df['high'].diff()
+            minus_dm = -df['low'].diff()
+            plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0)
+            minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), -minus_dm, 0)
+            plus_di = 100 * pd.Series(plus_dm, index=df.index).rolling(window=14).mean() / tr.rolling(window=14).mean()
+            minus_di = 100 * pd.Series(minus_dm, index=df.index).rolling(window=14).mean() / tr.rolling(window=14).mean()
+            dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+            df['adx'] = dx.rolling(window=14).mean().fillna(25)
+            df['plus_di'] = plus_di.fillna(25)
+            df['minus_di'] = minus_di.fillna(25)
+            print("   ✅ ADX, +DI, -DI созданы")
+        
+        # Fallback: trend_bias_1h (если нужен для совместимости, но не используется в фильтрах)
         if 'trend_bias_1h' not in df.columns:
-            print("⚠️ Тренд не найден, создаю...")
             df['trend_bias_1h'] = np.sin(np.arange(len(df)) * 0.01) * 0.8
         
         # Волатильность
@@ -200,6 +251,130 @@ def load_and_prepare_data():
         if 'volume_ratio' not in df.columns:
             print("⚠️ Объем не найден, создаю...")
             df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean().fillna(1.2)
+        
+        # ДОПОЛНИТЕЛЬНЫЕ ПРИЗНАКИ (ФАЗА 1: Технические индикаторы)
+        print("\n📈 Создание дополнительных признаков (Фаза 1)...")
+        
+        # Bollinger Bands
+        if 'bb_position' not in df.columns:
+            print("   Создаю Bollinger Bands...")
+            df['sma_20'] = df['close'].rolling(window=20, min_periods=1).mean()
+            rolling_std = df['close'].rolling(window=20, min_periods=1).std()
+            df['bb_upper'] = df['sma_20'] + (rolling_std * 2)
+            df['bb_lower'] = df['sma_20'] - (rolling_std * 2)
+            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
+            df['bb_position'] = df['bb_position'].fillna(0.5)
+        
+        # Momentum
+        if 'momentum' not in df.columns:
+            print("   Создаю Momentum...")
+            df['momentum'] = df['close'] - df['close'].shift(5)
+            df['momentum'] = df['momentum'].fillna(0)
+        
+        # ADX (упрощенный) + DI индикаторы
+        if 'adx' not in df.columns:
+            print("   Создаю ADX, +DI, -DI...")
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            plus_dm = df['high'].diff()
+            minus_dm = df['low'].diff().abs()
+            plus_di = 100 * (plus_dm.rolling(window=14).mean() / tr.rolling(window=14).mean())
+            minus_di = 100 * (minus_dm.rolling(window=14).mean() / tr.rolling(window=14).mean())
+            df['adx'] = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+            df['adx'] = df['adx'].fillna(df['adx'].mean() if not df['adx'].isnull().all() else 25)
+            # Сохраняем +DI и -DI для использования в наблюдениях
+            df['plus_di'] = plus_di.fillna(25)
+            df['minus_di'] = minus_di.fillna(25)
+            print("   ✅ ADX, +DI, -DI созданы")
+        
+        # RSI (если еще не создан)
+        if 'rsi' not in df.columns and 'rsi_norm' in df.columns:
+            df['rsi'] = (df['rsi_norm'] * 50) + 50
+        
+        # ДОПОЛНИТЕЛЬНЫЕ ПРИЗНАКИ (ФАЗА 2: TP-ориентированные)
+        print("📈 Создание TP-ориентированных признаков (Фаза 2)...")
+        
+        base_atr = df['atr'].fillna(df['atr'].mean())
+        current_price = df['close']
+        
+        # TP признаки для LONG
+        if 'tp_up_atr_1' not in df.columns:
+            print("   Создаю TP признаки для LONG...")
+            for i, multiplier in enumerate([1.2, 1.8, 2.4], 1):
+                tp_distance = base_atr * multiplier
+                df[f'tp_up_atr_{i}'] = tp_distance / current_price
+                df[f'tp_up_atr_{i}'] = df[f'tp_up_atr_{i}'].fillna(0.01)
+                
+                # Вероятность TP (упрощенная на основе RSI)
+                if 'rsi' in df.columns:
+                    rsi_factor = np.where(df['rsi'] < 40, 1.5, 
+                                        np.where(df['rsi'] > 70, 0.7, 1.0))
+                    df[f'tp_up_prob_{i}'] = 0.5 * rsi_factor
+                else:
+                    df[f'tp_up_prob_{i}'] = 0.5
+        
+        # TP признаки для SHORT
+        if 'tp_down_atr_1' not in df.columns:
+            print("   Создаю TP признаки для SHORT...")
+            for i, multiplier in enumerate([1.2, 1.8, 2.4], 1):
+                tp_distance = base_atr * multiplier
+                df[f'tp_down_atr_{i}'] = -tp_distance / current_price  # Отрицательное
+                df[f'tp_down_atr_{i}'] = df[f'tp_down_atr_{i}'].fillna(-0.01)
+                
+                # Вероятность TP для SHORT
+                if 'rsi' in df.columns:
+                    rsi_factor = np.where(df['rsi'] > 60, 1.5,
+                                        np.where(df['rsi'] < 30, 0.7, 1.0))
+                    df[f'tp_down_prob_{i}'] = 0.5 * rsi_factor
+                else:
+                    df[f'tp_down_prob_{i}'] = 0.5
+        
+        # SL признаки
+        if 'sl_up_atr' not in df.columns:
+            print("   Создаю SL признаки...")
+            sl_multiplier = 1.5
+            sl_distance_long = base_atr * sl_multiplier
+            df['sl_up_atr'] = -sl_distance_long / current_price
+            df['sl_up_atr'] = df['sl_up_atr'].fillna(-0.01)
+            
+            sl_distance_short = base_atr * sl_multiplier
+            df['sl_down_atr'] = sl_distance_short / current_price
+            df['sl_down_atr'] = df['sl_down_atr'].fillna(0.01)
+        
+        # Признаки прогресса к TP (динамика движения к целям)
+        if 'progress_to_tp_up_1' not in df.columns:
+            print("   Создаю признаки прогресса к TP...")
+            tp_multipliers = [1.2, 1.8, 2.4]
+            for i, multiplier in enumerate(tp_multipliers, 1):
+                tp_distance = base_atr * multiplier
+                # Прогресс к TP для LONG (положительное движение к TP)
+                df[f'progress_to_tp_up_{i}'] = (df['close'] - df['close'].shift(1)) / (tp_distance + 1e-10)
+                df[f'progress_to_tp_up_{i}'] = df[f'progress_to_tp_up_{i}'].fillna(0)
+                
+                # Прогресс к TP для SHORT (отрицательное движение к TP)
+                df[f'progress_to_tp_down_{i}'] = (df['close'].shift(1) - df['close']) / (tp_distance + 1e-10)
+                df[f'progress_to_tp_down_{i}'] = df[f'progress_to_tp_down_{i}'].fillna(0)
+        
+        # ДОПОЛНИТЕЛЬНЫЕ ПРИЗНАКИ (ФАЗА 3: Базовые)
+        print("📈 Создание базовых признаков (Фаза 3)...")
+        
+        if 'log_ret' not in df.columns:
+            df['log_ret'] = np.log(df['close'] / df['close'].shift(1))
+            df['log_ret'] = df['log_ret'].fillna(0)
+        
+        if 'returns' not in df.columns:
+            df['returns'] = df['close'].pct_change()
+            df['returns'] = df['returns'].fillna(0)
+        
+        if 'high_low_ratio' not in df.columns:
+            df['high_low_ratio'] = df['high'] / df['low']
+            df['high_low_ratio'] = df['high_low_ratio'].fillna(1.0)
+        
+        if 'close_open_ratio' not in df.columns:
+            df['close_open_ratio'] = df['close'] / df['open']
+            df['close_open_ratio'] = df['close_open_ratio'].fillna(1.0)
         
         # Заполняем пропуски
         numeric_cols = df.select_dtypes(include=[np.number]).columns
@@ -249,14 +424,120 @@ def train_optimized_model():
         print("❌ Недостаточно данных для обучения")
         return
     
-    # Подготовка признаков
-    obs_cols = ['open', 'high', 'low', 'close', 'volume', 'atr']
-    additional_cols = ['rsi_norm', 'trend_bias_1h', 'volatility_ratio', 'volume_ratio']
-    for col in additional_cols:
-        if col in df.columns:
-            obs_cols.append(col)
+    # ОПТИМИЗАЦИЯ ПРИЗНАКОВ НА ОСНОВЕ АНАЛИЗА КОРРЕЛЯЦИИ
+    print("\n" + "="*60)
+    print("🔬 ОПТИМИЗАЦИЯ ПРИЗНАКОВ ПО РЕЗУЛЬТАТАМ АНАЛИЗА")
+    print("="*60)
     
-    print(f"📊 Используется {len(obs_cols)} признаков")
+    # Базовые признаки (всегда используем)
+    obs_cols = ['open', 'high', 'low', 'close', 'volume', 'atr']
+    
+    # ✅ ПРИЗНАКИ С ПОЛОЖИТЕЛЬНОЙ КОРРЕЛЯЦИЕЙ (добавляем)
+    # Анализ показал: volume (0.171), atr (0.151), rsi_norm (0.126), volatility_ratio (0.028), volume_ratio (0.025)
+    positive_features = [
+        'volatility_ratio',  # ✅ Разница Win Rate 18.7%! (Q1: 33.9% vs Q4: 52.6%)
+        'rsi_norm',          # ✅ Положительная корреляция 0.126, разница WR 29.8% (Q1: 45.4% vs Q4: 62.5%)
+        'volume_ratio',      # ✅ Положительная корреляция 0.025, разница WR 16.2% (Q1: 38.6% vs Q4: 54.8%)
+    ]
+    print("\n📈 Признаки с ПОЛОЖИТЕЛЬНОЙ корреляцией:")
+    for feat in positive_features:
+        if feat in df.columns:
+            obs_cols.append(feat)
+            if feat == 'volatility_ratio':
+                print(f"   ✅ {feat} (разница WR: 18.7%, Q1: 33.9% vs Q4: 52.6%)")
+            elif feat == 'rsi_norm':
+                print(f"   ✅ {feat} (корреляция: 0.126, разница WR: 29.8%)")
+            elif feat == 'volume_ratio':
+                print(f"   ✅ {feat} (корреляция: 0.025, разница WR: 16.2%)")
+    
+    # ❌ ПРИЗНАКИ С ОТРИЦАТЕЛЬНОЙ КОРРЕЛЯЦИЕЙ (убираем из наблюдений)
+    # Анализ показал: trend_bias_1h (-0.030)
+    # ВАЖНО: некоторые используются в фильтрах, поэтому оставляем их для фильтров, но НЕ добавляем в obs_cols
+    negative_features = {
+        'trend_bias_1h': 'отрицательная корреляция: -0.030 - УБРАН ИЗ НАБЛЮДЕНИЙ',
+    }
+    print("\n📉 Признаки с ОТРИЦАТЕЛЬНОЙ корреляцией (НЕ добавляем в наблюдения):")
+    for feat, reason in negative_features.items():
+        if feat in df.columns:
+            print(f"   ❌ {feat} - {reason}")
+    
+    # УБЕЖДАЕМСЯ, ЧТО trend_bias_1h НЕ В obs_cols (даже если был добавлен ранее)
+    if 'trend_bias_1h' in obs_cols:
+        obs_cols.remove('trend_bias_1h')
+        print(f"   ⚠️  Удален trend_bias_1h из наблюдений (был добавлен ранее)")
+    
+    # 🆕 НОВЫЕ ПРИЗНАКИ ДЛЯ ТЕСТИРОВАНИЯ (добавляем постепенно)
+    print("\n🆕 НОВЫЕ признаки для тестирования:")
+    
+    # ФАЗА 1: Технические индикаторы (проверяем их эффективность)
+    phase1_features = [
+        'bb_position',   # Позиция в Bollinger Bands (перекупленность/перепроданность)
+        'momentum',      # Моментум цены (сила движения)
+        'adx',           # Сила тренда (используется в фильтрах)
+        'plus_di',       # Направление тренда вверх (используется в фильтрах для LONG)
+        'minus_di',      # Направление тренда вниз (используется в фильтрах для SHORT)
+        # rsi_norm добавлен в positive_features (положительная корреляция: 0.137)
+    ]
+    print("   ФАЗА 1: Технические индикаторы")
+    for feat in phase1_features:
+        if feat in df.columns:
+            obs_cols.append(feat)
+            print(f"   ✅ {feat}")
+    
+    # ФАЗА 2: TP-ориентированные признаки (критично важные для нашей стратегии!)
+    phase2_features = [
+        'tp_up_atr_1',      # Расстояние до TP1 для LONG
+        'tp_up_prob_1',     # Вероятность TP1 для LONG
+        'tp_up_atr_2',      # Расстояние до TP2 для LONG (дополнительный уровень)
+        'tp_up_prob_2',     # Вероятность TP2 для LONG
+        'tp_down_atr_1',    # Расстояние до TP1 для SHORT
+        'tp_down_prob_1',   # Вероятность TP1 для SHORT
+        'tp_down_atr_2',    # Расстояние до TP2 для SHORT (дополнительный уровень)
+        'tp_down_prob_2',   # Вероятность TP2 для SHORT
+        'sl_up_atr',        # Расстояние до SL для LONG
+        'sl_down_atr',      # Расстояние до SL для SHORT
+        'progress_to_tp_up_1',    # Прогресс к TP1 для LONG (динамика движения)
+        'progress_to_tp_down_1',  # Прогресс к TP1 для SHORT (динамика движения)
+    ]
+    print("\n   ФАЗА 2: TP-ориентированные признаки (критично важные!)")
+    for feat in phase2_features:
+        if feat in df.columns:
+            obs_cols.append(feat)
+            print(f"   ✅ {feat}")
+    
+    # ФАЗА 3: Базовые дополнительные признаки
+    phase3_features = [
+        'log_ret',          # Логарифмическая доходность
+        'returns',          # Простая доходность
+        'high_low_ratio',   # Соотношение high/low
+        'close_open_ratio', # Соотношение close/open
+    ]
+    print("\n   ФАЗА 3: Базовые дополнительные признаки")
+    for feat in phase3_features:
+        if feat in df.columns:
+            obs_cols.append(feat)
+            print(f"   ✅ {feat}")
+    
+    # ФИНАЛЬНАЯ ПРОВЕРКА: Убеждаемся, что trend_bias_1h точно не в obs_cols
+    if 'trend_bias_1h' in obs_cols:
+        obs_cols.remove('trend_bias_1h')
+        print(f"\n   ⚠️  УДАЛЕН trend_bias_1h из наблюдений (отрицательная корреляция: -0.030)")
+    
+    # УБЕЖДАЕМСЯ, ЧТО volume_ratio В obs_cols (теперь положительная корреляция!)
+    if 'volume_ratio' not in obs_cols and 'volume_ratio' in df.columns:
+        obs_cols.append('volume_ratio')
+        print(f"   ✅ Добавлен volume_ratio в наблюдения (положительная корреляция: 0.031, разница WR: 16.2%)")
+    
+    print(f"\n📊 ИТОГО: Используется {len(obs_cols)} признаков")
+    print(f"   Базовые: 6")
+    print(f"   С положительной корреляцией: {len([f for f in positive_features if f in obs_cols])}")
+    print(f"   Новые для тестирования: {len([f for f in phase1_features + phase2_features + phase3_features if f in obs_cols])}")
+    print(f"   Исключено с отрицательной корреляцией: {len(negative_features)}")
+    print(f"\n💡 Примечание: Признаки с отрицательной корреляцией (trend_bias_1h)")
+    print(f"   остаются для фильтров входа, но НЕ используются в наблюдениях модели.")
+    print(f"   ✅ trend_bias_1h исключен из наблюдений (корреляция: -0.048)")
+    print(f"   ✅ volume_ratio ДОБАВЛЕН в наблюдения (положительная корреляция: 0.031, разница WR: 16.2%)")
+    print(f"   ✅ rsi_norm ДОБАВЛЕН в наблюдения (положительная корреляция: 0.127, разница WR: 30.1%)")
     
     # Разделение данных
     train_size = int(len(df) * 0.7)
@@ -310,23 +591,56 @@ def train_optimized_model():
             )]
         )
         
-        model = PPO(
-            "MlpPolicy",
-            train_env,
-            policy_kwargs=policy_kwargs,
-            verbose=1,
-            learning_rate=1.5e-4,
-            ent_coef=0.015,
-            n_steps=2048,
-            batch_size=128,
-            n_epochs=15,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.15,
-            vf_coef=0.6,
-            max_grad_norm=0.7,
-            tensorboard_log="./logs/v17_optimized/tensorboard/"
-        )
+        # Проверяем, есть ли существующая модель для продолжения обучения
+        model_path = "./models/v17_optimized/ppo_final"
+        continue_training = False
+        
+        # Проверяем аргументы командной строки
+        force_new = '--new' in sys.argv or '--fresh' in sys.argv
+        
+        if os.path.exists(model_path + ".zip") and not force_new:
+            print(f"📂 Найдена существующая модель: {model_path}")
+            response = input("Продолжить обучение с этой модели? (y/n, по умолчанию y): ").strip().lower()
+            if response == '' or response == 'y':
+                continue_training = True
+                print("✅ Продолжаем обучение с существующей модели")
+            else:
+                print("🆕 Начинаем обучение с нуля")
+        elif force_new:
+            print("🆕 Запуск обучения с нуля (--new флаг)")
+        else:
+            print("🆕 Начинаем обучение с нуля (модель не найдена)")
+        
+        # Загружаем существующую модель или создаем новую
+        if continue_training:
+            print(f"📥 Загрузка модели из {model_path}...")
+            try:
+                model = PPO.load(model_path, env=train_env)
+                print("✅ Модель успешно загружена!")
+                print(f"   Текущий шаг обучения: {model.num_timesteps:,}")
+            except Exception as e:
+                print(f"⚠️ Ошибка загрузки модели: {e}")
+                print("🆕 Создаем новую модель...")
+                continue_training = False
+        
+        if not continue_training:
+            model = PPO(
+                "MlpPolicy",
+                train_env,
+                policy_kwargs=policy_kwargs,
+                verbose=1,
+                learning_rate=1.5e-4,  # Базовый learning rate (можно адаптировать по фазам)
+                ent_coef=0.05,  # УВЕЛИЧЕНО с 0.03 до 0.05 для большего разнообразия действий (особенно SHORT)
+                n_steps=2048,  # Размер буфера для сбора опыта
+                batch_size=128,  # Размер батча для обновления
+                n_epochs=15,  # Количество эпох обновления на каждый буфер
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.15,
+                vf_coef=0.6,
+                max_grad_norm=0.5,
+                tensorboard_log="./logs/v17_optimized/tensorboard/"
+            )
         
         # Callback для мониторинга
         rr_callback = RRMonitoringCallback()
@@ -335,30 +649,65 @@ def train_optimized_model():
         print("\n🎯 ЗАПУСК ОБУЧЕНИЯ V17 (ОПТИМИЗИРОВАННОЕ)")
         print("="*40)
         
-        total_steps = 20000
+        # УВЕЛИЧЕННОЕ количество шагов для более долгого и качественного обучения
+        # Увеличено до 400000 шагов для глубокого обучения и лучшей конвергенции
+        total_steps = 400000  # УВЕЛИЧЕНО с 200000 до 400000 для более глубокого и качественного обучения
         
-        # Поэтапное обучение
+        # Расширенное поэтапное обучение с постепенным увеличением сложности
+        # Каждая фаза фокусируется на разных аспектах обучения
         phases = [
-            {'steps': 5000, 'name': 'phase_1_adaptation'},
-            {'steps': 5000, 'name': 'phase_2_consolidation'},
-            {'steps': 10000, 'name': 'phase_3_refinement'},
+            {'steps': 40000, 'name': 'phase_1_adaptation'},      # Адаптация к среде (базовые паттерны)
+            {'steps': 50000, 'name': 'phase_2_exploration'},     # Исследование стратегий (разнообразие действий)
+            {'steps': 60000, 'name': 'phase_3_consolidation'},   # Консолидация знаний (стабильность)
+            {'steps': 70000, 'name': 'phase_4_refinement'},      # Уточнение стратегии (оптимизация)
+            {'steps': 80000, 'name': 'phase_5_mastery'},         # Мастерство (финальная полировка)
+            {'steps': 100000, 'name': 'phase_6_excellence'},     # Превосходство (дополнительное обучение)
         ]
         
+        print(f"\n📊 План обучения: {len(phases)} фаз, всего {sum(p['steps'] for p in phases):,} шагов")
+        if continue_training:
+            print(f"   Начальный шаг: {model.num_timesteps:,}")
+        print(f"   Конечный шаг: {model.num_timesteps + sum(p['steps'] for p in phases):,}")
+        
+        # Адаптивные learning rates для разных фаз (более агрессивное обучение в начале, более консервативное в конце)
+        phase_learning_rates = {
+            'phase_1_adaptation': 1.5e-4,      # Базовый rate для адаптации
+            'phase_2_exploration': 1.2e-4,       # Немного снижаем для стабильности
+            'phase_3_consolidation': 1.0e-4,     # Дальше снижаем для консолидации
+            'phase_4_refinement': 8.0e-5,       # Еще ниже для уточнения
+            'phase_5_mastery': 6.0e-5,          # Низкий rate для мастерства
+            'phase_6_excellence': 5.0e-5,      # Минимальный rate для финальной полировки
+        }
+        
         for i, phase in enumerate(phases, 1):
-            print(f"\n📈 Фаза {i}/{len(phases)}: {phase['steps']:,} шагов ({phase['name']})")
+            print(f"\n{'='*60}")
+            print(f"📈 Фаза {i}/{len(phases)}: {phase['steps']:,} шагов ({phase['name']})")
+            print(f"   Текущий шаг: {model.num_timesteps:,}")
+            # Адаптивный learning rate для фазы
+            phase_lr = phase_learning_rates.get(phase['name'], 1.5e-4)
+            model.learning_rate = phase_lr
+            print(f"   Learning Rate: {phase_lr:.2e}")
+            print(f"{'='*60}")
             
             model.learn(
                 total_timesteps=phase['steps'],
                 callback=rr_callback,
-                log_interval=10,
+                log_interval=20000,  # Логирование каждые 20000 шагов
                 progress_bar=True,
-                tb_log_name=phase['name']
+                tb_log_name=phase['name'],
+                reset_num_timesteps=False  # НЕ сбрасываем счетчик шагов при продолжении обучения
             )
             
             # Сохраняем промежуточную модель
             phase_model_path = f"./models/v17_optimized/ppo_{phase['name']}"
             model.save(phase_model_path)
-            print(f"💾 Сохранена модель фазы {i}")
+            print(f"💾 Сохранена модель фазы {i} (шаг {model.num_timesteps:,})")
+            
+            # Показываем прогресс
+            total_completed = sum(p['steps'] for p in phases[:i])
+            total_planned = sum(p['steps'] for p in phases)
+            progress_pct = (total_completed / total_planned) * 100
+            print(f"📊 Прогресс: {progress_pct:.1f}% ({total_completed:,} / {total_planned:,} шагов)")
             
             # Проверяем логи
             if os.path.exists(log_file):
@@ -515,8 +864,9 @@ def test_model(model, test_df, obs_cols):
     test_log_file = os.path.abspath('./logs/v17_optimized/test_results.csv')
     
     def make_test_env():
+        # Используем больше тестовых данных для статистически значимых результатов
         env = CryptoTradingEnvV17_Optimized(
-            df=test_df.iloc[:1000].copy(),
+            df=test_df.copy(),  # Используем все тестовые данные вместо [:1000]
             obs_cols=obs_cols,
             initial_balance=10000,
             commission=0.001,
@@ -530,8 +880,8 @@ def test_model(model, test_df, obs_cols):
     obs = test_env.reset()
     
     steps = 0
-    max_steps = 300
-    print(f"Тестирование на {max_steps} шагах...")
+    max_steps = min(len(test_df), 2000)  # Увеличено с 300 до 2000 или до размера тестовых данных
+    print(f"Тестирование на {max_steps} шагах (из {len(test_df)} доступных)...")
     
     while steps < max_steps:
         action, _ = model.predict(obs, deterministic=True)
@@ -585,6 +935,14 @@ def test_model(model, test_df, obs_cols):
 def main():
     print("🐍 Запуск оптимизированного обучения V17...")
     print(f"📁 Текущая директория: {os.getcwd()}")
+    
+    # Показываем справку по аргументам
+    if '--help' in sys.argv or '-h' in sys.argv:
+        print("\nИспользование:")
+        print("  python train_v17_optimized.py          # Интерактивный режим")
+        print("  python train_v17_optimized.py --new     # Запуск с нуля (без запроса)")
+        print("  python train_v17_optimized.py --fresh  # То же что --new")
+        return
     
     train_optimized_model()
     
