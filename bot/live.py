@@ -50,8 +50,8 @@ from bot.web.history import add_signal, add_trade, check_recent_loss_trade
 from bot.ml.strategy_ml import build_ml_signals
 from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
-from bot.zscore_strategy import build_zscore_signals
 from bot.vbo_strategy import build_vbo_signals
+from bot.breakout_trend_hybrid import build_breakout_trend_signals
 from bot.amt_orderflow_strategy import (
     detect_absorption_squeeze_short,
     AbsorptionConfig,
@@ -546,6 +546,8 @@ def _calculate_tp_sl_for_signal(
             strategy_type = "zscore"
         elif sig.reason.startswith("vbo_"):
             strategy_type = "vbo"
+        elif sig.reason.startswith("breakout_trend_hybrid_"):
+            strategy_type = "breakout_trend_hybrid"
         elif sig.reason.startswith("ict_"):
             strategy_type = "ict"
         elif sig.reason.startswith("smc_"):
@@ -2708,10 +2710,10 @@ def get_strategy_type_from_signal(signal_reason: str) -> str:
         return "smc"
     elif reason_lower.startswith("ict_"):
         return "ict"
-    elif reason_lower.startswith("zscore_"):
-        return "zscore"
     elif reason_lower.startswith("vbo_"):
         return "vbo"
+    elif reason_lower.startswith("breakout_trend_hybrid_"):
+        return "breakout_trend_hybrid"
     else:
         return "unknown"
 
@@ -3415,8 +3417,8 @@ def run_live_from_api(
         f"Liquidity={symbol_strategy_settings.enable_liquidity_sweep_strategy}, "
         f"SMC={symbol_strategy_settings.enable_smc_strategy}, "
         f"ICT={symbol_strategy_settings.enable_ict_strategy}, "
-        f"ZScore={symbol_strategy_settings.enable_zscore_strategy}, "
         f"VBO={symbol_strategy_settings.enable_vbo_strategy}, "
+        f"BREAKOUT_TREND_HYBRID={symbol_strategy_settings.enable_breakout_trend_hybrid_strategy}, "
         f"AMT_OF={symbol_strategy_settings.enable_amt_of_strategy}"
     )
     print(f"[live] [{symbol}] ⚙️  Leverage: {local_settings.leverage}x, Max position: ${local_settings.risk.max_position_usd}")
@@ -4151,10 +4153,10 @@ def run_live_from_api(
                     return "smc"
                 elif reason_lower.startswith("ict_"):
                     return "ict"
-                elif reason_lower.startswith("zscore_"):
-                    return "zscore"
                 elif reason_lower.startswith("vbo_"):
                     return "vbo"
+                elif reason_lower.startswith("breakout_trend_hybrid_"):
+                    return "breakout_trend_hybrid"
                 else:
                     return "unknown"
             
@@ -4356,80 +4358,13 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ ICT strategy is DISABLED for {symbol}", symbol)
-            # Z-Score стратегия
-            if symbol_strategy_settings.enable_zscore_strategy:
-                try:
-                    if len(df_ready) >= 20:
-                        # Обновляем статус перед долгой операцией
-                        update_worker_status(symbol, current_status="Running", last_action="Generating Z-Score signals...")
-                        if stop_event.is_set():
-                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
-                            break
-                        # Промежуточное обновление статуса во время генерации (Z-Score может занимать много времени)
-                        try:
-                            from bot.multi_symbol_manager import update_worker_status
-                            update_worker_status(symbol, current_status="Running", last_action="Computing Z-Score values...", error=None)
-                        except ImportError:
-                            pass
-                        # Пытаемся заранее посчитать POC для TP по Volume Profile
-                        zscore_poc = None
-                        try:
-                            df_vp = df_ready.copy()
-                            if "timestamp" in df_vp.columns:
-                                df_vp["timestamp"] = pd.to_datetime(df_vp["timestamp"], unit="ms", utc=True)
-                                df_vp = df_vp.set_index("timestamp")
-                            vp_cfg_z = VolumeProfileConfig(
-                                price_step=current_settings.strategy.amt_of_price_step,
-                                value_area_pct=current_settings.strategy.amt_of_value_area_pct,
-                                session_start_utc=current_settings.strategy.amt_of_session_start_utc,
-                                session_end_utc=current_settings.strategy.amt_of_session_end_utc,
-                            )
-                            vp_z = build_volume_profile_from_ohlcv(df_vp, vp_cfg_z)
-                            if vp_z:
-                                zscore_poc = float(vp_z["poc"])
-                        except Exception as e:
-                            _log(f"⚠️ Z-Score: failed to build Volume Profile for POC TP: {e}", symbol)
+            # Z-Score стратегия удалена - используется только как индикатор для других стратегий
+            # VBO (Volatility Breakout) стратегия
+            if symbol_strategy_settings.enable_vbo_strategy:
 
                         zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
                         # Обновляем статус после генерации
-                        update_worker_status(symbol, current_status="Running", last_action="Z-Score signals generated")
-                        from bot.strategy import Action as StrategyActionZscore
-                        zscore_generated = [s for s in zscore_signals if s.action in (StrategyActionZscore.LONG, StrategyActionZscore.SHORT)]
 
-                        # CVD‑фильтр: если поток агрессии слишком силён, блокируем Z-Score сигналы (защита от "падающих ножей")
-                        zscore_before_cvd_filter = len(zscore_generated)
-                        try:
-                            trades = client.get_recent_trades(symbol, limit=2000)  # Увеличено для покрытия временного окна
-                            if not trades:
-                                _log(f"⚠️ Z-Score: CVD filter skipped - no trades data from API", symbol)
-                            else:
-                                trades_df = _parse_trades(trades)
-                                if trades_df.empty:
-                                    _log(f"⚠️ Z-Score: CVD filter skipped - parsed trades DataFrame is empty (raw trades: {len(trades)})", symbol)
-                                else:
-                                    _log(f"🔍 Z-Score: CVD filter - parsed {len(trades_df)} trades from {len(trades)} raw trades", symbol)
-                                    cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=current_settings.strategy.amt_of_lookback_seconds)
-                                    if cvd_metrics:
-                                        dv = cvd_metrics["delta_velocity"]
-                                        avg_abs = cvd_metrics["avg_abs_delta"]
-                                        if avg_abs and abs(dv) > avg_abs * 3:
-                                            _log(f"⚠️ Z-Score: strong directional CVD detected (dv={dv:.0f}, avg={avg_abs:.0f}), skipping mean reversion signals", symbol)
-                                            zscore_generated = []
-                                    else:
-                                        _log(f"ℹ️ Z-Score: CVD filter - no metrics computed (insufficient data or time window)", symbol)
-                        except Exception as e:
-                            import traceback
-                            error_details = traceback.format_exc()
-                            _log(f"⚠️ Z-Score: CVD filter failed, keeping signals unfiltered: {e}", symbol)
-                            _log(f"   Error details: {error_details[:500]}", symbol)  # Первые 500 символов для диагностики
-
-                        if zscore_generated:
-                            _log(f"📊 Z-Score strategy: generated {len(zscore_generated)} actionable signals (total: {len(zscore_signals)}, before CVD filter: {zscore_before_cvd_filter})", symbol)
-                        else:
-                            if zscore_before_cvd_filter > 0:
-                                _log(f"⚠️ Z-Score strategy: {zscore_before_cvd_filter} signals filtered by CVD filter (total: {len(zscore_signals)})", symbol)
-                            else:
-                                _log(f"⚠️ Z-Score strategy: enabled but generated 0 actionable signals (total: {len(zscore_signals)})", symbol)
                         
                         for sig in zscore_generated:
                             # Если удалось посчитать POC, добавляем его в reason, чтобы TP/SL могли использовать TP=POC
@@ -4482,13 +4417,7 @@ def run_live_from_api(
                                         # Обновим timestamp на время последней свечи (не на текущее время!)
                                         is_last_row_signal = True
                                         matches_last_candle = True
-                                        _log(
-                                            f"🔍 Z-Score signal detected as FRESH LAST ROW signal (price match + fresh): {sig.action.value} @ ${sig.price:.2f} | "
-                                            f"Original TS: {original_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} ({age_hours:.1f}h old) | "
-                                            f"Last candle TS: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
-                                            f"Price match: {price_match} | Will update to last candle time",
-                                            symbol
-                                        )
+                                       
                                     elif price_match and not is_fresh_by_age:
                                         # Цена совпадает, но сигнал слишком старый - не считаем его свежим
                                         _log(
@@ -4497,15 +4426,7 @@ def run_live_from_api(
                                             symbol
                                         )
                                     
-                                    _log(
-                                        f"🔍 Z-Score signal diagnostic: {sig.action.value} @ ${sig.price:.2f} | "
-                                        f"Original TS: {original_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
-                                        f"Last candle TS: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
-                                        f"Diff: {time_diff_seconds:.0f}s | "
-                                        f"Matches last candle: {matches_last_candle} | "
-                                        f"Is last row signal: {is_last_row_signal}",
-                                        symbol
-                                    )
+                                    
                             
                             # ВАЖНО: Добавляем только свежие сигналы (не старше 15 минут от последней свечи)
                             # Это предотвращает обработку старых сигналов из исторических данных
@@ -4614,14 +4535,6 @@ def run_live_from_api(
                                 )
                             except Exception as e:
                                 _log(f"⚠️ Failed to save Z-Score signal to history: {e}", symbol)
-                    else:
-                        _log(f"⚠️ Z-Score strategy requires more history. Current: {len(df_ready)} candles (need >= 20)", symbol)
-                except Exception as e:
-                    _log(f"❌ Error in Z-Score strategy: {e}", symbol)
-                    import traceback
-                    traceback.print_exc()
-            else:
-                _log(f"⚠️ Z-Score strategy is DISABLED for {symbol}", symbol)
             # VBO (Volatility Breakout) стратегия
             if symbol_strategy_settings.enable_vbo_strategy:
                 try:
@@ -4681,6 +4594,67 @@ def run_live_from_api(
                     traceback.print_exc()
             else:
                 _log(f"⚠️ VBO strategy is DISABLED for {symbol}", symbol)
+            
+            # BREAKOUT_TREND_HYBRID стратегия (VBO + TREND фильтрация)
+            if symbol_strategy_settings.enable_breakout_trend_hybrid_strategy:
+                try:
+                    if len(df_ready) >= 200:  # Минимум для обеих стратегий
+                        # Обновляем статус перед долгой операцией
+                        update_worker_status(symbol, current_status="Running", last_action="Generating BREAKOUT_TREND_HYBRID signals...")
+                        if stop_event.is_set():
+                            _log(f"🛑 Stop event received, stopping bot for {symbol}", symbol)
+                            break
+                        # Промежуточное обновление статуса во время генерации
+                        try:
+                            from bot.multi_symbol_manager import update_worker_status
+                            update_worker_status(symbol, current_status="Running", last_action="Calculating hybrid breakout signals...", error=None)
+                        except ImportError:
+                            pass
+                        hybrid_signals = build_breakout_trend_signals(df_ready, current_settings.strategy, symbol=symbol)
+                        # Обновляем статус после генерации
+                        update_worker_status(symbol, current_status="Running", last_action="BREAKOUT_TREND_HYBRID signals generated")
+                        from bot.strategy import Action as StrategyActionHybrid
+                        hybrid_generated = [
+                            s for s in hybrid_signals
+                            if s.action in (StrategyActionHybrid.LONG, StrategyActionHybrid.SHORT)
+                        ]
+                        
+                        if hybrid_generated:
+                            _log(f"🔗 BREAKOUT_TREND_HYBRID strategy: generated {len(hybrid_generated)} actionable signals (total: {len(hybrid_signals)})", symbol)
+                        else:
+                            _log(f"⚠️ BREAKOUT_TREND_HYBRID strategy: enabled but generated 0 actionable signals (total: {len(hybrid_signals)})", symbol)
+                        
+                        for sig in hybrid_generated:
+                            all_signals.append(sig)
+                            # Сохраняем сигнал в историю
+                            try:
+                                ts_log = sig.timestamp
+                                if isinstance(ts_log, pd.Timestamp):
+                                    if ts_log.tzinfo is None:
+                                        ts_log = ts_log.tz_localize('UTC')
+                                    else:
+                                        ts_log = ts_log.tz_convert('UTC')
+                                    ts_log = ts_log.to_pydatetime()
+                                add_signal(
+                                    action=sig.action.value,
+                                    reason=sig.reason,
+                                    price=sig.price,
+                                    timestamp=ts_log,
+                                    symbol=symbol,
+                                    strategy_type="breakout_trend_hybrid",
+                                    signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                                )
+                            except Exception as e:
+                                _log(f"⚠️ Failed to save BREAKOUT_TREND_HYBRID signal to history: {e}", symbol)
+                    else:
+                        _log(f"⚠️ BREAKOUT_TREND_HYBRID strategy requires more history. Current: {len(df_ready)} candles (need >= 200)", symbol)
+                except Exception as e:
+                    _log(f"❌ Error in BREAKOUT_TREND_HYBRID strategy: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                _log(f"⚠️ BREAKOUT_TREND_HYBRID strategy is DISABLED for {symbol}", symbol)
+            
             # AMT & Order Flow Scalper (Absorption + Breakout/Squeeze по профилю)
             # AMT & Order Flow Scalper (Absorption + Breakout/Squeeze по профилю)
             if symbol_strategy_settings.enable_amt_of_strategy:
@@ -4838,8 +4812,8 @@ def run_live_from_api(
                 "MOMENTUM": symbol_strategy_settings.enable_momentum_strategy,
                 "SMC": symbol_strategy_settings.enable_smc_strategy,
                 "ICT": symbol_strategy_settings.enable_ict_strategy,
-                "ZSCORE": symbol_strategy_settings.enable_zscore_strategy,
                 "VBO": symbol_strategy_settings.enable_vbo_strategy,
+                "BREAKOUT_TREND_HYBRID": symbol_strategy_settings.enable_breakout_trend_hybrid_strategy,
                 "AMT_OF": symbol_strategy_settings.enable_amt_of_strategy
             }
             
@@ -4884,15 +4858,13 @@ def run_live_from_api(
                 s for s in all_signals
                 if s.reason.startswith("ict_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
             ]
-            # ВАЖНО: Фильтруем Z-Score сигналы по префиксу "zscore_" или по наличию "_poc_" в reason
-            # Это позволяет обрабатывать сигналы из истории, которые могут иметь reason "LONG_poc_130.00"
-            zscore_signals_only = [
-                s for s in all_signals
-                if (s.reason.startswith("zscore_") or "_poc_" in s.reason.lower()) and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
-            ]
             vbo_signals_only = [
                 s for s in all_signals
                 if s.reason.startswith("vbo_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+            ]
+            breakout_trend_hybrid_signals_only = [
+                s for s in all_signals
+                if s.reason.startswith("breakout_trend_hybrid_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
             ]
             
             # Объединяем старые стратегии для обратной совместимости
@@ -4962,8 +4934,8 @@ def run_live_from_api(
             fresh_liquidity_signals = [s for s in liquidity_signals_only if is_signal_fresh(s, df_ready)]
             fresh_smc_signals = [s for s in smc_signals_only if is_signal_fresh(s, df_ready)]
             fresh_ict_signals = [s for s in ict_signals_only if is_signal_fresh(s, df_ready)]
-            fresh_zscore_signals = [s for s in zscore_signals_only if is_signal_fresh(s, df_ready)]
             fresh_vbo_signals = [s for s in vbo_signals_only if is_signal_fresh(s, df_ready)]
+            fresh_breakout_trend_hybrid_signals = [s for s in breakout_trend_hybrid_signals_only if is_signal_fresh(s, df_ready)]
             
             # Логируем статистику по свежести сигналов
             if main_strategy_signals:
@@ -4974,10 +4946,10 @@ def run_live_from_api(
                 _log(f"📊 SMC: {len(fresh_smc_signals)}/{len(smc_signals_only)} свежих сигналов", symbol)
             if ict_signals_only:
                 _log(f"📊 ICT: {len(fresh_ict_signals)}/{len(ict_signals_only)} свежих сигналов", symbol)
-            if zscore_signals_only:
-                _log(f"📊 Z-Score: {len(fresh_zscore_signals)}/{len(zscore_signals_only)} свежих сигналов", symbol)
             if vbo_signals_only:
                 _log(f"📊 VBO: {len(fresh_vbo_signals)}/{len(vbo_signals_only)} свежих сигналов", symbol)
+            if breakout_trend_hybrid_signals_only:
+                _log(f"🔗 BREAKOUT_TREND_HYBRID: {len(fresh_breakout_trend_hybrid_signals)}/{len(breakout_trend_hybrid_signals_only)} свежих сигналов", symbol)
             
             # Убрано verbose сообщение о том, что сигналы не свежие - это нормальное поведение
             
@@ -5215,14 +5187,6 @@ def run_live_from_api(
                     if ict_sig_save:
                         save_latest_signal_to_history(ict_sig_save, "ICT", "ICT_LATEST")
                 
-                # Z-Score стратегия
-                zscore_sig_save = None
-                if zscore_signals_only:
-                    zscore_signals_only.sort(key=get_timestamp_for_sort)
-                    zscore_sig_save = zscore_signals_only[-1] if zscore_signals_only else None
-                    if zscore_sig_save:
-                        save_latest_signal_to_history(zscore_sig_save, "ZSCORE", "ZSCORE_LATEST")
-                
                 # VBO стратегия
                 vbo_sig_save = None
                 if vbo_signals_only:
@@ -5230,6 +5194,14 @@ def run_live_from_api(
                     vbo_sig_save = vbo_signals_only[-1] if vbo_signals_only else None
                     if vbo_sig_save:
                         save_latest_signal_to_history(vbo_sig_save, "VBO", "VBO_LATEST")
+                
+                # BREAKOUT_TREND_HYBRID стратегия
+                breakout_trend_hybrid_sig_save = None
+                if breakout_trend_hybrid_signals_only:
+                    breakout_trend_hybrid_signals_only.sort(key=get_timestamp_for_sort)
+                    breakout_trend_hybrid_sig_save = breakout_trend_hybrid_signals_only[-1] if breakout_trend_hybrid_signals_only else None
+                    if breakout_trend_hybrid_sig_save:
+                        save_latest_signal_to_history(breakout_trend_hybrid_sig_save, "BREAKOUT_TREND_HYBRID", "BREAKOUT_TREND_HYBRID_LATEST")
                 
                 # ДОПОЛНИТЕЛЬНО: Сохраняем ВСЕ сигналы от всех стратегий (не только свежие)
                 # Это позволяет видеть все сигналы в истории для анализа
@@ -5477,22 +5449,6 @@ def run_live_from_api(
                             _log(f"⚠️ Failed to save additional LIQUIDITY signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от Z-Score стратегии
-                # Используем локальный alias для Action из ZSCORE стратегии
-                from bot.zscore_strategy import Action as StrategyActionZscore
-                for sig in zscore_signals_only:
-                    if sig.action in (StrategyActionZscore.LONG, StrategyActionZscore.SHORT):
-                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
-                        if sig == zscore_sig_save and zscore_sig_save:
-                            continue
-                        try:
-                            strategy_type = get_strategy_type_from_signal(sig.reason)
-                            ts_log = sig.timestamp
-                            if isinstance(ts_log, pd.Timestamp):
-                                if ts_log.tzinfo is None:
-                                    ts_log = ts_log.tz_localize('UTC')
-                                else:
-                                    ts_log = ts_log.tz_convert('UTC')
-                                ts_log = ts_log.to_pydatetime()
                             
                             # ВАЖНО: Если сигнал соответствует последней свече - обновляем timestamp на текущее время
                             # Это гарантирует, что сигнал будет считаться свежим и обработан немедленно
@@ -5547,6 +5503,34 @@ def run_live_from_api(
                             additional_saved += 1
                         except Exception as e:
                             _log(f"⚠️ Failed to save additional VBO signal to history: {e}", symbol)
+                
+                # Сохраняем все сигналы от BREAKOUT_TREND_HYBRID стратегии
+                from bot.strategy import Action as StrategyActionHybrid
+                for sig in breakout_trend_hybrid_signals_only:
+                    if sig.action in (StrategyActionHybrid.LONG, StrategyActionHybrid.SHORT):
+                        # Пропускаем только если это latest сигнал и он уже был сохранен выше
+                        if sig == breakout_trend_hybrid_sig_save and breakout_trend_hybrid_sig_save:
+                            continue
+                        try:
+                            strategy_type = get_strategy_type_from_signal(sig.reason)
+                            ts_log = sig.timestamp
+                            if isinstance(ts_log, pd.Timestamp):
+                                if ts_log.tzinfo is None:
+                                    ts_log = ts_log.tz_localize('UTC')
+                                else:
+                                    ts_log = ts_log.tz_convert('UTC')
+                                ts_log = ts_log.to_pydatetime()
+                            add_signal(
+                                action=sig.action.value,
+                                reason=sig.reason,
+                                price=sig.price,
+                                timestamp=ts_log,
+                                symbol=symbol,
+                                strategy_type=strategy_type,
+                                signal_id=sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None,
+                            )
+                        except Exception as e:
+                            _log(f"⚠️ Failed to save additional BREAKOUT_TREND_HYBRID signal to history: {e}", symbol)
                 
                 # Сохраняем все сигналы от ICT стратегии
                 # Используем локальный alias для Action из ICT стратегии
@@ -5673,8 +5657,8 @@ def run_live_from_api(
             liquidity_sig = get_latest_fresh_signal(liquidity_signals_only, df_ready)
             smc_sig_latest = get_latest_fresh_signal(smc_signals_only, df_ready)
             ict_sig_latest = get_latest_fresh_signal(ict_signals_only, df_ready)
-            zscore_sig_latest = get_latest_fresh_signal(zscore_signals_only, df_ready)
             vbo_sig_latest = get_latest_fresh_signal(vbo_signals_only, df_ready)
+            breakout_trend_hybrid_sig_latest = get_latest_fresh_signal(breakout_trend_hybrid_signals_only, df_ready)
             
             # Создаем словарь всех сигналов для удобства
             strategy_signals = {
@@ -5685,8 +5669,8 @@ def run_live_from_api(
                 "liquidity": liquidity_sig,
                 "smc": smc_sig_latest,
                 "ict": ict_sig_latest,
-                "zscore": zscore_sig_latest,
                 "vbo": vbo_sig_latest,
+                "breakout_trend_hybrid": breakout_trend_hybrid_sig_latest,
             }
             
             

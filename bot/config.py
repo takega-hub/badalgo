@@ -232,7 +232,8 @@ class SymbolStrategySettings:
     enable_zscore_strategy: bool = False
     enable_vbo_strategy: bool = False
     enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "hybrid", "confluence"
+    enable_breakout_trend_hybrid_strategy: bool = False  # BREAKOUT_TREND_HYBRID (VBO + TREND)
+    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "breakout_trend_hybrid", "hybrid", "confluence"
     
     def to_dict(self) -> Dict:
         """Преобразует настройки в словарь"""
@@ -247,6 +248,7 @@ class SymbolStrategySettings:
             "enable_zscore_strategy": self.enable_zscore_strategy,
             "enable_vbo_strategy": self.enable_vbo_strategy,
             "enable_amt_of_strategy": self.enable_amt_of_strategy,
+            "enable_breakout_trend_hybrid_strategy": self.enable_breakout_trend_hybrid_strategy,
             "strategy_priority": self.strategy_priority,
         }
     
@@ -264,6 +266,7 @@ class SymbolStrategySettings:
             enable_zscore_strategy=data.get("enable_zscore_strategy", False),
             enable_vbo_strategy=data.get("enable_vbo_strategy", False),
             enable_amt_of_strategy=data.get("enable_amt_of_strategy", False),
+            enable_breakout_trend_hybrid_strategy=data.get("enable_breakout_trend_hybrid_strategy", False),
             strategy_priority=data.get("strategy_priority", "trend"),
         )
 
@@ -306,6 +309,7 @@ class AppSettings:
     enable_zscore_strategy: bool = True  # Z-Score стратегия (ВКЛЮЧЕНО)
     enable_vbo_strategy: bool = False  # VBO (Volatility Breakout) стратегия
     enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
+    enable_breakout_trend_hybrid_strategy: bool = False  # BREAKOUT_TREND_HYBRID (VBO + TREND фильтрация)
     # Приоритетная стратегия при конфликте сигналов (глобальная, используется если нет настроек для конкретной пары)
     strategy_priority: str = "zscore"  # ПРИОРИТЕТ: zscore (для Mean Reversion)
     # Настройки стратегий для каждой пары отдельно
@@ -328,6 +332,7 @@ class AppSettings:
             enable_zscore_strategy=self.enable_zscore_strategy,
             enable_vbo_strategy=self.enable_vbo_strategy,
             enable_amt_of_strategy=self.enable_amt_of_strategy,
+            enable_breakout_trend_hybrid_strategy=self.enable_breakout_trend_hybrid_strategy,
             strategy_priority=self.strategy_priority,
         )
     
@@ -454,6 +459,11 @@ def load_settings() -> AppSettings:
     if not enable_vbo_raw:
         enable_vbo_raw = cleaned_env_values.get("ENABLE_VBO_STRATEGY", "")
     enable_vbo = enable_vbo_raw.strip().lower() if enable_vbo_raw else ""
+    
+    enable_breakout_trend_hybrid_raw = os.getenv("ENABLE_BREAKOUT_TREND_HYBRID_STRATEGY", "")
+    if not enable_breakout_trend_hybrid_raw:
+        enable_breakout_trend_hybrid_raw = cleaned_env_values.get("ENABLE_BREAKOUT_TREND_HYBRID_STRATEGY", "")
+    enable_breakout_trend_hybrid = enable_breakout_trend_hybrid_raw.strip().lower() if enable_breakout_trend_hybrid_raw else ""
     
     smc_max_fvg_age_bars = os.getenv("SMC_MAX_FVG_AGE_BARS", "").strip()
     if smc_max_fvg_age_bars:
@@ -585,6 +595,9 @@ def load_settings() -> AppSettings:
     if "ENABLE_VBO_STRATEGY" in cleaned_env_values or enable_vbo_raw:
         settings.enable_vbo_strategy = enable_vbo in ("true", "1", "yes")
     
+    if "ENABLE_BREAKOUT_TREND_HYBRID_STRATEGY" in cleaned_env_values or enable_breakout_trend_hybrid_raw:
+        settings.enable_breakout_trend_hybrid_strategy = enable_breakout_trend_hybrid in ("true", "1", "yes")
+    
     # Логируем загруженные настройки для отладки
     _config_log(f"[config] Loaded strategy settings from .env:")
     print(f"  TRADING_SYMBOL='{trading_symbol_raw}' -> {settings.symbol}")
@@ -597,13 +610,14 @@ def load_settings() -> AppSettings:
     print(f"  ENABLE_ICT_STRATEGY='{enable_ict_raw}' -> {settings.enable_ict_strategy}")
     print(f"  ENABLE_ZSCORE_STRATEGY='{enable_zscore_raw}' -> {settings.enable_zscore_strategy}")
     print(f"  ENABLE_VBO_STRATEGY='{enable_vbo_raw}' -> {settings.enable_vbo_strategy}")
+    print(f"  ENABLE_BREAKOUT_TREND_HYBRID_STRATEGY='{enable_breakout_trend_hybrid_raw}' -> {settings.enable_breakout_trend_hybrid_strategy}")
     
     # Загружаем приоритет стратегии
     strategy_priority_raw = os.getenv("STRATEGY_PRIORITY", "")
     if not strategy_priority_raw:
         strategy_priority_raw = cleaned_env_values.get("STRATEGY_PRIORITY", "")
     strategy_priority = strategy_priority_raw.strip().lower() if strategy_priority_raw else ""
-    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "hybrid", "confluence")  # liquidity и liquidation_hunter убраны - стратегии отключены
+    allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "breakout_trend_hybrid", "amt_of", "hybrid", "confluence")  # liquidity и liquidation_hunter убраны - стратегии отключены
     if strategy_priority in allowed_priorities:
         settings.strategy_priority = strategy_priority
         _config_log(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")

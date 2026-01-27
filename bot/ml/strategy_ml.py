@@ -38,7 +38,7 @@ from bot.strategy import Action, Bias, Signal
 from bot.ml.feature_engineering import FeatureEngineer
 from bot.config import StrategyParams
 # Импортируем классы ансамбля для корректной десериализации pickle
-from bot.ml.model_trainer import PreTrainedVotingEnsemble, WeightedEnsemble
+from bot.ml.model_trainer import PreTrainedVotingEnsemble, WeightedEnsemble, TripleEnsemble
 
 
 class MLStrategy:
@@ -83,6 +83,24 @@ class MLStrategy:
         self.scaler = self.model_data["scaler"]
         self.feature_names = self.model_data["feature_names"]
         self.is_ensemble = self.model_data.get("metadata", {}).get("model_type", "").startswith("ensemble")
+        
+        # Если это QuadEnsemble, восстанавливаем feature_names в lstm_trainer
+        if hasattr(self.model, 'lstm_trainer') and self.model.lstm_trainer is not None:
+            # Если feature_names не установлены в lstm_trainer, пытаемся восстановить
+            if not hasattr(self.model.lstm_trainer, 'feature_names') or self.model.lstm_trainer.feature_names is None:
+                # Пытаемся определить из scaler (количество фичей)
+                if hasattr(self.model.lstm_trainer, 'scaler') and self.model.lstm_trainer.scaler is not None:
+                    expected_features = self.model.lstm_trainer.scaler.n_features_in_ if hasattr(self.model.lstm_trainer.scaler, 'n_features_in_') else None
+                    if expected_features and self.feature_names:
+                        # Используем первые expected_features фичей (как при обучении LSTM)
+                        self.model.lstm_trainer.feature_names = self.feature_names[:expected_features]
+                        print(f"[ml_strategy] Restored LSTM feature_names: {len(self.model.lstm_trainer.feature_names)} features")
+                    elif self.feature_names:
+                        # Если не можем определить из scaler, используем все feature_names
+                        self.model.lstm_trainer.feature_names = self.feature_names
+                elif self.feature_names:
+                    # Если scaler недоступен, используем все feature_names
+                    self.model.lstm_trainer.feature_names = self.feature_names
         
         # Инициализируем feature engineer
         self.feature_engineer = FeatureEngineer()
@@ -317,44 +335,88 @@ class MLStrategy:
         # Предсказание
         if hasattr(self.model, "predict_proba"):
             # Для классификаторов с вероятностями (включая ансамбль)
-            proba = self.model.predict_proba(X_last)[0]
+            # Проверяем, является ли это QuadEnsemble (требует историю для LSTM)
+            if hasattr(self.model, 'lstm_trainer') and hasattr(self.model, 'sequence_length'):
+                # QuadEnsemble: передаем историю данных для LSTM
+                proba = self.model.predict_proba(X_last, df_history=df)[0]
+            else:
+                # Обычные модели и ансамбли (TripleEnsemble, etc.)
+                proba = self.model.predict_proba(X_last)[0]
+            
+            # Проверяем proba на NaN
+            if np.any(np.isnan(proba)) or not np.all(np.isfinite(proba)):
+                # Если proba содержит NaN, используем равномерное распределение
+                proba = np.array([0.33, 0.34, 0.33])  # SHORT, HOLD, LONG
+                print(f"[ml_strategy] Warning: proba contains NaN, using uniform distribution")
             
             # Для ансамбля proba уже в правильном формате [-1, 0, 1]
             # Для XGBoost нужно преобразовать из [0, 1, 2]
             if self.is_ensemble:
                 # Ансамбль уже возвращает вероятности в формате [-1, 0, 1]
                 # proba[0] = SHORT (-1), proba[1] = HOLD (0), proba[2] = LONG (1)
-                prediction_idx = np.argmax(proba)
-                prediction = prediction_idx - 1  # 0->-1, 1->0, 2->1
-                confidence = proba[prediction_idx]
-                
-                # УЛУЧШЕНИЕ: Если модель предсказывает HOLD, но вероятность LONG или SHORT достаточно высока,
-                # используем эту вероятность для генерации сигнала
                 long_prob = proba[2] if len(proba) > 2 else 0.0
                 short_prob = proba[0] if len(proba) > 0 else 0.0
                 hold_prob = proba[1] if len(proba) > 1 else 0.0
                 
-                # Динамический порог на основе истории уверенности
-                if self.use_dynamic_threshold and len(self.confidence_history) > 10:
-                    # Вычисляем адаптивный порог на основе медианы последних уверенностей
-                    recent_confidence_median = np.median(self.confidence_history[-20:])
-                    # Если текущая уверенность выше медианы, используем более мягкий порог
-                    adaptive_threshold = max(self.min_strength_threshold, recent_confidence_median * 0.9)
-                else:
-                    adaptive_threshold = self.min_strength_threshold
+                # Проверяем на NaN
+                if np.isnan(long_prob) or not np.isfinite(long_prob):
+                    long_prob = 0.0
+                if np.isnan(short_prob) or not np.isfinite(short_prob):
+                    short_prob = 0.0
+                if np.isnan(hold_prob) or not np.isfinite(hold_prob):
+                    hold_prob = 0.0
                 
-                # Если HOLD имеет максимальную вероятность, но LONG или SHORT имеют достаточно высокую вероятность,
-                # используем их для генерации сигнала (если они превышают адаптивный порог)
-                if prediction == 0:  # HOLD
-                    # Используем адаптивный порог для переопределения HOLD
-                    # Только если вероятность LONG или SHORT >= adaptive_threshold, переопределяем HOLD
-                    if long_prob >= adaptive_threshold and long_prob > short_prob:
-                        prediction = 1  # LONG
+                # УЛУЧШЕНИЕ ДЛЯ АНСАМБЛЕЙ: Используем относительную уверенность
+                # Для ансамблей вероятности распределяются более равномерно, поэтому
+                # используем разницу между LONG/SHORT и HOLD вместо абсолютной уверенности
+                
+                # ДЛЯ АНСАМБЛЕЙ: Если LONG или SHORT выше минимального порога (1%) и выше другого,
+                # принимаем сигнал ДАЖЕ ЕСЛИ HOLD выше обоих (это нормально для ансамблей)
+                ensemble_absolute_min = 0.01  # Минимальная абсолютная уверенность 1% (очень низкий для максимального количества сигналов)
+                
+                # Определяем предсказание: выбираем LONG или SHORT если они выше минимума и выше другого
+                # Игнорируем HOLD для ансамблей, так как он часто доминирует из-за распределения вероятностей
+                if long_prob >= ensemble_absolute_min and long_prob > short_prob:
+                    # LONG выше SHORT и выше минимума - принимаем LONG
+                    prediction = 1  # LONG
+                    confidence = long_prob
+                    # Увеличиваем уверенность на основе относительной разницы с SHORT
+                    relative_confidence = (long_prob - short_prob) / short_prob if short_prob > 0 else 0.0
+                    # Проверяем на NaN
+                    if np.isnan(relative_confidence) or not np.isfinite(relative_confidence):
+                        relative_confidence = 0.0
+                    # Нормализуем уверенность: увеличиваем на основе разницы с SHORT
+                    confidence = min(long_prob * (1 + relative_confidence * 2.0), 1.0)
+                    # Проверяем результат на NaN
+                    if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = long_prob
-                    elif short_prob >= adaptive_threshold and short_prob > long_prob:
-                        prediction = -1  # SHORT
+                elif short_prob >= ensemble_absolute_min and short_prob > long_prob:
+                    # SHORT выше LONG и выше минимума - принимаем SHORT
+                    prediction = -1  # SHORT
+                    confidence = short_prob
+                    # Увеличиваем уверенность на основе относительной разницы с LONG
+                    relative_confidence = (short_prob - long_prob) / long_prob if long_prob > 0 else 0.0
+                    # Проверяем на NaN
+                    if np.isnan(relative_confidence) or not np.isfinite(relative_confidence):
+                        relative_confidence = 0.0
+                    # Нормализуем уверенность: увеличиваем на основе разницы с LONG
+                    confidence = min(short_prob * (1 + relative_confidence * 2.0), 1.0)
+                    # Проверяем результат на NaN
+                    if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = short_prob
-                    # Иначе остаемся на HOLD
+                else:
+                    # HOLD - либо LONG и SHORT ниже минимума, либо они равны
+                    prediction = 0
+                    confidence = hold_prob
+                
+                # Fallback: если логика не сработала, используем стандартную
+                if prediction == 0:
+                    prediction_idx = np.argmax(proba)
+                    prediction = prediction_idx - 1  # 0->-1, 1->0, 2->1
+                    confidence = proba[prediction_idx]
+                    # Проверяем на NaN
+                    if np.isnan(confidence) or not np.isfinite(confidence):
+                        confidence = hold_prob if np.isfinite(hold_prob) else 0.0
                 
                 # Обновляем историю уверенности
                 if len(self.confidence_history) >= self.max_history_size:
@@ -366,11 +428,23 @@ class MLStrategy:
                 prediction = prediction_idx - 1  # 0->-1, 1->0, 2->1
                 confidence = proba[prediction_idx]
                 
+                # Проверяем confidence на NaN
+                if np.isnan(confidence) or not np.isfinite(confidence):
+                    confidence = 0.0
+                
                 # УЛУЧШЕНИЕ: Если модель предсказывает HOLD, но вероятность LONG или SHORT достаточно высока,
                 # используем эту вероятность для генерации сигнала
                 long_prob = proba[2] if len(proba) > 2 else 0.0
                 short_prob = proba[0] if len(proba) > 0 else 0.0
                 hold_prob = proba[1] if len(proba) > 1 else 0.0
+                
+                # Проверяем на NaN
+                if np.isnan(long_prob) or not np.isfinite(long_prob):
+                    long_prob = 0.0
+                if np.isnan(short_prob) or not np.isfinite(short_prob):
+                    short_prob = 0.0
+                if np.isnan(hold_prob) or not np.isfinite(hold_prob):
+                    hold_prob = 0.0
                 
                 # Динамический порог на основе истории уверенности
                 if self.use_dynamic_threshold and len(self.confidence_history) > 10:
@@ -403,20 +477,36 @@ class MLStrategy:
                 prediction_idx = np.argmax(proba)
                 prediction = prediction_idx - 1 if len(proba) == 3 else prediction_idx
                 confidence = proba[prediction_idx]
+                
+                # Проверяем на NaN
+                if np.isnan(prediction) or not np.isfinite(prediction):
+                    prediction = 0
+                if np.isnan(confidence) or not np.isfinite(confidence):
+                    confidence = 0.0
         else:
             # Для моделей без predict_proba
             prediction_raw = self.model.predict(X_last)[0]
-            # Преобразуем в формат -1, 0, 1 если нужно
-            if hasattr(self.model, 'classes_'):
-                # Если есть classes_, преобразуем индекс в значение
-                classes = self.model.classes_
-                if len(classes) == 3:
-                    prediction = int(prediction_raw) - 1  # 0->-1, 1->0, 2->1
+            # Проверяем на NaN перед преобразованием
+            if np.isnan(prediction_raw) or not np.isfinite(prediction_raw):
+                prediction = 0  # HOLD если prediction_raw NaN
+            else:
+                # Преобразуем в формат -1, 0, 1 если нужно
+                if hasattr(self.model, 'classes_'):
+                    # Если есть classes_, преобразуем индекс в значение
+                    classes = self.model.classes_
+                    if len(classes) == 3:
+                        prediction = int(prediction_raw) - 1  # 0->-1, 1->0, 2->1
+                    else:
+                        prediction = int(prediction_raw)
                 else:
                     prediction = int(prediction_raw)
-            else:
-                prediction = int(prediction_raw)
             confidence = 1.0  # Нет информации об уверенности
+        
+        # Проверяем на NaN перед возвратом
+        if np.isnan(prediction) or not np.isfinite(prediction):
+            prediction = 0  # HOLD если prediction NaN
+        if np.isnan(confidence) or not np.isfinite(confidence):
+            confidence = 0.0  # Нулевая уверенность если confidence NaN
         
         return int(prediction), float(confidence)
     
@@ -484,17 +574,28 @@ class MLStrategy:
                 strength = "слабое"
             
             # Формируем понятную причину
-            confidence_pct = int(confidence * 100)
+            # Проверяем на NaN перед преобразованием
+            if np.isnan(confidence) or not np.isfinite(confidence):
+                confidence = 0.0
+            confidence_pct = int(confidence * 100) if np.isfinite(confidence) else 0
             profit_pct = int(target_profit_pct_margin)
             
             # Проверяем минимальную силу сигнала (только для LONG/SHORT, не для HOLD)
-            # Для ETHUSDT и SOLUSDT используем очень мягкий порог (почти отключен)
-            # Для ETHUSDT особенно мягкий порог, так как было только 1 сделка
-            if is_volatile_symbol:
-                # Для волатильных символов снижаем порог до минимума (0.3 от базового)
-                min_strength = self.min_strength_threshold * 0.3
+            # Для ансамблей используем очень мягкие пороги
+            if self.is_ensemble:
+                # Для ансамблей почти отключаем проверку min_strength, так как они распределяют уверенность
+                # Используем очень низкий порог (1-2%) для максимального количества сигналов
+                if is_volatile_symbol:
+                    min_strength = 0.01  # 1% для волатильных символов (очень низкий)
+                else:
+                    min_strength = 0.02  # 2% для стабильных символов (очень низкий)
             else:
-                min_strength = self.min_strength_threshold
+                # Для одиночных моделей используем стандартные пороги
+                if is_volatile_symbol:
+                    min_strength = self.min_strength_threshold * 0.3
+                else:
+                    min_strength = self.min_strength_threshold
+            
             if prediction != 0 and confidence < min_strength:
                 # Сигнал не проходит минимальный порог силы - возвращаем HOLD
                 return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(min_strength*100)}%", current_price)
@@ -716,15 +817,25 @@ class MLStrategy:
             
             # МЯГКИЕ ФИЛЬТРЫ: Применяем ТОЛЬКО для сигналов ниже основного порога
             # Если сигнал выше dynamic_threshold, мы доверяем модели!
-            # Для волатильных символов почти полностью отключаем фильтры
+            # Для ансамблей почти полностью отключаем фильтры
             if prediction != 0 and confidence < dynamic_threshold:
-                if is_volatile_symbol:
+                if self.is_ensemble:
+                    # Для ансамблей отключаем почти все фильтры - доверяем модели
+                    # Только экстремальные случаи (RSI > 95 или < 5)
+                    if np.isfinite(rsi):
+                        extreme_rsi = (prediction == 1 and rsi > 95) or (prediction == -1 and rsi < 5)
+                        if extreme_rsi:
+                            rsi_int = int(rsi) if np.isfinite(rsi) else 0
+                            return Signal(row.name, Action.HOLD, f"ml_экстремальный_RSI_{rsi_int}_{strength}_{confidence_pct}%", current_price)
+                    # Все остальные фильтры отключены для ансамблей
+                elif is_volatile_symbol:
                     # Для волатильных символов применяем ТОЛЬКО экстремальные проверки
                     # Только если RSI в экстремальной зоне (>90 или <10) и уверенность очень низкая
                     if np.isfinite(rsi):
                         extreme_rsi = (prediction == 1 and rsi > 90) or (prediction == -1 and rsi < 10)
                         if extreme_rsi and confidence < dynamic_threshold * 0.5:
-                            return Signal(row.name, Action.HOLD, f"ml_экстремальный_RSI_{int(rsi)}_{strength}_{confidence_pct}%", current_price)
+                            rsi_int = int(rsi) if np.isfinite(rsi) else 0
+                            return Signal(row.name, Action.HOLD, f"ml_экстремальный_RSI_{rsi_int}_{strength}_{confidence_pct}%", current_price)
                     # Все остальные фильтры отключены для волатильных символов
                 else:
                     # Для BTCUSDT применяем все фильтры
@@ -739,7 +850,8 @@ class MLStrategy:
                     if not structure_ok:
                         return Signal(row.name, Action.HOLD, f"ml_структура_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                     if not adx_filter_ok:
-                        return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_ADX_{int(adx)}_{strength}_{confidence_pct}%", current_price)
+                        adx_int = int(adx) if np.isfinite(adx) else 0
+                        return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_ADX_{adx_int}_{strength}_{confidence_pct}%", current_price)
 
             
             # УБРАНО: Фильтр по силе тренда (ADX) - ML стратегия должна работать на всех стадиях рынка
@@ -747,30 +859,40 @@ class MLStrategy:
             #     return Signal(row.name, Action.HOLD, f"ml_слабый_тренд_{strength}_{confidence_pct}%", current_price)
             
             # Дополнительная проверка: если цена находится в экстремальных зонах (RSI > 85 или < 15),
-            # требуем более высокую уверенность (только для BTCUSDT)
-            if prediction != 0 and np.isfinite(rsi) and not is_volatile_symbol:
+            # требуем более высокую уверенность (только для BTCUSDT, не для ансамблей)
+            if prediction != 0 and np.isfinite(rsi) and not is_volatile_symbol and not self.is_ensemble:
                 if (prediction == 1 and rsi > 85) or (prediction == -1 and rsi < 15):
                     # В экстремальных зонах требуем уверенность на 5% выше (было 10%)
                     extreme_threshold = dynamic_threshold * 1.05
                     if confidence < extreme_threshold:
-                        return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_RSI_{int(rsi)}_{strength}_{confidence_pct}%", current_price)
+                        rsi_int = int(rsi) if np.isfinite(rsi) else 0
+                        return Signal(row.name, Action.HOLD, f"ml_индикаторы_не_согласны_RSI_{rsi_int}_{strength}_{confidence_pct}%", current_price)
             
             # Генерируем сигналы на основе предсказания
             # Возвращаем только LONG, SHORT или HOLD
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
-                # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
-                # Для волатильных символов используем очень мягкий порог
-                threshold_mult = 0.70 if is_volatile_symbol else 0.85  # Для волатильных символов снижаем до 70%
-                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 70-85% от порога
+                # Для ансамблей почти отключаем проверку confidence_threshold
+                if self.is_ensemble:
+                    # Для ансамблей используем очень низкий порог (2-3% от стандартного) для максимального количества сигналов
+                    threshold_mult = 0.02 if is_volatile_symbol else 0.03
+                    # Для ансамблей также снижаем dynamic_threshold
+                    dynamic_threshold = self.confidence_threshold * 0.05  # 5% от стандартного (очень низкий)
+                else:
+                    # Для одиночных моделей используем стандартные пороги
+                    threshold_mult = 0.70 if is_volatile_symbol else 0.85
+                
+                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Для волатильных символов делаем фильтр стабильности очень мягким
+                # Для ансамблей и волатильных символов делаем фильтр стабильности очень мягким
                 if self.stability_filter and has_position == Bias.SHORT:
-                    if is_volatile_symbol:
+                    if self.is_ensemble:
+                        stability_threshold = 0.05  # Для ансамблей почти отключен (5%)
+                    elif is_volatile_symbol:
                         stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
                     else:
                         stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
@@ -807,18 +929,27 @@ class MLStrategy:
                 return Signal(row.name, Action.LONG, reason, current_price, indicators_info=indicators_info)
             
             elif prediction == -1:  # SHORT
-                # Смягченная проверка: если уверенность близка к порогу (в пределах 15%), все равно пропускаем
-                # Для волатильных символов используем очень мягкий порог
-                threshold_mult = 0.70 if is_volatile_symbol else 0.85  # Для волатильных символов снижаем до 70%
-                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)  # Минимум 70-85% от порога
+                # Для ансамблей почти отключаем проверку confidence_threshold
+                if self.is_ensemble:
+                    # Для ансамблей используем очень низкий порог (2-3% от стандартного) для максимального количества сигналов
+                    threshold_mult = 0.02 if is_volatile_symbol else 0.03
+                    # Для ансамблей также снижаем dynamic_threshold
+                    dynamic_threshold = self.confidence_threshold * 0.05  # 5% от стандартного (очень низкий)
+                else:
+                    # Для одиночных моделей используем стандартные пороги
+                    threshold_mult = 0.70 if is_volatile_symbol else 0.85
+                
+                effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
                 if confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Для волатильных символов делаем фильтр стабильности очень мягким
+                # Для ансамблей и волатильных символов делаем фильтр стабильности очень мягким
                 if self.stability_filter and has_position == Bias.LONG:
-                    if is_volatile_symbol:
+                    if self.is_ensemble:
+                        stability_threshold = 0.05  # Для ансамблей почти отключен (5%)
+                    elif is_volatile_symbol:
                         stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
                     else:
                         stability_threshold = max(self.confidence_threshold * 0.85, 0.45)
@@ -826,8 +957,8 @@ class MLStrategy:
                         return Signal(row.name, Action.HOLD, f"ml_стабильность_требует_{int(stability_threshold*100)}%", current_price)
                 
                 # Проверяем объем (смягчено: если уверенность высокая, объем менее важен)
-                # Для волатильных символов проверка объема полностью отключена
-                if not is_volatile_symbol:
+                # Для ансамблей и волатильных символов проверка объема полностью отключена
+                if not is_volatile_symbol and not self.is_ensemble:
                     volume_threshold_mult = 1.2
                     if not volume_ok and confidence < dynamic_threshold * volume_threshold_mult:
                         return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)

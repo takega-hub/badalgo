@@ -168,6 +168,29 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
     else:
         df_signals_filtered = df_signals
     
+    # ДИАГНОСТИКА: Логируем информацию о свечах для отладки
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(
+        f"[Z-Score] {symbol} Filtered signals DataFrame shape: {df_signals_filtered.shape}, "
+        f"columns: {list(df_signals_filtered.columns)}"
+    )
+    
+    # Проверяем уникальность цен в отфильтрованных свечах
+    if 'close' in df_signals_filtered.columns:
+        unique_prices = df_signals_filtered['close'].unique()
+        logger.info(
+            f"[Z-Score] {symbol} Unique prices in filtered candles: {unique_prices.tolist()}, "
+            f"count: {len(unique_prices)}"
+        )
+        # Логируем каждую свечу с ее ценой и сигналом
+        for candle_idx, candle_row in df_signals_filtered.iterrows():
+            candle_price = candle_row.get('close', 'N/A')
+            candle_signal = candle_row.get('signal', '')
+            logger.info(
+                f"[Z-Score] {symbol} Candle timestamp={candle_idx}, price={candle_price}, signal={candle_signal}"
+            )
+    
     # Определяем индекс последней строки для обновления timestamp свежих сигналов
     last_row_idx = len(df_signals_filtered) - 1
     
@@ -194,7 +217,53 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
             # Если reason нет, создаем стандартный
             reason = f"zscore_{sig.lower()}"
         
-        price = float(row.get("close", row.get("price", float('nan'))))
+        # ВАЖНО: Берем цену из колонки 'close' для конкретной свечи (idx)
+        # Это гарантирует, что каждый сигнал имеет цену соответствующей свечи
+        # Используем прямое обращение к колонке через индекс, чтобы гарантировать правильное значение
+        if 'close' in df_signals_filtered.columns:
+            # Берем цену напрямую из DataFrame по индексу свечи
+            price_from_df = df_signals_filtered.loc[idx, 'close']
+            # Также проверяем значение из row для сравнения
+            price_from_row = row.get("close", row.get("price", float('nan')))
+            
+            # Используем значение из DataFrame, так как оно гарантированно соответствует индексу
+            if pd.notna(price_from_df):
+                price = float(price_from_df)
+            elif pd.notna(price_from_row):
+                price = float(price_from_row)
+            else:
+                price = float('nan')
+            
+            # ДИАГНОСТИКА: Сравниваем значения из разных источников
+            logger.info(
+                f"[Z-Score] {symbol} Signal price check: idx={idx}, "
+                f"price_from_df={price_from_df:.2f}, price_from_row={price_from_row:.2f}, "
+                f"final_price={price:.2f}, position={position}/{last_row_idx}"
+            )
+        else:
+            # Fallback: используем значение из row
+            price = float(row.get("close", row.get("price", float('nan'))))
+            logger.warning(
+                f"[Z-Score] {symbol} 'close' column not found in DataFrame, using row value: {price:.2f}"
+            )
+        
+        # ВАЖНО: Добавляем уникальный идентификатор к reason на основе timestamp свечи и цены
+        # Это гарантирует, что каждый сигнал из разных свечей имеет уникальный reason
+        # даже если они имеют одинаковый базовый reason (например, "LONG_poc_130.00")
+        # Это также помогает отличить сигналы от разных свечей с одинаковой ценой
+        import hashlib
+        # Используем timestamp свечи и цену для создания уникального идентификатора
+        ts_str = str(idx) if hasattr(idx, 'isoformat') else str(idx)
+        # Нормализуем timestamp для генерации ID (убираем микросекунды)
+        ts_normalized = ts_str.split('.')[0] if '.' in ts_str else ts_str
+        unique_id = hashlib.md5(f"{ts_normalized}_{price:.2f}".encode()).hexdigest()[:6]
+        
+        # Добавляем уникальный идентификатор к reason только если его там еще нет
+        if f"_{unique_id}" not in reason:
+            reason = f"{reason}_{unique_id}"
+            logger.debug(
+                f"[Z-Score] {symbol} Added unique ID to reason: {reason} (timestamp={ts_normalized}, price={price:.2f})"
+            )
 
         try:
             ts = pd.Timestamp(idx) if not isinstance(idx, pd.Timestamp) else idx

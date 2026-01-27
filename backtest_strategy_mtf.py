@@ -42,6 +42,15 @@ class BacktestMetrics:
     avg_trade_duration_hours: float
 
 
+@dataclass
+class BacktestRecommendation:
+    """Рекомендация по улучшению стратегии."""
+    category: str  # "risk", "entry", "exit", "filter", "parameter"
+    priority: str  # "high", "medium", "low"
+    message: str
+    suggestion: str
+
+
 def calculate_metrics(trades: List[Trade], initial_balance: float, signals: List[Signal]) -> BacktestMetrics:
     """Рассчитывает метрики бэктеста."""
     if not trades:
@@ -121,9 +130,146 @@ def calculate_metrics(trades: List[Trade], initial_balance: float, signals: List
     )
 
 
+def generate_recommendations(metrics: BacktestMetrics, trades: List[Trade], strategy_type: str = "trend") -> List[BacktestRecommendation]:
+    """Генерирует рекомендации по улучшению стратегии."""
+    recommendations = []
+    
+    # Анализ винрейта
+    if metrics.win_rate < 40:
+        recommendations.append(BacktestRecommendation(
+            category="entry",
+            priority="high",
+            message=f"Низкий винрейт: {metrics.win_rate:.1f}%",
+            suggestion=f"Рассмотрите ужесточение фильтров входа (ADX > 25, RSI экстремумы, объем). Для {strategy_type.upper()} стратегии проверьте качество сигналов pullback/breakout. Возможно, стоит увеличить пороги индикаторов для более сильных сигналов."
+        ))
+    elif metrics.win_rate > 60:
+        recommendations.append(BacktestRecommendation(
+            category="entry",
+            priority="low",
+            message=f"Высокий винрейт: {metrics.win_rate:.1f}%",
+            suggestion="Хороший винрейт. Рассмотрите возможность увеличения размера позиций или уменьшения SL для увеличения прибыли."
+        ))
+    
+    # Анализ Profit Factor
+    if metrics.profit_factor < 1.0:
+        recommendations.append(BacktestRecommendation(
+            category="risk",
+            priority="high",
+            message=f"Profit Factor ниже 1.0: {metrics.profit_factor:.2f}",
+            suggestion=f"Стратегия убыточна. Пересмотрите логику входа и выхода для {strategy_type.upper()} стратегии. Возможно, стоит увеличить TP/SL соотношение или улучшить фильтры входа. Проверьте MTF фильтры - возможно они слишком строгие или наоборот недостаточно фильтруют."
+        ))
+    elif metrics.profit_factor < 1.5:
+        recommendations.append(BacktestRecommendation(
+            category="risk",
+            priority="medium",
+            message=f"Profit Factor низкий: {metrics.profit_factor:.2f}",
+            suggestion="Рассмотрите оптимизацию соотношения TP/SL. Увеличьте TP или уменьшите SL для улучшения соотношения риск/прибыль."
+        ))
+    
+    # Анализ максимальной просадки
+    if metrics.max_drawdown_pct > 30:
+        recommendations.append(BacktestRecommendation(
+            category="risk",
+            priority="high",
+            message=f"Большая просадка: {metrics.max_drawdown_pct:.1f}%",
+            suggestion="Уменьшите размер позиций или увеличьте диверсификацию. Рассмотрите добавление фильтров для избежания торговли в неблагоприятных условиях (например, фильтр по волатильности или тренду)."
+        ))
+    elif metrics.max_drawdown_pct > 15:
+        recommendations.append(BacktestRecommendation(
+            category="risk",
+            priority="medium",
+            message=f"Умеренная просадка: {metrics.max_drawdown_pct:.1f}%",
+            suggestion="Просадка в допустимых пределах, но можно улучшить. Рассмотрите добавление механизма остановки торговли после серии убытков."
+        ))
+    
+    # Анализ средних прибылей и убытков
+    if metrics.avg_loss != 0 and abs(metrics.avg_win / metrics.avg_loss) < 1.5:
+        recommendations.append(BacktestRecommendation(
+            category="exit",
+            priority="medium",
+            message=f"Соотношение средних прибыль/убыток низкое: {abs(metrics.avg_win / metrics.avg_loss):.2f}",
+            suggestion="Увеличьте Take Profit или уменьшите Stop Loss. Рассмотрите использование трейлинг-стопа для защиты прибыли. Для трендовых стратегий важно ловить большие движения."
+        ))
+    
+    # Анализ Sharpe Ratio
+    if metrics.sharpe_ratio < 0:
+        recommendations.append(BacktestRecommendation(
+            category="risk",
+            priority="high",
+            message=f"Отрицательный Sharpe Ratio: {metrics.sharpe_ratio:.2f}",
+            suggestion="Стратегия имеет плохое соотношение риск/доходность. Необходимо пересмотреть логику входа/выхода или фильтры. Возможно, стоит добавить дополнительные фильтры по волатильности или тренду."
+        ))
+    elif metrics.sharpe_ratio < 1.0:
+        recommendations.append(BacktestRecommendation(
+            category="risk",
+            priority="medium",
+            message=f"Sharpe Ratio ниже оптимального: {metrics.sharpe_ratio:.2f}",
+            suggestion="Рассмотрите оптимизацию стратегии для улучшения соотношения риск/доходность. Хороший Sharpe Ratio должен быть > 1.0."
+        ))
+    
+    # Анализ количества сигналов
+    if metrics.total_signals == 0:
+        recommendations.append(BacktestRecommendation(
+            category="parameter",
+            priority="high",
+            message="Нет сигналов",
+            suggestion=f"Стратегия {strategy_type.upper()} не генерирует сигналы. Проверьте параметры индикаторов (ADX, RSI, SMA). Возможно, условия слишком строгие или MTF фильтры блокируют все сигналы."
+        ))
+    elif metrics.total_signals < 10:
+        recommendations.append(BacktestRecommendation(
+            category="parameter",
+            priority="low",
+            message=f"Мало сигналов: {metrics.total_signals}",
+            suggestion="Рассмотрите смягчение условий входа для увеличения количества сделок, если это не ухудшит качество. Проверьте MTF фильтры - возможно они слишком строгие."
+        ))
+    
+    # Анализ длительности сделок
+    if metrics.avg_trade_duration_hours > 48:
+        recommendations.append(BacktestRecommendation(
+            category="exit",
+            priority="low",
+            message=f"Долгие сделки: {metrics.avg_trade_duration_hours:.1f} часов",
+            suggestion="Рассмотрите более агрессивные условия выхода. Возможно, стоит уменьшить TP или добавить временной фильтр. Для трендовых стратегий это может быть нормально, если сделки прибыльные."
+        ))
+    
+    # Анализ соотношения LONG/SHORT сигналов
+    if metrics.total_signals > 0:
+        long_ratio = metrics.long_signals / metrics.total_signals
+        if long_ratio > 0.7 or long_ratio < 0.3:
+            recommendations.append(BacktestRecommendation(
+                category="filter",
+                priority="low",
+                message=f"Дисбаланс сигналов: LONG {metrics.long_signals} ({long_ratio*100:.1f}%), SHORT {metrics.short_signals} ({(1-long_ratio)*100:.1f}%)",
+                suggestion="Сигналы сильно смещены в одну сторону. Проверьте логику определения тренда и фильтры. Возможно, стоит пересмотреть условия для более сбалансированного распределения."
+            ))
+    
+    # Анализ эффективности по типам сигналов (если есть данные)
+    if trades:
+        pullback_trades = [t for t in trades if "pullback" in (t.entry_reason or "").lower()]
+        breakout_trades = [t for t in trades if "breakout" in (t.entry_reason or "").lower()]
+        
+        if pullback_trades and breakout_trades:
+            pullback_wins = len([t for t in pullback_trades if t.pnl > 0])
+            breakout_wins = len([t for t in breakout_trades if t.pnl > 0])
+            pullback_win_rate = (pullback_wins / len(pullback_trades)) * 100 if pullback_trades else 0.0
+            breakout_win_rate = (breakout_wins / len(breakout_trades)) * 100 if breakout_trades else 0.0
+            
+            if abs(pullback_win_rate - breakout_win_rate) > 20:
+                worse_type = "pullback" if pullback_win_rate < breakout_win_rate else "breakout"
+                recommendations.append(BacktestRecommendation(
+                    category="entry",
+                    priority="medium",
+                    message=f"Разница в эффективности типов сигналов: Pullback {pullback_win_rate:.1f}% vs Breakout {breakout_win_rate:.1f}%",
+                    suggestion=f"Сигналы типа '{worse_type}' показывают значительно худшие результаты. Рассмотрите ужесточение фильтров для этого типа или временное отключение менее эффективных сигналов."
+                ))
+    
+    return recommendations
+
+
 def load_timeframe_data(base_path: str, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
     """
-    Загружает данные с указанного таймфрейма.
+    Загружает данные с указанного таймфрейма из CSV файлов.
+    Поддерживает разные форматы имен файлов (btcusdt_15m.csv, btc_15m.csv).
     
     Args:
         base_path: Базовый путь к папке data
@@ -133,12 +279,22 @@ def load_timeframe_data(base_path: str, symbol: str, timeframe: str) -> Optional
     Returns:
         DataFrame с данными или None если файл не найден
     """
-    # Определяем имя файла
+    # Определяем возможные имена файлов (поддержка разных форматов)
     symbol_lower = symbol.lower()
-    filename = f"{symbol_lower}_{timeframe}.csv"
-    filepath = os.path.join(base_path, filename)
+    possible_filenames = [
+        f"{symbol_lower}_{timeframe}.csv",  # btcusdt_15m.csv
+        f"{symbol_lower[:3]}_{timeframe}.csv",  # btc_15m.csv (fallback)
+    ]
     
-    if not os.path.exists(filepath):
+    # Пробуем найти файл
+    filepath = None
+    for filename in possible_filenames:
+        test_path = os.path.join(base_path, filename)
+        if os.path.exists(test_path):
+            filepath = test_path
+            break
+    
+    if filepath is None:
         return None
     
     try:
@@ -174,6 +330,7 @@ def run_strategy_backtest(
     symbol: str = "BTCUSDT",
     use_all_timeframes: bool = True,  # Использовать все доступные таймфреймы
     verbose: bool = True,  # Выводить детальную информацию
+    days: Optional[int] = None,  # Ограничить данные последними N днями (None = все данные)
 ) -> Dict[str, Any]:
     """
     Запускает бэктест стратегии на исторических данных.
@@ -185,6 +342,7 @@ def run_strategy_backtest(
         mtf_timeframe: Таймфрейм для MTF анализа ("1h", "4h")
         initial_balance: Начальный баланс
         symbol: Торговая пара
+        days: Ограничить данные последними N днями (None = использовать все данные)
     
     Returns:
         Словарь с результатами бэктеста
@@ -193,8 +351,8 @@ def run_strategy_backtest(
     print(f"📊 BACKTEST: {strategy_type.upper()} Strategy {'with MTF' if use_mtf_filter else 'without MTF'}")
     print("=" * 80)
     
-    # Загрузка данных
-    print(f"\n📁 Loading data from {csv_path}...")
+    # Загрузка данных из локального CSV файла (без обращения к API)
+    print(f"\n📁 Loading data from local CSV: {csv_path}...")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
     
@@ -210,6 +368,16 @@ def run_strategy_backtest(
     else:
         raise ValueError("CSV must have 'datetime' or 'timestamp' column")
     
+    # Ограничиваем данные последними N днями если указано
+    if days is not None:
+        if days < 1 or days > 30:
+            raise ValueError(f"days must be between 1 and 30, got {days}")
+        last_date = df.index[-1]
+        start_date = last_date - pd.Timedelta(days=days)
+        df = df[df.index >= start_date]
+        if verbose:
+            print(f"   ⏱️ Limited to last {days} days")
+    
     if verbose:
         print(f"   Loaded {len(df)} candles")
         print(f"   Date range: {df.index[0]} to {df.index[-1]}")
@@ -223,6 +391,11 @@ def run_strategy_backtest(
         data_dir = os.path.dirname(csv_path) or "data"
         
         df_1h = load_timeframe_data(data_dir, symbol, "1h")
+        if df_1h is not None and days is not None:
+            # Ограничиваем данные высших таймфреймов тоже
+            last_date = df_1h.index[-1]
+            start_date = last_date - pd.Timedelta(days=days)
+            df_1h = df_1h[df_1h.index >= start_date]
         if verbose:
             if df_1h is not None:
                 print(f"   ✅ Loaded 1H data: {len(df_1h)} candles ({df_1h.index[0]} to {df_1h.index[-1]})")
@@ -230,6 +403,11 @@ def run_strategy_backtest(
                 print(f"   ⚠️ 1H data not found, will resample from 15m")
         
         df_4h = load_timeframe_data(data_dir, symbol, "4h")
+        if df_4h is not None and days is not None:
+            # Ограничиваем данные высших таймфреймов тоже
+            last_date = df_4h.index[-1]
+            start_date = last_date - pd.Timedelta(days=days)
+            df_4h = df_4h[df_4h.index >= start_date]
         if verbose:
             if df_4h is not None:
                 print(f"   ✅ Loaded 4H data: {len(df_4h)} candles ({df_4h.index[0]} to {df_4h.index[-1]})")
@@ -295,6 +473,11 @@ def run_strategy_backtest(
     
     # Устанавливаем флаг бэктеста в state
     strategy_state['backtest_mode'] = True
+    # Отключаем фильтр по времени в бэктесте (чтобы протестировать все часы)
+    strategy_state['enable_time_filter'] = False
+    # Добавляем символ в state для адаптивных параметров
+    strategy_state['symbol'] = symbol
+    strategy_state['trading_symbol'] = symbol
     
     print(f"\n   Calling build_signals for backtesting:")
     print(f"      DataFrame shape: {df_ready.shape}")
@@ -316,6 +499,8 @@ def run_strategy_backtest(
         # Обновляем state для текущего момента
         current_state = strategy_state.copy()
         current_state['last_signal_idx'] = -100  # Сбрасываем cooldown для бэктеста
+        current_state['symbol'] = symbol  # Убеждаемся что символ есть в state
+        current_state['trading_symbol'] = symbol
         
         # Обновляем данные высших таймфреймов до текущего момента
         if 'df_1h' in current_state and current_state['df_1h'] is not None:
@@ -474,10 +659,13 @@ def run_strategy_backtest(
     if not actionable_signals:
         print(f"\n   ⚠️ No actionable signals for {symbol}!")
         print(f"   Total signals: {len(signals)}, Filtered out: {len(signals) - len(actionable_signals)}")
+        empty_metrics = calculate_metrics([], initial_balance, signals)
+        recommendations = generate_recommendations(empty_metrics, [], strategy_type)
         return {
-            "metrics": calculate_metrics([], initial_balance, signals),
+            "metrics": empty_metrics,
             "trades": [],
             "signals": [],
+            "recommendations": recommendations,
         }
     
     # Запуск симулятора
@@ -603,10 +791,19 @@ def run_strategy_backtest(
         print(f"   Max Drawdown: ${metrics.max_drawdown:.2f} ({metrics.max_drawdown_pct:.2f}%)")
         print(f"   Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
         print(f"   Avg Trade Duration: {metrics.avg_trade_duration_hours:.1f} hours")
+        
+        # Генерируем рекомендации (будем использовать их позже для сохранения)
+        recommendations = generate_recommendations(metrics, trades, strategy_type)
+        if recommendations:
+            print(f"\n💡 RECOMMENDATIONS:")
+            for rec in recommendations:
+                priority_icon = "🔴" if rec.priority == "high" else "🟡" if rec.priority == "medium" else "🟢"
+                print(f"   {priority_icon} [{rec.priority.upper()}] {rec.category.upper()}")
+                print(f"      Issue: {rec.message}")
+                print(f"      Suggestion: {rec.suggestion}")
     else:
-        # Компактный вывод для мультисимвольного режима
-        print(f"   {symbol}: {metrics.total_trades} trades, Win Rate: {metrics.win_rate:.1f}%, PnL: ${metrics.total_pnl:.2f} ({metrics.total_pnl_pct:+.2f}%)")
-    
+        # Компактный вывод для мультисимвольного режима - генерируем рекомендации для возврата
+        recommendations = generate_recommendations(metrics, trades, strategy_type)
     print("\n" + "=" * 80)
     
     # Сохранение результатов в CSV
@@ -631,10 +828,35 @@ def run_strategy_backtest(
         trades_df.to_csv(output_file, index=False)
         print(f"\n💾 Trades saved to: {output_file}")
     
+    # Сохраняем рекомендации в файл
+    if recommendations:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        rec_file = f"results/{strategy_type}_backtest_recommendations_{timestamp}.txt"
+        os.makedirs("results", exist_ok=True)
+        with open(rec_file, "w", encoding="utf-8") as f:
+            f.write(f"{strategy_type.upper()} STRATEGY BACKTEST RECOMMENDATIONS\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Symbol: {symbol}\n")
+            f.write(f"Strategy: {strategy_type.upper()}\n")
+            f.write(f"MTF Filter: {'ON' if use_mtf_filter else 'OFF'}\n")
+            f.write(f"Total Trades: {metrics.total_trades}\n")
+            f.write(f"Win Rate: {metrics.win_rate:.2f}%\n")
+            f.write(f"Total PnL: ${metrics.total_pnl:.2f}\n")
+            f.write(f"Profit Factor: {metrics.profit_factor:.2f}\n\n")
+            f.write("RECOMMENDATIONS:\n")
+            f.write("=" * 80 + "\n\n")
+            for rec in recommendations:
+                f.write(f"[{symbol}] [{rec.priority.upper()}] {rec.category.upper()}\n")
+                f.write(f"  Issue: {rec.message}\n")
+                f.write(f"  Suggestion: {rec.suggestion}\n\n")
+        if verbose:
+            print(f"💾 Recommendations saved to: {rec_file}")
+    
     return {
         "metrics": metrics,
         "trades": trades,
         "signals": actionable_signals,
+        "recommendations": recommendations,
     }
 
 
@@ -645,6 +867,7 @@ def run_multi_symbol_backtest(
     mtf_timeframe: str = "1h",
     initial_balance: float = 1000.0,
     use_all_timeframes: bool = True,
+    days: Optional[int] = None,  # Ограничить данные последними N днями
 ) -> Dict[str, Any]:
     """
     Запускает бэктест для нескольких символов одновременно.
@@ -661,6 +884,7 @@ def run_multi_symbol_backtest(
         Словарь с результатами для каждого символа и сводной статистикой
     """
     results = {}
+    all_recommendations = []  # Собираем рекомендации для всех символов
     total_metrics = {
         'total_trades': 0,
         'winning_trades': 0,
@@ -677,6 +901,11 @@ def run_multi_symbol_backtest(
     print(f"   MTF Filter: {'ON' if use_mtf_filter else 'OFF'}")
     if use_mtf_filter:
         print(f"   MTF Mode: {'Multi-timeframe consensus' if use_all_timeframes else f'Single timeframe ({mtf_timeframe})'}")
+    print(f"   Data Source: Local CSV files (no API calls)")
+    if days:
+        print(f"   Period: Last {days} days")
+    else:
+        print(f"   Period: All available data")
     print("=" * 80)
     
     for symbol in symbols:
@@ -684,12 +913,22 @@ def run_multi_symbol_backtest(
         print(f"📊 Testing {symbol}")
         print(f"{'='*80}")
         
-        # Определяем путь к файлу
+        # Определяем путь к файлу (пробуем разные форматы)
         symbol_lower = symbol.lower()
-        csv_path = f"data/{symbol_lower}_15m.csv"
+        possible_paths = [
+            f"data/{symbol_lower}_15m.csv",  # btcusdt_15m.csv
+            f"data/{symbol_lower[:3]}_15m.csv",  # btc_15m.csv (fallback)
+        ]
         
-        if not os.path.exists(csv_path):
-            print(f"⚠️ File not found: {csv_path}, skipping {symbol}")
+        csv_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                csv_path = path
+                break
+        
+        if csv_path is None:
+            print(f"⚠️ CSV file not found for {symbol}. Tried: {', '.join(possible_paths)}")
+            print(f"   Skipping {symbol}")
             continue
         
         try:
@@ -702,10 +941,15 @@ def run_multi_symbol_backtest(
                 symbol=symbol,
                 use_all_timeframes=use_all_timeframes,
                 verbose=True,  # Включаем детальное логирование для диагностики
+                days=days,  # Передаем ограничение по дням
             )
             
             results[symbol] = result
             metrics = result['metrics']
+            
+            # Собираем рекомендации
+            if 'recommendations' in result and result['recommendations']:
+                all_recommendations.extend([(symbol, rec) for rec in result['recommendations']])
             
             # Суммируем метрики
             total_metrics['total_trades'] += metrics.total_trades
@@ -757,10 +1001,33 @@ def run_multi_symbol_backtest(
         win_rate = metrics.win_rate if metrics.total_trades > 0 else 0.0
         print(f"{symbol:<12} {metrics.total_trades:<8} {win_rate:>6.2f}%   ${metrics.total_pnl:>9.2f}  {metrics.total_signals:<8}")
     
+    # Сохраняем рекомендации для всех символов
+    if all_recommendations:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        rec_file = os.path.join("results", f"{strategy_type}_backtest_recommendations_{timestamp}.txt")
+        os.makedirs("results", exist_ok=True)
+        with open(rec_file, "w", encoding="utf-8") as f:
+            f.write(f"{strategy_type.upper()} STRATEGY BACKTEST RECOMMENDATIONS\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Strategy: {strategy_type.upper()}\n")
+            f.write(f"MTF Filter: {'ON' if use_mtf_filter else 'OFF'}\n")
+            f.write(f"Symbols tested: {', '.join(symbols)}\n")
+            f.write(f"Total Trades: {total_metrics['total_trades']}\n")
+            f.write(f"Overall Win Rate: {overall_win_rate:.2f}%\n")
+            f.write(f"Total PnL: ${total_metrics['total_pnl']:.2f}\n\n")
+            f.write("RECOMMENDATIONS:\n")
+            f.write("=" * 80 + "\n\n")
+            for symbol, rec in all_recommendations:
+                f.write(f"[{symbol}] [{rec.priority.upper()}] {rec.category.upper()}\n")
+                f.write(f"  Issue: {rec.message}\n")
+                f.write(f"  Suggestion: {rec.suggestion}\n\n")
+        print(f"\n💾 Recommendations saved to: {rec_file}")
+    
     return {
         'results': results,
         'summary': total_metrics,
         'overall_win_rate': overall_win_rate,
+        'recommendations': all_recommendations,
     }
 
 
@@ -777,8 +1044,14 @@ if __name__ == "__main__":
     parser.add_argument("--symbol", type=str, default=None, help="Trading symbol (for single symbol test)")
     parser.add_argument("--multi", action="store_true", help="Test multiple symbols (BTCUSDT, ETHUSDT, SOLUSDT)")
     parser.add_argument("--symbols", type=str, nargs="+", help="List of symbols to test (e.g., BTCUSDT ETHUSDT SOLUSDT)")
+    parser.add_argument("--days", type=int, default=30, help="Limit backtest to last N days (1-30, default: 30)")
     
     args = parser.parse_args()
+    
+    # Валидация days
+    if args.days < 1 or args.days > 30:
+        print(f"❌ Error: --days must be between 1 and 30, got {args.days}")
+        sys.exit(1)
     
     # Если указан флаг --multi или список символов, запускаем мультисимвольный тест
     if args.multi or args.symbols:
@@ -795,18 +1068,19 @@ if __name__ == "__main__":
             mtf_timeframe=args.mtf_tf,
             initial_balance=args.balance,
             use_all_timeframes=not args.no_all_tf,
+            days=args.days,
         )
     else:
         # Одиночный тест (старая логика)
         csv_path = args.csv or "data/btcusdt_15m.csv"
         symbol = args.symbol or "BTCUSDT"
         
-        # Проверяем альтернативные пути к файлу
+        # Проверяем альтернативные пути к файлу (поддержка разных форматов имен)
         if not os.path.exists(csv_path):
+            symbol_lower = symbol.lower()
             alternatives = [
-                "data/btc_15m.csv",
-                "data/eth_15m.csv",
-                "data/sol_15m.csv",
+                f"data/{symbol_lower[:3]}_15m.csv",  # btc_15m.csv
+                f"data/{symbol_lower}_15m.csv",  # btcusdt_15m.csv
             ]
             for alt in alternatives:
                 if os.path.exists(alt):
@@ -816,11 +1090,20 @@ if __name__ == "__main__":
         
         if not os.path.exists(csv_path):
             print(f"❌ CSV file not found: {csv_path}")
-            print("Available files in data/:")
+            print(f"   Tried paths:")
+            symbol_lower = symbol.lower()
+            print(f"   - data/{symbol_lower}_15m.csv")
+            print(f"   - data/{symbol_lower[:3]}_15m.csv")
+            print("\n   Available CSV files in data/:")
             if os.path.exists("data"):
-                for f in os.listdir("data"):
-                    if f.endswith(".csv"):
+                csv_files = [f for f in os.listdir("data") if f.endswith(".csv") and not f.startswith("backtest_")]
+                if csv_files:
+                    for f in sorted(csv_files)[:20]:  # Показываем первые 20
                         print(f"   - data/{f}")
+                    if len(csv_files) > 20:
+                        print(f"   ... and {len(csv_files) - 20} more files")
+                else:
+                    print("   (no CSV files found)")
             sys.exit(1)
         
         result = run_strategy_backtest(
@@ -831,4 +1114,5 @@ if __name__ == "__main__":
             initial_balance=args.balance,
             symbol=symbol,
             use_all_timeframes=not args.no_all_tf,
+            days=args.days,
         )

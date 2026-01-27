@@ -86,27 +86,50 @@ class SMCStrategy:
         all_zones = fvg_zones + ob_zones
 
         signals = []
+        
+        # Статистика фильтрации для диагностики
+        stats = {
+            'total_zones': len(all_zones),
+            'too_old': 0,
+            'trend_filter_failed': 0,
+            'mitigated': 0,
+            'session_filter_blocked': 0,
+            'no_touch': 0,
+        }
 
         # 3. Обработка зон и генерация сигналов
         for zone in all_zones:
             # А) Фильтр по возрасту
             max_age = self.params.smc_max_fvg_age_bars if zone.zone_type == "FVG" else self.params.smc_max_ob_age_bars
             if (current_idx - zone.bar_index) > max_age:
+                stats['too_old'] += 1
                 continue
 
-            # Б) Фильтр по тренду (EMA 200)
-            if zone.direction == "bullish" and not is_bullish_context:
-                continue
-            if zone.direction == "bearish" and not is_bearish_context:
-                continue
+            # Б) Фильтр по тренду (EMA 200) - делаем менее строгим
+            # Для зон в диапазоне касания тренд-фильтр опциональный
+            zone_size = zone.upper - zone.lower
+            price_distance = min(abs(close_price - zone.upper), abs(close_price - zone.lower), 
+                                abs(close_price - (zone.upper + zone.lower) / 2))
+            in_touch_range = price_distance <= zone_size * 0.1  # В пределах 10% от размера зоны
+            
+            # Если цена близко к зоне, тренд-фильтр не обязателен
+            if not in_touch_range:
+                if zone.direction == "bullish" and not is_bullish_context:
+                    stats['trend_filter_failed'] += 1
+                    continue
+                if zone.direction == "bearish" and not is_bearish_context:
+                    stats['trend_filter_failed'] += 1
+                    continue
 
             # В) Проверка на Mitigation (была ли зона пробита ранее)
             if self._is_mitigated(zone, highs, lows, current_idx):
+                stats['mitigated'] += 1
                 continue
 
             # Г) Фильтр торговой сессии (только для входа)
             if getattr(self.params, 'smc_enable_session_filter', True):
                 if not self._is_trading_session(last_ts):
+                    stats['session_filter_blocked'] += 1
                     continue
 
             # Д) Логика входа при касании
@@ -115,6 +138,50 @@ class SMCStrategy:
                 signals.append(signal)
                 # Убрали логирование в CSV - слишком много сообщений
                 # self._log_signal_to_csv(signal, symbol)
+            else:
+                stats['no_touch'] += 1
+                # Детальная диагностика для зон в диапазоне касания (только для первых 3)
+                if stats['no_touch'] <= 3:
+                    zone_size = zone.upper - zone.lower
+                    tolerance = max(zone_size * self.params.smc_touch_tolerance_pct, 
+                                  close_price * self.params.smc_touch_tolerance_pct)
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    
+                    if zone.direction == "bullish":
+                        touch_upper = last_row['low'] <= (zone.upper + tolerance)
+                        above_lower = close_price >= (zone.lower - tolerance * 5)
+                        in_zone = zone.lower <= close_price <= zone.upper
+                        near_zone = abs(close_price - zone.upper) <= tolerance * 2 or abs(close_price - zone.lower) <= tolerance * 2
+                        
+                        logger.debug(f"[SMC] Zone {zone.bar_index} ({zone.zone_type}) BULLISH - "
+                                   f"touch_upper={touch_upper}, above_lower={above_lower}, in_zone={in_zone}, near_zone={near_zone}, "
+                                   f"low={last_row['low']:.2f}, upper={zone.upper:.2f}, close={close_price:.2f}, lower={zone.lower:.2f}, "
+                                   f"tolerance={tolerance:.2f}, zone_size={zone_size:.2f}")
+                    elif zone.direction == "bearish":
+                        touch_lower = last_row['high'] >= (zone.lower - tolerance)
+                        below_upper = close_price <= (zone.upper + tolerance * 5)
+                        in_zone = zone.lower <= close_price <= zone.upper
+                        near_zone = abs(close_price - zone.upper) <= tolerance * 2 or abs(close_price - zone.lower) <= tolerance * 2
+                        
+                        logger.debug(f"[SMC] Zone {zone.bar_index} ({zone.zone_type}) BEARISH - "
+                                   f"touch_lower={touch_lower}, below_upper={below_upper}, in_zone={in_zone}, near_zone={near_zone}, "
+                                   f"high={last_row['high']:.2f}, lower={zone.lower:.2f}, close={close_price:.2f}, upper={zone.upper:.2f}, "
+                                   f"tolerance={tolerance:.2f}, zone_size={zone_size:.2f}")
+        
+        # Логируем статистику если нет сигналов
+        if len(signals) == 0 and stats['total_zones'] > 0:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"[SMC] {symbol} Filter stats: {stats}")
+            # Выводим статистику в консоль для диагностики
+            if stats['total_zones'] > 0:
+                print(f"      [SMC Debug] Filter breakdown:")
+                print(f"         - Too old: {stats['too_old']}")
+                print(f"         - Trend filter failed: {stats['trend_filter_failed']}")
+                print(f"         - Mitigated: {stats['mitigated']}")
+                print(f"         - Session blocked: {stats['session_filter_blocked']}")
+                print(f"         - No touch: {stats['no_touch']}")
 
         return signals
 
@@ -258,7 +325,9 @@ class SMCStrategy:
 
     def _check_entry(self, zone, last_row, close_price) -> Optional[Signal]:
         """Проверка условий входа и расчет уровней SL/TP."""
-        tolerance = zone.upper * self.params.smc_touch_tolerance_pct
+        # Tolerance рассчитывается как процент от размера зоны или от цены
+        zone_size = zone.upper - zone.lower
+        tolerance = max(zone_size * self.params.smc_touch_tolerance_pct, close_price * self.params.smc_touch_tolerance_pct)
         rr_ratio = getattr(self.params, 'smc_rr_ratio', 3.0)
         
         # Безопасно получаем время последней свечи
@@ -267,8 +336,26 @@ class SMCStrategy:
             last_ts = pd.to_datetime(last_ts)
 
         if zone.direction == "bullish":
-            # Вход при касании верхней границы сверху вниз
-            if last_row['low'] <= (zone.upper + tolerance) and close_price > zone.lower:
+            # Вход при касании верхней границы сверху вниз или ретест зоны
+            # Проверяем: low свечи коснулся верхней границы зоны (с tolerance)
+            touch_upper = last_row['low'] <= (zone.upper + tolerance)
+            
+            # Также проверяем ретест зоны - цена прошла выше зоны и вернулась к ней
+            # Для ретеста проверяем, что цена выше зоны, но low коснулся верхней границы
+            price_above_zone = close_price > zone.upper
+            retest_upper = price_above_zone and last_row['low'] <= (zone.upper + tolerance * 3)
+            
+            # И цена закрытия находится в зоне или выше нижней границы
+            above_lower = close_price >= (zone.lower - tolerance * 5)
+            
+            # Альтернативное условие: цена находится внутри зоны или очень близко к ней
+            in_zone = zone.lower <= close_price <= zone.upper
+            near_zone = abs(close_price - zone.upper) <= tolerance * 3 or abs(close_price - zone.lower) <= tolerance * 3
+            
+            # Также проверяем близость к зоне снизу (для зон выше текущей цены)
+            near_below = close_price < zone.lower and (zone.lower - close_price) <= (zone_size * 0.2)
+            
+            if (touch_upper and above_lower) or retest_upper or in_zone or near_zone or near_below:
                 sl = zone.lower - (close_price * 0.0005)
                 # Защита от слишком узкого стопа
                 if (close_price - sl) < close_price * 0.001:
@@ -285,8 +372,26 @@ class SMCStrategy:
                 )
         
         elif zone.direction == "bearish":
-            # Вход при касании нижней границы снизу вверх
-            if last_row['high'] >= (zone.lower - tolerance) and close_price < zone.upper:
+            # Вход при касании нижней границы снизу вверх или ретест зоны
+            # Проверяем: high свечи коснулся нижней границы зоны (с tolerance)
+            touch_lower = last_row['high'] >= (zone.lower - tolerance)
+            
+            # Также проверяем ретест зоны - цена прошла ниже зоны и вернулась к ней
+            # Для ретеста проверяем, что цена ниже зоны, но high коснулся нижней границы
+            price_below_zone = close_price < zone.lower
+            retest_lower = price_below_zone and last_row['high'] >= (zone.lower - tolerance * 3)
+            
+            # И цена закрытия находится в зоне или ниже верхней границы
+            below_upper = close_price <= (zone.upper + tolerance * 5)
+            
+            # Альтернативное условие: цена находится внутри зоны или очень близко к ней
+            in_zone = zone.lower <= close_price <= zone.upper
+            near_zone = abs(close_price - zone.upper) <= tolerance * 3 or abs(close_price - zone.lower) <= tolerance * 3
+            
+            # Также проверяем близость к зоне сверху (для зон ниже текущей цены)
+            near_above = close_price > zone.upper and (close_price - zone.upper) <= (zone_size * 0.2)
+            
+            if (touch_lower and below_upper) or retest_lower or in_zone or near_zone or near_above:
                 sl = zone.upper + (close_price * 0.0005)
                 if (sl - close_price) < close_price * 0.001:
                     sl = close_price * 1.001

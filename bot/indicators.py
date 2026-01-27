@@ -142,7 +142,7 @@ def compute_4h_context(
             total_count = len(df_15m)
             # Заполняем только если NaN меньше 30% от общего количества
             if nan_count > 0 and (nan_count / total_count) < 0.3:
-                df_15m["adx"] = df_15m["adx"].fillna(method="bfill").fillna(first_valid_adx)
+                df_15m["adx"] = df_15m["adx"].bfill().fillna(first_valid_adx)
     
     return df_15m
 
@@ -382,7 +382,7 @@ def compute_1h_context(
                 total_count = len(df_15m)
                 # Заполняем только если NaN меньше 30% от общего количества
                 if nan_count > 0 and (nan_count / total_count) < 0.3:
-                    df_15m[di_col] = df_15m[di_col].fillna(method="bfill").fillna(first_valid_di)
+                    df_15m[di_col] = df_15m[di_col].bfill().fillna(first_valid_di)
     
     return df_15m
 

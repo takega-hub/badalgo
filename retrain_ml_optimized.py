@@ -204,7 +204,7 @@ def main():
         print(f"      ✅ Accuracy: {xgb_metrics['accuracy']:.4f}")
         print(f"      ✅ CV Accuracy: {xgb_metrics['cv_mean']:.4f} ± {xgb_metrics['cv_std']*2:.4f}")
         
-        # Обучаем Ensemble
+        # Обучаем Ensemble (RF + XGBoost)
         print(f"\n   🎯 Обучение Ensemble (RF + XGBoost)...")
         ensemble_model, ensemble_metrics = trainer.train_ensemble(
             X, y,
@@ -241,6 +241,63 @@ def main():
                 "min_risk_reward_ratio": 1.5,
             },
         )
+        print(f"      ✅ Accuracy: {ensemble_metrics['accuracy']:.4f}")
+        print(f"      ✅ CV Accuracy: {ensemble_metrics['cv_mean']:.4f} ± {ensemble_metrics['cv_std']*2:.4f}")
+        
+        # Обучаем TripleEnsemble (RF + XGBoost + LightGBM)
+        from bot.ml.model_trainer import LIGHTGBM_AVAILABLE
+        if LIGHTGBM_AVAILABLE:
+            print(f"\n   🎯 Обучение TripleEnsemble (RF + XGBoost + LightGBM)...")
+            triple_ensemble_model, triple_ensemble_metrics = trainer.train_ensemble(
+                X, y,
+                rf_n_estimators=150,
+                rf_max_depth=12,
+                xgb_n_estimators=150,
+                xgb_max_depth=8,
+                xgb_learning_rate=0.05,
+                lgb_n_estimators=150,
+                lgb_max_depth=8,
+                lgb_learning_rate=0.05,
+                ensemble_method="triple",
+                include_lightgbm=True,
+                class_weight=class_weight_dict,  # Балансировка классов!
+            )
+            
+            # Сохраняем модель с полными метаданными
+            trainer.save_model(
+                triple_ensemble_model,
+                trainer.scaler,
+                feature_names,
+                triple_ensemble_metrics,
+                f"triple_ensemble_{symbol}_{interval}.pkl",
+                symbol=symbol,
+                interval=interval,
+                model_type="triple_ensemble",
+                class_weights=class_weight_dict,
+                class_distribution=target_dist.to_dict(),
+                training_params={
+                    "rf_n_estimators": 150,
+                    "rf_max_depth": 12,
+                    "xgb_n_estimators": 150,
+                    "xgb_max_depth": 8,
+                    "xgb_learning_rate": 0.05,
+                    "lgb_n_estimators": 150,
+                    "lgb_max_depth": 8,
+                    "lgb_learning_rate": 0.05,
+                    "ensemble_method": "triple",
+                    "forward_periods": 5,
+                    "threshold_pct": 1.0,
+                    "min_risk_reward_ratio": 1.5,
+                },
+            )
+            print(f"      ✅ Accuracy: {triple_ensemble_metrics['accuracy']:.4f}")
+            print(f"      ✅ CV Accuracy: {triple_ensemble_metrics['cv_mean']:.4f} ± {triple_ensemble_metrics['cv_std']*2:.4f}")
+            print(f"      ✅ Weights: RF={triple_ensemble_metrics['rf_weight']:.3f}, "
+                  f"XGB={triple_ensemble_metrics['xgb_weight']:.3f}, "
+                  f"LGB={triple_ensemble_metrics['lgb_weight']:.3f}")
+        else:
+            print(f"\n   ⚠️  LightGBM не установлен, пропускаем TripleEnsemble")
+            triple_ensemble_metrics = None
         
         # Итоговые метрики
         print(f"\n" + "-" * 80)
@@ -254,7 +311,7 @@ def main():
         print(f"   Accuracy:     {xgb_metrics['accuracy']:.4f}")
         print(f"   CV Accuracy:  {xgb_metrics['cv_mean']:.4f} ± {xgb_metrics['cv_std']*2:.4f}")
         
-        print(f"\n🎯 Ensemble:")
+        print(f"\n🎯 Ensemble (RF+XGB):")
         print(f"   Accuracy:     {ensemble_metrics['accuracy']:.4f}")
         print(f"   Precision:    {ensemble_metrics['precision']:.4f}")
         print(f"   Recall:       {ensemble_metrics['recall']:.4f}")
@@ -262,12 +319,26 @@ def main():
         print(f"   CV Accuracy:  {ensemble_metrics['cv_mean']:.4f} ± {ensemble_metrics['cv_std']*2:.4f}")
         print(f"   CV F1-Score:  {ensemble_metrics['cv_f1_mean']:.4f}")
         
+        if triple_ensemble_metrics:
+            print(f"\n🎯 TripleEnsemble (RF+XGB+LGB):")
+            print(f"   Accuracy:     {triple_ensemble_metrics['accuracy']:.4f}")
+            print(f"   Precision:    {triple_ensemble_metrics['precision']:.4f}")
+            print(f"   Recall:       {triple_ensemble_metrics['recall']:.4f}")
+            print(f"   F1-Score:     {triple_ensemble_metrics['f1_score']:.4f}")
+            print(f"   CV Accuracy:  {triple_ensemble_metrics['cv_mean']:.4f} ± {triple_ensemble_metrics['cv_std']*2:.4f}")
+            print(f"   CV F1-Score:  {triple_ensemble_metrics['cv_f1_mean']:.4f}")
+            print(f"   Weights:      RF={triple_ensemble_metrics['rf_weight']:.3f}, "
+                  f"XGB={triple_ensemble_metrics['xgb_weight']:.3f}, "
+                  f"LGB={triple_ensemble_metrics['lgb_weight']:.3f}")
+        
         # Выбор лучшей модели
         models = [
             ("Random Forest", rf_metrics['cv_mean']),
             ("XGBoost", xgb_metrics['cv_mean']),
             ("Ensemble", ensemble_metrics['cv_mean']),
         ]
+        if triple_ensemble_metrics:
+            models.append(("TripleEnsemble", triple_ensemble_metrics['cv_mean']))
         models.sort(key=lambda x: x[1], reverse=True)
         best_model, best_score = models[0]
         
@@ -279,9 +350,12 @@ def main():
     print("🎉 ПЕРЕОБУЧЕНИЕ ЗАВЕРШЕНО!")
     print("=" * 80)
     print("\n📦 Созданные модели:")
-    print("   • ml_models/ensemble_SOLUSDT_15.pkl")
-    print("   • ml_models/ensemble_BTCUSDT_15.pkl")
-    print("   • ml_models/ensemble_ETHUSDT_15.pkl")
+    print("   • ml_models/rf_*_15.pkl (Random Forest)")
+    print("   • ml_models/xgb_*_15.pkl (XGBoost)")
+    print("   • ml_models/ensemble_*_15.pkl (RF + XGBoost)")
+    from bot.ml.model_trainer import LIGHTGBM_AVAILABLE
+    if LIGHTGBM_AVAILABLE:
+        print("   • ml_models/triple_ensemble_*_15.pkl (RF + XGBoost + LightGBM)")
     print("\n🚀 Следующие шаги:")
     print("   1. Протестируйте новые модели:")
     print("      python test_ml_strategy.py --symbol SOLUSDT --days 7")

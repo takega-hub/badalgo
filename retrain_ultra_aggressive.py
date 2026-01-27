@@ -17,7 +17,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", type=str, help="Торговая пара для переобучения")
-    args = parser.parse_all()[0] if hasattr(parser, 'parse_all') else parser.parse_known_args()[0]
+    args = parser.parse_known_args()[0]
     
     print("=" * 80)
     print("🔥 ЭКСТРЕМАЛЬНО АГРЕССИВНОЕ ПЕРЕОБУЧЕНИЕ ML")
@@ -115,7 +115,75 @@ def main():
             multiplier = weight / base_weights[list(classes).index(cls)]
             print(f"      {label_name}: {weight:.3f} (x{multiplier:.1f})")
         
-        # Обучаем Ensemble
+        # Обучаем Random Forest с экстремальной балансировкой
+        print(f"\n   🔥 Обучение Random Forest...")
+        rf_model, rf_metrics = trainer.train_random_forest_classifier(
+            X, y,
+            n_estimators=150,
+            max_depth=12,
+            class_weight=class_weight_dict,  # 🔥 ЭКСТРЕМАЛЬНАЯ балансировка!
+        )
+        
+        # Сохраняем модель с метаданными
+        trainer.save_model(
+            rf_model,
+            trainer.scaler,
+            feature_names,
+            rf_metrics,
+            f"rf_{symbol}_{interval}.pkl",
+            symbol=symbol,
+            interval=interval,
+            class_weights=class_weight_dict,
+            class_distribution=target_dist.to_dict(),
+            training_params={
+                "n_estimators": 150,
+                "max_depth": 12,
+                "forward_periods": 3,  # 🔥 Короче!
+                "threshold_pct": 0.6,  # 🔥 Мягче!
+                "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
+                "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
+            },
+        )
+        print(f"      ✅ Accuracy: {rf_metrics['accuracy']:.4f}")
+        print(f"      ✅ CV Accuracy: {rf_metrics['cv_mean']:.4f} ± {rf_metrics['cv_std']*2:.4f}")
+        
+        # Обучаем XGBoost с экстремальной балансировкой
+        print(f"\n   🔥 Обучение XGBoost...")
+        xgb_model, xgb_metrics = trainer.train_xgboost_classifier(
+            X, y,
+            n_estimators=150,
+            max_depth=8,
+            learning_rate=0.05,
+            class_weight=class_weight_dict,  # 🔥 ЭКСТРЕМАЛЬНАЯ балансировка!
+        )
+        
+        # Сохраняем модель с метаданными
+        trainer.save_model(
+            xgb_model,
+            trainer.scaler,
+            feature_names,
+            xgb_metrics,
+            f"xgb_{symbol}_{interval}.pkl",
+            symbol=symbol,
+            interval=interval,
+            class_weights=class_weight_dict,
+            class_distribution=target_dist.to_dict(),
+            training_params={
+                "n_estimators": 150,
+                "max_depth": 8,
+                "learning_rate": 0.05,
+                "forward_periods": 3,  # 🔥 Короче!
+                "threshold_pct": 0.6,  # 🔥 Мягче!
+                "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
+                "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
+            },
+        )
+        print(f"      ✅ Accuracy: {xgb_metrics['accuracy']:.4f}")
+        print(f"      ✅ CV Accuracy: {xgb_metrics['cv_mean']:.4f} ± {xgb_metrics['cv_std']*2:.4f}")
+        
+        # Обучаем Ensemble (RF + XGBoost)
         print(f"\n   🎯 Обучение Ensemble (RF + XGBoost)...")
         ensemble_model, ensemble_metrics = trainer.train_ensemble(
             X, y,
@@ -155,18 +223,79 @@ def main():
             },
         )
         
-        print(f"\n   ✅ Метрики:")
+        print(f"\n   ✅ Метрики Ensemble:")
         print(f"      CV Accuracy:  {ensemble_metrics['cv_mean']:.4f} ± {ensemble_metrics['cv_std']*2:.4f}")
         print(f"      F1-Score:     {ensemble_metrics['f1_score']:.4f}")
+        
+        # Обучаем TripleEnsemble (RF + XGBoost + LightGBM)
+        from bot.ml.model_trainer import LIGHTGBM_AVAILABLE
+        if LIGHTGBM_AVAILABLE:
+            print(f"\n   🔥 Обучение TripleEnsemble (RF + XGBoost + LightGBM)...")
+            triple_ensemble_model, triple_ensemble_metrics = trainer.train_ensemble(
+                X, y,
+                rf_n_estimators=150,
+                rf_max_depth=12,
+                xgb_n_estimators=150,
+                xgb_max_depth=8,
+                xgb_learning_rate=0.05,
+                lgb_n_estimators=150,
+                lgb_max_depth=8,
+                lgb_learning_rate=0.05,
+                ensemble_method="triple",
+                include_lightgbm=True,
+                class_weight=class_weight_dict,  # 🔥 ЭКСТРЕМАЛЬНАЯ балансировка!
+            )
+            
+            # Сохраняем модель с метаданными
+            trainer.save_model(
+                triple_ensemble_model,
+                trainer.scaler,
+                feature_names,
+                triple_ensemble_metrics,
+                f"triple_ensemble_{symbol}_{interval}.pkl",
+                symbol=symbol,
+                interval=interval,
+                model_type="triple_ensemble_ultra_aggressive",
+                class_weights=class_weight_dict,
+                class_distribution=target_dist.to_dict(),
+                training_params={
+                    "rf_n_estimators": 150,
+                    "rf_max_depth": 12,
+                    "xgb_n_estimators": 150,
+                    "xgb_max_depth": 8,
+                    "xgb_learning_rate": 0.05,
+                    "lgb_n_estimators": 150,
+                    "lgb_max_depth": 8,
+                    "lgb_learning_rate": 0.05,
+                    "ensemble_method": "triple",
+                    "forward_periods": 3,  # 🔥 Короче!
+                    "threshold_pct": 0.6,  # 🔥 Мягче!
+                    "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                    "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
+                    "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
+                },
+            )
+            
+            print(f"\n   ✅ Метрики TripleEnsemble:")
+            print(f"      CV Accuracy:  {triple_ensemble_metrics['cv_mean']:.4f} ± {triple_ensemble_metrics['cv_std']*2:.4f}")
+            print(f"      F1-Score:     {triple_ensemble_metrics['f1_score']:.4f}")
+            print(f"      Weights:      RF={triple_ensemble_metrics['rf_weight']:.3f}, "
+                  f"XGB={triple_ensemble_metrics['xgb_weight']:.3f}, "
+                  f"LGB={triple_ensemble_metrics['lgb_weight']:.3f}")
+        else:
+            print(f"\n   ⚠️  LightGBM не установлен, пропускаем TripleEnsemble")
     
     # Финальное сообщение
     print("\n" + "=" * 80)
     print("🎉 ЭКСТРЕМАЛЬНО АГРЕССИВНОЕ ПЕРЕОБУЧЕНИЕ ЗАВЕРШЕНО!")
     print("=" * 80)
     print("\n📦 Обновлены модели:")
-    print("   • ml_models/ensemble_SOLUSDT_15.pkl")
-    print("   • ml_models/ensemble_BTCUSDT_15.pkl")
-    print("   • ml_models/ensemble_ETHUSDT_15.pkl")
+    print("   • ml_models/rf_*_15.pkl (Random Forest)")
+    print("   • ml_models/xgb_*_15.pkl (XGBoost)")
+    print("   • ml_models/ensemble_*_15.pkl (RF + XGBoost)")
+    from bot.ml.model_trainer import LIGHTGBM_AVAILABLE
+    if LIGHTGBM_AVAILABLE:
+        print("   • ml_models/triple_ensemble_*_15.pkl (RF + XGBoost + LightGBM)")
     print("\n🔥 ОЖИДАЕМОЕ УЛУЧШЕНИЕ:")
     print("   • Сигналов: 15 → 100-200 (в 10+ раз больше!)")
     print("   • LONG:  4 → 50-100")

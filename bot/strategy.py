@@ -125,7 +125,7 @@ def build_signals(
                 ema_short=get_param('ema_short', 20, alt_key='ema_fast_length'),
                 ema_long=get_param('ema_long', 50, alt_key='ema_slow_length'),
                 vol_lookback=get_param('vol_lookback', 100),
-                vol_top_pct=get_param('vol_top_pct', 0.75),
+                vol_top_pct=get_param('vol_top_pct', 0.70),  # Ужесточено до 70 процентиля для качества
                 min_history=get_param('min_history', 50),
             )
         else:
@@ -138,6 +138,8 @@ def build_signals(
                 atr_multiplier=get_param('atr_multiplier', 2.0, alt_key='trend_atr_multiplier'),
                 max_pyramid=get_param('max_pyramid', 2, alt_key='trend_max_pyramid'),
                 min_history=get_param('min_history', 100),
+                adx_threshold=get_param('adx_threshold', 25.0, alt_key='trend_adx_threshold'),
+                vol_multiplier=get_param('vol_multiplier', 1.2, alt_key='trend_vol_multiplier'),
                 use_mtf_filter=get_param('use_mtf_filter', False),
                 mtf_timeframe=get_param('mtf_timeframe', '1h'),
                 mtf_ema_period=get_param('mtf_ema_period', 50),
@@ -603,7 +605,7 @@ def _generate_trend_signal_df(
     atr_multiplier: float = 3.0,
     max_pyramid: int = 2,
     min_history: int = 50,
-    adx_threshold: float = 30.0,  # Ужесточено: минимум 30 для сильных трендов
+    adx_threshold: float = 25.0,  # Минимум 25 для сильных трендов (можно настроить через параметры)
     vol_multiplier: float = 1.2,  # Увеличено с 1.0 до 1.2 для лучшего фильтра объема
     use_mtf_filter: bool = True,
     mtf_timeframe: str = '1h',
@@ -704,36 +706,98 @@ def _generate_trend_signal_df(
             trend_up = ema_s_curr > ema_l_curr and ema_s_curr > ema_s_prev
             trend_down = ema_s_curr < ema_l_curr and ema_s_curr < ema_s_prev
             
-            # Pullback: цена коснулась EMA20, но закрылась в сторону тренда
+            # УЖЕСТОЧЕННАЯ логика Pullback: требуется более четкое касание EMA20
             low_curr = float(df['low'].iloc[-1])
             high_curr = float(df['high'].iloc[-1])
             
-            # Pullback: цена коснулась EMA20 (с допуском 0.5%), но закрылась в сторону тренда
-            is_uptrend = trend_up and (low_curr <= ema_s_curr * 1.005) and (price > ema_s_curr)
-            is_downtrend = trend_down and (high_curr >= ema_s_curr * 0.995) and (price < ema_s_curr)
+            # Pullback: цена должна коснуться EMA20 более точно (допуск уменьшен до 0.3%)
+            # И закрытие должно быть достаточно далеко от EMA20 (минимум 0.2% для подтверждения отскока)
+            # В ultra-relaxed режиме ослабляем условия значительно
+            ultra_relaxed = state.get('ultra_relaxed', False)
+            if ultra_relaxed:
+                pullback_tolerance = 0.01  # Увеличиваем допуск до 1.0% (очень широкий)
+                pullback_confirmation = 0.0  # Убираем требование подтверждения - достаточно просто быть в тренде
+            else:
+                pullback_tolerance = 0.003  # Уменьшено с 0.005 до 0.003 (0.3%)
+                pullback_confirmation = 0.002  # Минимум 0.2% от EMA20 для подтверждения отскока
+            
+            # Для LONG: low должен коснуться EMA20 снизу, close должен быть выше EMA20
+            # В ultra-relaxed режиме просто проверяем тренд и что цена выше EMA20
+            if ultra_relaxed:
+                is_uptrend = trend_up and price >= ema_s_curr * (1 - pullback_tolerance)
+                is_downtrend = trend_down and price <= ema_s_curr * (1 + pullback_tolerance)
+            else:
+                is_uptrend = (trend_up and 
+                             (low_curr <= ema_s_curr * (1 + pullback_tolerance)) and 
+                             (price >= ema_s_curr * (1 + pullback_confirmation)))
+                
+                is_downtrend = (trend_down and 
+                              (high_curr >= ema_s_curr * (1 - pullback_tolerance)) and 
+                              (price <= ema_s_curr * (1 - pullback_confirmation)))
     except Exception:
         is_uptrend = False
         is_downtrend = False
 
-    # ADX filter (required) - УЖЕСТОЧЕНО: минимум 30 вместо 25 для более сильных трендов
+    # ADX filter (required) - Адаптивные пороги для разных символов
+    # Для альткоинов (ETHUSDT, SOLUSDT) требуем более высокий ADX из-за высокой волатильности
     adx_ok = True
     adx_val = None
+    
+    # Определяем символ для адаптивных параметров
+    symbol = state.get('symbol') or state.get('trading_symbol') or 'BTCUSDT'
+    is_altcoin = symbol in ('ETHUSDT', 'SOLUSDT')
+    
+    # Адаптивный ADX порог: для альткоинов требуем более высокий ADX
+    adaptive_adx_threshold = float(adx_threshold)
+    if is_altcoin:
+        # Для ETHUSDT требуем еще более высокий ADX из-за высокой волатильности и низкого качества сигналов
+        if symbol == 'ETHUSDT':
+            adaptive_adx_threshold = max(float(adx_threshold), 32.0)  # Минимум 32 для ETHUSDT
+        else:
+            adaptive_adx_threshold = max(float(adx_threshold), 28.0)  # Минимум 28 для других альткоинов
+    
+    # В режиме бэктеста логируем определение порога для диагностики
+    if state.get('backtest_mode', False) and len(df) % 1000 == 0:
+        print(f"[generate_trend_signal] DEBUG: Symbol={symbol}, is_altcoin={is_altcoin}, adaptive_adx_threshold={adaptive_adx_threshold}")
+    
     try:
         if 'adx' in df.columns:
             adx_val = float(df['adx'].iloc[-1])
-            if adx_val < 30:  # Увеличено с 25 до 30
+            # СТРОГАЯ проверка: если ADX ниже порога, блокируем сигнал
+            if adx_val < adaptive_adx_threshold:
                 adx_ok = False
-    except Exception:
-        adx_ok = True
+                indicators_info['adx_filter_reason'] = f"ADX {adx_val:.2f} < threshold {adaptive_adx_threshold:.2f}"
+            else:
+                # ADX в порядке - подтверждаем
+                adx_ok = True
+        else:
+            # Если ADX колонка отсутствует, блокируем сигнал для безопасности
+            adx_ok = False
+            indicators_info['adx_filter_reason'] = "ADX column not found"
+            adx_val = None
+    except Exception as e:
+        # В случае ошибки блокируем сигнал для безопасности
+        adx_ok = False
+        indicators_info['adx_filter_reason'] = f"ADX check error: {str(e)}"
+        adx_val = None
     
     indicators_info['adx'] = adx_val
+    indicators_info['adx_threshold'] = adaptive_adx_threshold
+    indicators_info['symbol'] = symbol
+    indicators_info['is_altcoin'] = is_altcoin
+    indicators_info['adx_ok'] = adx_ok  # Сохраняем статус для диагностики
 
-    # Улучшенный фильтр объема: require current volume >= vol_sma * 1.2 (было 1.0)
-    # В бэктесте ослабляем до 0.8 для большего покрытия
+    # УЖЕСТОЧЕННЫЙ фильтр объема: require current volume >= vol_sma * vol_multiplier
+    # Используем переданный параметр vol_multiplier, но учитываем ultra-relaxed режим
     vol_ok = True
-    vol_multiplier_base = 1.2  # Увеличено с 1.0 до 1.2
-    if state.get('backtest_mode', False):
-        vol_multiplier_base = 0.8  # В бэктесте ослабляем
+    ultra_relaxed = state.get('ultra_relaxed', False)
+    # Используем переданный vol_multiplier, но в ultra-relaxed режиме переопределяем
+    vol_multiplier_base = vol_multiplier
+    if ultra_relaxed:
+        vol_multiplier_base = 0.3  # В ultra-relaxed режиме очень низкое требование
+    elif state.get('backtest_mode', False) and vol_multiplier_base > 0.8:
+        # В обычном бэктесте ослабляем только если значение выше 0.8
+        vol_multiplier_base = 0.8
     
     try:
         if 'vol_sma' in df.columns and 'volume' in df.columns:
@@ -744,7 +808,8 @@ def _generate_trend_signal_df(
     except Exception:
         vol_ok = True
 
-    # Breakout logic (Donchian Channels)
+    # Улучшенная логика Breakout (Donchian Channels)
+    # Увеличиваем lookback для более значимых пробоев
     donchian_lookback = 20
     upper_band = df['high'].rolling(donchian_lookback).max().shift(1)
     lower_band = df['low'].rolling(donchian_lookback).min().shift(1)
@@ -752,30 +817,147 @@ def _generate_trend_signal_df(
     upper_band_val = upper_band.iloc[-1] if len(upper_band) > 0 and pd.notna(upper_band.iloc[-1]) else None
     lower_band_val = lower_band.iloc[-1] if len(lower_band) > 0 and pd.notna(lower_band.iloc[-1]) else None
     
-    is_breakout_long = trend_up and upper_band_val is not None and price > upper_band_val
-    is_breakout_short = trend_down and lower_band_val is not None and price < lower_band_val
+    # Breakout требует подтверждения объема и сильного закрытия свечи
+    breakout_volume_ok = True
+    breakout_body_ok = True
+    ultra_relaxed = state.get('ultra_relaxed', False)
+    try:
+        if 'volume' in df.columns and 'vol_sma' in df.columns:
+            vol_current = float(df['volume'].iloc[-1])
+            vol_sma = float(df['vol_sma'].iloc[-1])
+            # Для breakout требуется повышенный объем (минимум 1.3x от среднего)
+            # В ultra-relaxed режиме ослабляем до 0.5x
+            if ultra_relaxed:
+                breakout_volume_mult = 0.5
+            else:
+                breakout_volume_mult = 1.3 if not state.get('backtest_mode', False) else 1.0
+            breakout_volume_ok = vol_current >= vol_sma * breakout_volume_mult
+        
+        # Проверяем силу свечи (body ratio) для breakout
+        if len(df) > 0:
+            last_candle = df.iloc[-1]
+            candle_range = float(last_candle['high'] - last_candle['low'])
+            candle_body = abs(float(last_candle['close'] - last_candle['open']))
+            if candle_range > 0:
+                body_ratio = candle_body / candle_range
+                # Для breakout требуется сильная свеча (body >= 60% от range)
+                # В ultra-relaxed режиме ослабляем до 40%
+                breakout_body_threshold = 0.4 if ultra_relaxed else 0.6
+                breakout_body_ok = body_ratio >= breakout_body_threshold
+    except Exception:
+        pass
+    
+    # Breakout требует: тренд + пробой канала + повышенный объем + сильная свеча
+    is_breakout_long = (trend_up and upper_band_val is not None and price > upper_band_val 
+                       and breakout_volume_ok and breakout_body_ok)
+    is_breakout_short = (trend_down and lower_band_val is not None and price < lower_band_val 
+                        and breakout_volume_ok and breakout_body_ok)
     
     # Логируем только если не в режиме бэктеста
     if not state.get('backtest_mode', False):
         print(f"[generate_trend_signal] DEBUG: Breakout check - upper_band={upper_band_val}, lower_band={lower_band_val}")
         print(f"[generate_trend_signal] DEBUG: is_breakout_long={is_breakout_long}, is_breakout_short={is_breakout_short}")
 
+    # КРИТИЧЕСКИ ВАЖНО: Проверяем ADX фильтр ПЕРЕД установкой long_allowed/short_allowed
+    # Это гарантирует, что сигналы с низким ADX будут заблокированы
+    try:
+        adx_val_check = indicators_info.get('adx')
+        adaptive_adx_threshold_check = indicators_info.get('adx_threshold', adx_threshold)
+        symbol_check = indicators_info.get('symbol', symbol)  # Берем символ из indicators_info
+        adx_ok_check = indicators_info.get('adx_ok', True)  # Берем статус из indicators_info
+        
+        # Двойная проверка: проверяем и значение ADX, и флаг adx_ok
+        if adx_val_check is not None:
+            # Используем строгое сравнение: ADX должен быть СТРОГО больше или равен порогу
+            if adx_val_check < adaptive_adx_threshold_check or not adx_ok_check:
+                reason = f"adx_no_trend (ADX={adx_val_check:.2f} < {adaptive_adx_threshold_check:.2f}, adx_ok={adx_ok_check}, symbol={symbol_check})"
+                # Логируем и в режиме бэктеста для диагностики (чаще для альткоинов)
+                log_frequency = 100 if symbol_check in ('ETHUSDT', 'SOLUSDT') else 500
+                if state.get('backtest_mode', False):
+                    if len(df) % log_frequency == 0:
+                        print(f"[generate_trend_signal] DEBUG: {reason}")
+                else:
+                    print(f"[generate_trend_signal] DEBUG: {reason}")
+                return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": reason}
+        elif not adx_ok_check:
+            # Если ADX значение отсутствует, но флаг adx_ok = False, блокируем
+            reason = f"adx_no_trend (ADX value missing, adx_ok=False, symbol={symbol_check})"
+            if state.get('backtest_mode', False):
+                if len(df) % 500 == 0:
+                    print(f"[generate_trend_signal] DEBUG: {reason}")
+            else:
+                print(f"[generate_trend_signal] DEBUG: {reason}")
+            return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": reason}
+    except Exception as e:
+        # В режиме бэктеста логируем ошибки для диагностики
+        if state.get('backtest_mode', False) and len(df) % 500 == 0:
+            print(f"[generate_trend_signal] DEBUG: ADX filter error: {e}")
+        # При ошибке блокируем сигнал для безопасности
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": f"adx_check_error: {str(e)}"}
+    
     long_allowed = False
     short_allowed = False
     entry_reason = "ok"
+    
+    # Определяем тип сигнала ДО применения RSI фильтра
+    is_pullback_long = is_uptrend and not is_breakout_long
+    is_breakout_long_signal = is_breakout_long
+    is_pullback_short = is_downtrend and not is_breakout_short
+    is_breakout_short_signal = is_breakout_short
 
-    if (is_uptrend or is_breakout_long) and adx_ok and vol_ok:
+    # Дополнительная проверка ADX перед установкой флагов (fallback на случай если первая проверка не сработала)
+    adx_val_final = indicators_info.get('adx')
+    adaptive_adx_threshold_final = indicators_info.get('adx_threshold', adx_threshold)
+    if adx_val_final is not None and adx_val_final < adaptive_adx_threshold_final:
+        # ADX слишком низкий - блокируем все сигналы
+        adx_ok = False
+    
+    # Приоритет breakout сигналам над pullback (они показывают лучшие результаты)
+    # Если есть и pullback и breakout - выбираем breakout
+    if (is_breakout_long or is_uptrend) and adx_ok and vol_ok:
         long_allowed = True
-        entry_reason = "trend_pullback_long" if is_uptrend else "trend_breakout_long"
+        # Приоритет breakout над pullback
+        if is_breakout_long:
+            entry_reason = "trend_breakout_long"
+        else:
+            entry_reason = "trend_pullback_long"
         if not state.get('backtest_mode', False):
             print(f"[generate_trend_signal] DEBUG: LONG allowed! Reason: {entry_reason}")
-    if (is_downtrend or is_breakout_short) and adx_ok and vol_ok:
+    
+    if (is_breakout_short or is_downtrend) and adx_ok and vol_ok:
         short_allowed = True
-        entry_reason = "trend_pullback_short" if is_downtrend else "trend_breakout_short"
+        # Приоритет breakout над pullback
+        if is_breakout_short:
+            entry_reason = "trend_breakout_short"
+        else:
+            entry_reason = "trend_pullback_short"
         if not state.get('backtest_mode', False):
             print(f"[generate_trend_signal] DEBUG: SHORT allowed! Reason: {entry_reason}")
     
     if not long_allowed and not short_allowed:
+        # Собираем детальную информацию о причинах для диагностики
+        reason_parts = []
+        if not is_uptrend and not is_breakout_long:
+            reason_parts.append("no_long_trend")
+        if not is_downtrend and not is_breakout_short:
+            reason_parts.append("no_short_trend")
+        if not adx_ok:
+            reason_parts.append(f"adx_low({adx_val:.1f})")
+        if not vol_ok:
+            reason_parts.append("vol_low")
+        
+        # Сохраняем детальную информацию в indicators_info для диагностики
+        indicators_info['entry_conditions'] = {
+            'is_uptrend': is_uptrend,
+            'is_downtrend': is_downtrend,
+            'is_breakout_long': is_breakout_long,
+            'is_breakout_short': is_breakout_short,
+            'adx_ok': adx_ok,
+            'vol_ok': vol_ok,
+            'adx_value': adx_val,
+            'reason_parts': reason_parts,
+        }
+        
         # Логируем только если не в режиме бэктеста
         if not state.get('backtest_mode', False):
             print(f"[generate_trend_signal] DEBUG: No entry conditions met!")
@@ -804,34 +986,98 @@ def _generate_trend_signal_df(
                 # Для SHORT: Minus DI должен быть выше Plus DI (подтверждение нисходящего тренда)
                 if long_allowed:
                     di_confirmation = plus_di > minus_di
+                    # ДОБАВЛЕНО: требование силы тренда - Plus DI должен быть > Minus DI на 20%
+                    di_strength_ok = True
+                    if di_confirmation and minus_di > 0:
+                        di_strength_ratio = (plus_di - minus_di) / minus_di
+                        di_strength_ok = di_strength_ratio >= 0.20  # Минимум 20% разница
+                        indicators_info['di_strength_ratio'] = di_strength_ratio
+                    else:
+                        di_strength_ok = False
                 elif short_allowed:
                     di_confirmation = minus_di > plus_di
+                    # ДОБАВЛЕНО: требование силы тренда - Minus DI должен быть > Plus DI на 20%
+                    di_strength_ok = True
+                    if di_confirmation and plus_di > 0:
+                        di_strength_ratio = (minus_di - plus_di) / plus_di
+                        di_strength_ok = di_strength_ratio >= 0.20  # Минимум 20% разница
+                        indicators_info['di_strength_ratio'] = di_strength_ratio
+                    else:
+                        di_strength_ok = False
+                else:
+                    di_strength_ok = True  # По умолчанию разрешаем если нет сигнала
         except Exception:
+            di_strength_ok = True  # В случае ошибки не блокируем
             pass
         
         if not state.get('backtest_mode', False):
-            print(f"[generate_trend_signal] DEBUG: RSI={rsi_current:.2f}, Plus DI={plus_di}, Minus DI={minus_di}, DI confirmation={di_confirmation}")
+            print(f"[generate_trend_signal] DEBUG: RSI={rsi_current:.2f}, Plus DI={plus_di}, Minus DI={minus_di}, DI confirmation={di_confirmation}, DI strength OK={di_strength_ok}")
         
-        # Ужесточенный RSI guard: для LONG RSI должен быть < 65 (было 70), для SHORT > 35 (было 30)
-        # И требуется подтверждение от DI
+        # УЛУЧШЕННЫЙ RSI фильтр: разная логика для pullback и breakout сигналов
+        # Для pullback сигналов: требуем экстремальные зоны RSI (лучшие входы)
+        # Для breakout сигналов: RSI может быть нейтральным, но не в противоположной зоне
+        # И требуется подтверждение от DI + сила тренда (20% разница)
+        
+        # Проверяем флаги ослабления фильтров из state (определяем один раз для всех проверок)
+        relax_rsi_guard = state.get('relax_rsi_guard', False)
+        relax_di_guard = state.get('relax_di_guard', False)
+        
         if long_allowed:
-            if rsi_current > 65.0:  # Ужесточено с 70 до 65
+            # Для pullback: RSI должен быть в перепроданности (< 50) - лучшие входы на отскоке
+            # Для breakout: RSI не должен быть в перекупленности (> 70) - но может быть нейтральным
+            rsi_ok = False
+            if is_pullback_long:
+                rsi_ok = rsi_current < 50.0  # Перепроданность для pullback
+            elif is_breakout_long_signal:
+                rsi_ok = rsi_current < 70.0  # Не перекупленность для breakout
+            else:
+                rsi_ok = rsi_current < 60.0  # По умолчанию: не перекупленность
+            
+            # Проверяем флаги ослабления фильтров из state
+            relax_rsi_guard = state.get('relax_rsi_guard', False)
+            relax_di_guard = state.get('relax_di_guard', False)
+            
+            if not rsi_ok and not relax_rsi_guard:
                 if not state.get('backtest_mode', False):
-                    print(f"[generate_trend_signal] DEBUG: RSI guard blocked LONG (RSI={rsi_current:.2f} > 65)")
+                    signal_type = "pullback" if is_pullback_long else "breakout"
+                    print(f"[generate_trend_signal] DEBUG: RSI guard blocked LONG {signal_type} (RSI={rsi_current:.2f})")
                 long_allowed = False
-            elif not di_confirmation:
+            elif not di_confirmation and not relax_di_guard:
                 if not state.get('backtest_mode', False):
                     print(f"[generate_trend_signal] DEBUG: DI guard blocked LONG (Plus DI={plus_di} <= Minus DI={minus_di})")
                 long_allowed = False
+            elif not di_strength_ok and not relax_di_guard:
+                if not state.get('backtest_mode', False):
+                    print(f"[generate_trend_signal] DEBUG: DI strength guard blocked LONG (strength ratio < 20%)")
+                long_allowed = False
         
         if short_allowed:
-            if rsi_current < 35.0:  # Ужесточено с 30 до 35
+            # Для pullback: RSI должен быть в перекупленности (> 50) - лучшие входы на откате
+            # Для breakout: RSI не должен быть в перепроданности (< 30) - но может быть нейтральным
+            rsi_ok = False
+            if is_pullback_short:
+                rsi_ok = rsi_current > 50.0  # Перекупленность для pullback
+            elif is_breakout_short_signal:
+                rsi_ok = rsi_current > 30.0  # Не перепроданность для breakout
+            else:
+                rsi_ok = rsi_current > 40.0  # По умолчанию: не перепроданность
+            
+            # Проверяем флаги ослабления фильтров из state
+            relax_rsi_guard = state.get('relax_rsi_guard', False)
+            relax_di_guard = state.get('relax_di_guard', False)
+            
+            if not rsi_ok and not relax_rsi_guard:
                 if not state.get('backtest_mode', False):
-                    print(f"[generate_trend_signal] DEBUG: RSI guard blocked SHORT (RSI={rsi_current:.2f} < 35)")
+                    signal_type = "pullback" if is_pullback_short else "breakout"
+                    print(f"[generate_trend_signal] DEBUG: RSI guard blocked SHORT {signal_type} (RSI={rsi_current:.2f})")
                 short_allowed = False
-            elif not di_confirmation:
+            elif not di_confirmation and not relax_di_guard:
                 if not state.get('backtest_mode', False):
                     print(f"[generate_trend_signal] DEBUG: DI guard blocked SHORT (Minus DI={minus_di} <= Plus DI={plus_di})")
+                short_allowed = False
+            elif not di_strength_ok and not relax_di_guard:
+                if not state.get('backtest_mode', False):
+                    print(f"[generate_trend_signal] DEBUG: DI strength guard blocked SHORT (strength ratio < 20%)")
                 short_allowed = False
     except Exception as e:
         # if RSI cannot be computed, don't block by RSI
@@ -874,23 +1120,13 @@ def _generate_trend_signal_df(
 
         return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "sma_not_trending_or_price_mismatch"}
 
-    # ADX filter: if ADX present and below threshold, block trend entries
-    # УЖЕСТОЧЕНО: используем минимум 30 для adx_threshold
+    # ADX фильтр уже проверен выше (перед установкой long_allowed/short_allowed)
+    # Добавляем порог выхода для адаптивного управления позициями
     try:
-        adx_val = None
-        if 'adx' in df.columns:
-            adx_val = float(df['adx'].iloc[-1])
-            if adx_val is not None:
-                min_adx_threshold = max(30.0, float(adx_threshold))  # Минимум 30
-                if adx_val <= min_adx_threshold:
-                    reason = f"adx_no_trend (ADX={adx_val:.2f} <= {min_adx_threshold})"
-                    if not state.get('backtest_mode', False):
-                        print(f"[generate_trend_signal] DEBUG: {reason}")
-                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": reason}
-                # add adaptive exit suggestion: if ADX falls below 20 later, suggest exit (for downstream to act on)
-                indicators_info['adx_exit_threshold'] = 20
+        adx_val = indicators_info.get('adx')
         if adx_val is not None:
-            indicators_info['adx'] = adx_val
+            # add adaptive exit suggestion: if ADX falls below 20 later, suggest exit (for downstream to act on)
+            indicators_info['adx_exit_threshold'] = 20
     except Exception:
         pass
 
@@ -905,10 +1141,14 @@ def _generate_trend_signal_df(
 
         # Require current volume >= vol_sma * vol_multiplier when vol_sma is present.
         # Removing strict per-bar comparison vs previous bar to avoid false negatives.
-        # В бэктесте ослабляем фильтр объема (используем 0.5 вместо 1.0)
+        # В бэктесте ослабляем фильтр объема (используем 0.8 вместо 1.3)
+        # В ultra-relaxed режиме ослабляем до 0.3
+        ultra_relaxed = state.get('ultra_relaxed', False)
         vol_multiplier_effective = vol_multiplier
-        if state.get('backtest_mode', False):
-            vol_multiplier_effective = max(0.5, vol_multiplier * 0.5)  # Ослабляем в 2 раза для бэктеста
+        if ultra_relaxed:
+            vol_multiplier_effective = 0.3  # В ultra-relaxed режиме очень низкое требование
+        elif state.get('backtest_mode', False):
+            vol_multiplier_effective = max(0.8, vol_multiplier * 0.62)  # Ослабляем для бэктеста (1.3 * 0.62 ≈ 0.8)
         
         if vol_current is not None and vol_sma is not None:
             try:
@@ -951,18 +1191,21 @@ def _generate_trend_signal_df(
                 indicators_info['mtf_bias'] = mtf_bias
                 indicators_info['mtf_timeframe'] = mtf_timeframe
             
-            # УЖЕСТОЧЕННЫЙ MTF фильтр: 
-            # - LONG разрешен только если глобальный тренд bullish (neutral БЛОКИРУЕТСЯ)
-            # - SHORT разрешен только если глобальный тренд bearish (neutral БЛОКИРУЕТСЯ)
-            # - Neutral сигналы блокируются для повышения качества входов
+            # УЛУЧШЕННЫЙ MTF фильтр: блокируем только противоположные тренды и neutral
+            # - LONG разрешен если глобальный тренд bullish или neutral (если разрешен)
+            # - SHORT разрешен если глобальный тренд bearish или neutral (если разрешен)
+            # - Блокируем только противоположные тренды для повышения качества
             mtf_block_neutral = state.get('mtf_block_neutral', True)  # По умолчанию блокируем neutral
+            mtf_trend_strength = mtf_consensus.get('trend_strength', 0.0) if mtf_consensus else 0.0
             
+            # Блокируем только если тренд явно противоположный (не блокируем neutral если разрешен)
             if mtf_bias == 'bearish' and long_allowed:
                 long_allowed = False
                 entry_reason = "mtf_filter_bearish_block_long"
             elif mtf_bias == 'bullish' and short_allowed:
                 short_allowed = False
                 entry_reason = "mtf_filter_bullish_block_short"
+            # Блокируем neutral только если mtf_block_neutral = True
             elif mtf_bias == 'neutral':
                 if mtf_block_neutral:
                     # Блокируем neutral сигналы для повышения качества
@@ -973,7 +1216,7 @@ def _generate_trend_signal_df(
                         short_allowed = False
                         entry_reason = "mtf_filter_neutral_block_short"
                 else:
-                    # Старое поведение: разрешаем neutral, но отмечаем в reason
+                    # Разрешаем neutral, но отмечаем в reason
                     if long_allowed:
                         entry_reason = f"{entry_reason}_mtf_neutral" if entry_reason else "mtf_neutral_long"
                     if short_allowed:
@@ -991,6 +1234,40 @@ def _generate_trend_signal_df(
     except Exception:
         pass
 
+    # Фильтр по времени: избегаем входов в низколиквидные часы (азиатская сессия)
+    # Низколиквидные часы: 0:00-8:00 UTC (азиатская сессия)
+    # Высоколиквидные часы: 8:00-24:00 UTC (европейская + американская сессии)
+    time_filter_enabled = state.get('enable_time_filter', True)  # По умолчанию включен
+    if time_filter_enabled and (long_allowed or short_allowed):
+        try:
+            # Получаем текущее время из индекса DataFrame или текущего времени
+            current_time = None
+            if isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 0:
+                current_time = df.index[-1]
+                if current_time.tzinfo is None:
+                    # Предполагаем UTC если timezone не указан
+                    current_time = pd.Timestamp(current_time).tz_localize('UTC')
+                else:
+                    current_time = pd.Timestamp(current_time).tz_convert('UTC')
+            
+            if current_time is not None:
+                hour_utc = current_time.hour
+                # Блокируем входы в азиатскую сессию (0:00-8:00 UTC) - низкая ликвидность
+                if 0 <= hour_utc < 8:
+                    if long_allowed:
+                        long_allowed = False
+                        entry_reason = "time_filter_asia_session_block"
+                    if short_allowed:
+                        short_allowed = False
+                        entry_reason = "time_filter_asia_session_block"
+                    if not state.get('backtest_mode', False):
+                        print(f"[generate_trend_signal] DEBUG: Time filter blocked signal (Asia session: {hour_utc}:00 UTC)")
+        except Exception as e:
+            # В случае ошибки не блокируем сигналы
+            if not state.get('backtest_mode', False):
+                print(f"[generate_trend_signal] DEBUG: Time filter error: {e}")
+            pass
+    
     # pyramiding limit
     long_pyr = int(state.get('long_pyramid', 0))
     short_pyr = int(state.get('short_pyramid', 0))
@@ -999,19 +1276,27 @@ def _generate_trend_signal_df(
     if short_allowed and short_pyr >= max_pyramid:
         return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "short_pyramid_limit_reached"}
 
-    # Оптимизированные SL/TP на основе ATR
-    # УВЕЛИЧЕН SL до 3.0 ATR (было 2.5) для снижения ложных срабатываний
-    # УМЕНЬШЕН TP до 6.0 ATR (было 8.0) для соотношения 1:2 (более реалистичное)
-    # Это должно улучшить винрейт за счет более широкого SL и более достижимого TP
+    # ОПТИМИЗИРОВАННЫЕ SL/TP на основе ATR с улучшенным соотношением риск/прибыль
+    # Pullback сигналы: SL = 3.5 ATR, TP = 7.0 ATR (соотношение 2:1)
+    # Breakout сигналы: SL = 3.0 ATR, TP = 6.0 ATR (соотношение 2:1)
+    # Улучшенное соотношение TP/SL для компенсации низкого винрейта
+    
+    # Определяем тип сигнала для выбора SL/TP
+    is_pullback_signal = "pullback" in entry_reason.lower()
+    sl_multiplier = 3.5 if is_pullback_signal else 3.0  # Увеличенный SL для pullback
+    tp_multiplier = 7.0 if is_pullback_signal else 6.0  # Увеличенный TP для pullback (соотношение 2:1)
+    
     if long_allowed:
-        stop_loss = price - (3.0 * atr_current)  # Увеличено с 2.5 до 3.0
-        take_profit = price + (6.0 * atr_current)  # Уменьшено с 8.0 до 6.0 (соотношение 1:2)
-        # Trailing параметры: начинаем трейлинг после 2.0 ATR (было 1.5) для большей свободы
+        stop_loss = price - (sl_multiplier * atr_current)
+        take_profit = price + (tp_multiplier * atr_current)  # Увеличенный TP для лучшего соотношения
+        # Trailing параметры: начинаем трейлинг после 2.0 ATR для большей свободы
         trailing = {
-            "start_at_atr": 2.0,  # Увеличено с 1.5 до 2.0
+            "start_at_atr": 2.0,
             "trail_step_atr": 0.5,
-            "move_to_break_even_atr": 1.5,  # Увеличено с 1.0 до 1.5
+            "move_to_break_even_atr": 1.5,
         }
+        indicators_info['sl_multiplier'] = sl_multiplier
+        indicators_info['signal_type'] = 'pullback' if is_pullback_signal else 'breakout'
         return {
             "signal": "LONG",
             "stop_loss": float(stop_loss),
@@ -1023,13 +1308,15 @@ def _generate_trend_signal_df(
         }
 
     if short_allowed:
-        stop_loss = price + (3.0 * atr_current)  # Увеличено с 2.5 до 3.0
-        take_profit = price - (6.0 * atr_current)  # Уменьшено с 8.0 до 6.0 (соотношение 1:2)
+        stop_loss = price + (sl_multiplier * atr_current)
+        take_profit = price - (tp_multiplier * atr_current)  # Увеличенный TP для лучшего соотношения
         trailing = {
-            "start_at_atr": 2.0,  # Увеличено с 1.5 до 2.0
+            "start_at_atr": 2.0,
             "trail_step_atr": 0.5,
-            "move_to_break_even_atr": 1.5,  # Увеличено с 1.0 до 1.5
+            "move_to_break_even_atr": 1.5,
         }
+        indicators_info['sl_multiplier'] = sl_multiplier
+        indicators_info['signal_type'] = 'pullback' if is_pullback_signal else 'breakout'
         return {
             "signal": "SHORT",
             "stop_loss": float(stop_loss),
@@ -1278,7 +1565,7 @@ def generate_momentum_signal(
     ema_short: int = 20,
     ema_long: int = 50,
     vol_lookback: int = 100,
-    vol_top_pct: float = 0.60,
+    vol_top_pct: float = 0.70,  # Ужесточено до 70 процентиля для качества сигналов
     min_history: int = 100,
 ) -> t.Dict:
     """
@@ -1341,14 +1628,35 @@ def generate_momentum_signal(
             print(f"[generate_momentum_signal] DEBUG: ema_fan_not_aligned - price={price:.2f}, ema20={ema_s_val:.2f}, ema50={ema_l_val:.2f}, is_long_fan={is_long_fan}, is_short_fan={is_short_fan}, ema_cross_up={ema_cross_up}, ema_cross_down={ema_cross_down}")
         return {"signal": None, "indicators_info": indicators_info, "reason": "ema_fan_not_aligned"}
 
-    # RSI filter (leading): require RSI(14) in [50,65]
+    # ADX filter: требуем сильный тренд для momentum сигналов
+    try:
+        if 'adx' in df.columns:
+            adx_val = float(df['adx'].iloc[-1])
+            indicators_info['adx'] = adx_val
+            # Минимум ADX 25 для сильных трендов
+            if adx_val < 25.0:
+                if len(df) % 100 == 0:
+                    print(f"[generate_momentum_signal] DEBUG: adx_too_low - ADX={adx_val:.2f} < 25.0")
+                return {"signal": None, "indicators_info": indicators_info, "reason": "adx_too_low"}
+    except Exception:
+        pass  # Если ADX не доступен, пропускаем фильтр
+
+    # RSI filter: проверяем после определения условий
     rsi = _rsi(close, period=14)
     rsi_current = float(rsi.iloc[-1])
     indicators_info['rsi'] = rsi_current
-    # Relax RSI window for momentum entries to [45,75]
-    if not (45.0 <= rsi_current <= 75.0):
+    # Ужесточенный RSI фильтр для качества сигналов
+    # Для LONG: RSI должен быть в диапазоне [50, 70] - избегаем перекупленности
+    # Для SHORT: RSI должен быть в диапазоне [30, 50] - избегаем перепроданности
+    rsi_ok = True
+    if is_long_condition:
+        rsi_ok = 50.0 <= rsi_current <= 70.0  # Оптимальный диапазон для LONG
+    elif is_short_condition:
+        rsi_ok = 30.0 <= rsi_current <= 50.0  # Оптимальный диапазон для SHORT
+    
+    if not rsi_ok:
         if len(df) % 100 == 0:
-            print(f"[generate_momentum_signal] DEBUG: rsi_not_in_preferred_range - RSI={rsi_current:.2f} (need 45-75)")
+            print(f"[generate_momentum_signal] DEBUG: rsi_not_in_preferred_range - RSI={rsi_current:.2f} (LONG need 50-70, SHORT need 30-50)")
         return {"signal": None, "indicators_info": indicators_info, "reason": "rsi_not_in_preferred_range"}
 
     # Volume checks
@@ -1363,16 +1671,15 @@ def generate_momentum_signal(
     vol_avg5 = float(df['volume'].iloc[-5:].mean()) if len(df) >= 5 else vol_current
     indicators_info['vol_avg5'] = vol_avg5
 
-    # Require both percentile and short-term jump
-    if vol_current < threshold:
+    # Ужесточенный фильтр объема: требуется И процентиль И краткосрочный скачок
+    # Это гарантирует качество сигналов - только при реальном всплеске объема
+    vol_percentile_ok = vol_current >= threshold
+    vol_short_term_ok = vol_current >= 1.2 * vol_avg5  # Ужесточено до 1.2x для качества
+    
+    if not (vol_percentile_ok and vol_short_term_ok):
         if len(df) % 100 == 0:
-            print(f"[generate_momentum_signal] DEBUG: no_volume_spike_percentile - vol={vol_current:.2f} < threshold={threshold:.2f} ({vol_top_pct*100}th percentile)")
-        return {"signal": None, "indicators_info": indicators_info, "reason": "no_volume_spike_percentile"}
-    # require short-term multiplier (relaxed to 1.1x to increase signal frequency)
-    if vol_current < 1.1 * vol_avg5:
-        if len(df) % 100 == 0:
-            print(f"[generate_momentum_signal] DEBUG: no_short_term_volume_jump - vol={vol_current:.2f} < 1.1*vol_avg5={1.1*vol_avg5:.2f}")
-        return {"signal": None, "indicators_info": indicators_info, "reason": "no_short_term_volume_jump"}
+            print(f"[generate_momentum_signal] DEBUG: no_volume_confirmation - vol={vol_current:.2f} < threshold={threshold:.2f} ({vol_top_pct*100}th percentile) OR < 1.2*vol_avg5={1.2*vol_avg5:.2f}")
+        return {"signal": None, "indicators_info": indicators_info, "reason": "no_volume_confirmation"}
 
     # Exit (trailing idea): if price closes below EMA20 -> HOLD (close)
     # ВАЖНО: Это блокирует SHORT сигналы! Нужно проверять только для LONG

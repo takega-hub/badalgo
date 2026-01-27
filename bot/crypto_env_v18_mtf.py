@@ -4,6 +4,12 @@
 - 15m: основной таймфрейм торговли
 - 1h: фильтр среднесрочного тренда
 - 4h: определение основного тренда
+
+ОПТИМИЗИРОВАНО на основе анализа V17:
+- Ужесточены фильтры по volatility_ratio (влияние на WR: 52.8%)
+- Оптимизирован трейлинг-стоп (снижение % SL_TRAILING с 52% до ~35-40%)
+- Улучшены фильтры по ATR, Volume, RSI
+- Увеличены TP уровни для лучшего RR
 """
 
 import gymnasium as gym
@@ -15,6 +21,24 @@ import os
 from typing import Dict, Tuple, Optional, List, Any
 from datetime import datetime
 from bot.crypto_env_v17_2_optimized import CryptoTradingEnvV17_2_Optimized
+from bot.mtf_optimized_params import (
+    MTF_MIN_VOLATILITY_RATIO,
+    MTF_MAX_VOLATILITY_RATIO,
+    MTF_TRAILING_ACTIVATION_ATR,
+    MTF_TRAILING_DISTANCE_ATR,
+    MTF_MIN_ABSOLUTE_ATR,
+    MTF_ATR_PERCENT_MIN,
+    MTF_MIN_ABSOLUTE_VOLUME,
+    MTF_MIN_VOLUME_SPIKE,
+    MTF_MIN_VOLUME_SPIKE_SHORT,
+    MTF_TP_LEVELS,
+    MTF_LONG_RSI_MIN,
+    MTF_LONG_RSI_MAX,
+    MTF_SHORT_RSI_MIN,
+    MTF_SHORT_RSI_MAX,
+    MTF_MIN_ADX,
+    MTF_MIN_ADX_SHORT,
+)
 
 
 class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
@@ -102,6 +126,47 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
         
         # Алиас для основного таймфрейма (устанавливаем после super().__init__)
         self.df_15m = self.df  # Основной таймфрейм (алиас для ясности)
+        
+        # ========================================================================
+        # ПРИМЕНЕНИЕ ОПТИМИЗИРОВАННЫХ ПАРАМЕТРОВ (на основе анализа V17)
+        # ========================================================================
+        
+        # ПРИОРИТЕТ 1: КРИТИЧНЫЕ ОПТИМИЗАЦИИ
+        # 1. VOLATILITY_RATIO - САМЫЙ ВАЖНЫЙ ПРИЗНАК (корреляция 0.4182, разница WR 52.8%)
+        self.min_volatility_ratio = MTF_MIN_VOLATILITY_RATIO  # 0.0025 (было 0.0020)
+        self.max_volatility_ratio = MTF_MAX_VOLATILITY_RATIO  # 1.2 (было 1.5)
+        
+        # 2. ТРЕЙЛИНГ-СТОП - главная проблема (52% закрытий по SL_TRAILING)
+        self.trailing_activation_atr = MTF_TRAILING_ACTIVATION_ATR  # 0.40 (было 0.35)
+        self.trailing_distance_atr = MTF_TRAILING_DISTANCE_ATR  # 0.50 (было 0.45)
+        
+        # ПРИОРИТЕТ 2: ВАЖНЫЕ ОПТИМИЗАЦИИ
+        # 3. TP УРОВНИ - для лучшего RR (средний RR 1.69 → цель ≥1.8)
+        self.tp_levels = MTF_TP_LEVELS  # [2.5, 3.0, 3.8] (было [2.2, 2.8, 3.6])
+        
+        # 4. RSI ФИЛЬТРЫ - влияет на WR (разница 48.5%)
+        self.long_config['min_rsi_norm'] = MTF_LONG_RSI_MIN  # 0.15 (без изменений)
+        self.long_config['max_rsi_norm'] = MTF_LONG_RSI_MAX  # 0.55 (было 0.60)
+        self.short_config['min_rsi_norm'] = MTF_SHORT_RSI_MIN  # 0.40 (было 0.35)
+        self.short_config['max_rsi_norm'] = MTF_SHORT_RSI_MAX  # 0.85 (без изменений)
+        
+        # 5. ADX ФИЛЬТРЫ - сила тренда
+        self.min_adx = MTF_MIN_ADX  # 27.0 (было 25.0)
+        
+        # Сохраняем оптимизированные параметры для использования в фильтрах
+        self.mtf_min_absolute_atr = MTF_MIN_ABSOLUTE_ATR  # 120.0 (было 85.0)
+        self.mtf_atr_percent_min = MTF_ATR_PERCENT_MIN  # 0.0015 (было 0.001)
+        self.mtf_min_absolute_volume = MTF_MIN_ABSOLUTE_VOLUME  # 900.0 (было 800.0)
+        self.mtf_min_volume_spike = MTF_MIN_VOLUME_SPIKE  # 1.6 (было 1.5)
+        self.mtf_min_volume_spike_short = MTF_MIN_VOLUME_SPIKE_SHORT  # 1.3 (было 1.1)
+        self.mtf_min_adx_short = MTF_MIN_ADX_SHORT  # 22.0 (было 20.0)
+        
+        print(f"[MTF_OPTIMIZED] Применены оптимизированные параметры:")
+        print(f"  volatility_ratio: {self.min_volatility_ratio} - {self.max_volatility_ratio}")
+        print(f"  trailing: активация={self.trailing_activation_atr}, расстояние={self.trailing_distance_atr}")
+        print(f"  TP уровни: {self.tp_levels}")
+        print(f"  ATR минимум: {self.mtf_min_absolute_atr}, процент: {self.mtf_atr_percent_min}")
+        print(f"  Volume минимум: {self.mtf_min_absolute_volume}, всплеск: {self.mtf_min_volume_spike}/{self.mtf_min_volume_spike_short}")
         
         # Проверка синхронизации данных
         if self.df_1h is not None:
@@ -464,20 +529,171 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
     
     def _check_entry_filters_strict(self, price: float, atr: float, action: int = None) -> bool:
         """
-        УЖЕСТОЧЕННЫЕ фильтры для входа с MTF проверками
+        УЖЕСТОЧЕННЫЕ фильтры для входа с MTF проверками и ОПТИМИЗИРОВАННЫМИ параметрами
         
-        Переопределяем метод родителя для добавления MTF фильтров
+        Переопределяем метод родителя для:
+        1. Использования оптимизированных параметров (ATR, Volume, Volatility)
+        2. Добавления MTF фильтров
         """
-        # 1. Базовые фильтры из V17_2 (обязательны)
-        if not super()._check_entry_filters_strict(price, atr, action):
+        if self.current_step >= len(self.df):
             return False
         
-        # 2. MTF фильтры (если включены)
-        if not self.mtf_enabled:
+        try:
+            # 1. ОПТИМИЗИРОВАННЫЙ фильтр по волатильности (ATR) - используем MTF параметры
+            atr_percent = atr / price
+            if atr_percent < self.mtf_atr_percent_min or atr_percent > 0.04:
+                return False
+            
+            # АБСОЛЮТНЫЙ фильтр по ATR (оптимизировано: 120.0 вместо 85.0)
+            if atr < self.mtf_min_absolute_atr:
+                return False  # Слишком низкий ATR = плохой Win Rate
+            
+            # 2. Проверка силы тренда через ADX (используем оптимизированные значения)
+            if 'adx' in self.df.columns:
+                try:
+                    adx_value = float(self.df.loc[self.current_step, 'adx'])
+                    min_adx_required = self.min_adx  # Уже оптимизировано (27.0)
+                    if action == 2:  # SHORT
+                        min_adx_required = self.mtf_min_adx_short  # 22.0 (оптимизировано)
+                    
+                    if adx_value < min_adx_required:
+                        return False
+                    
+                    # Проверка направления через +DI и -DI
+                    if action is not None:
+                        if 'plus_di' in self.df.columns and 'minus_di' in self.df.columns:
+                            try:
+                                plus_di = float(self.df.loc[self.current_step, 'plus_di'])
+                                minus_di = float(self.df.loc[self.current_step, 'minus_di'])
+                                
+                                if action == 1:  # LONG
+                                    if plus_di <= minus_di:
+                                        return False
+                                elif action == 2:  # SHORT
+                                    if minus_di <= plus_di * 0.95:
+                                        return False
+                            except:
+                                pass
+                except:
+                    return False
+            else:
+                atr_percent = atr / price
+                if atr_percent < self.mtf_atr_percent_min:
+                    return False
+            
+            # 3. РАЗДЕЛЬНАЯ ПРОВЕРКА RSI (используем оптимизированные значения из long_config/short_config)
+            if 'rsi_norm' in self.df.columns:
+                try:
+                    rsi_norm = float(self.df.loc[self.current_step, 'rsi_norm'])
+                    rsi_norm_abs = abs(rsi_norm)
+                    
+                    if action == 1:  # LONG
+                        config = self.long_config  # Уже оптимизировано (max_rsi_norm = 0.55)
+                        if rsi_norm_abs < config['min_rsi_norm'] or rsi_norm_abs > config['max_rsi_norm']:
+                            return False
+                    elif action == 2:  # SHORT
+                        config = self.short_config  # Уже оптимизировано (min_rsi_norm = 0.40)
+                        if rsi_norm_abs < config['min_rsi_norm'] or rsi_norm_abs > config['max_rsi_norm']:
+                            return False
+                    else:
+                        if rsi_norm_abs < 0.15 or rsi_norm_abs > 0.85:
+                            return False
+                except:
+                    pass
+            
+            # 4. ОПТИМИЗИРОВАННАЯ проверка объема (используем MTF параметры)
+            if 'volume' in self.df.columns:
+                try:
+                    current_volume = float(self.df.loc[self.current_step, 'volume'])
+                    
+                    # АБСОЛЮТНЫЙ фильтр (оптимизировано: 900.0 вместо 800.0)
+                    if current_volume < self.mtf_min_absolute_volume:
+                        return False
+                    
+                    # ОТНОСИТЕЛЬНЫЙ фильтр (всплеск)
+                    if self.current_step >= 20:
+                        avg_volume = float(self.df.loc[self.current_step-20:self.current_step, 'volume'].mean())
+                        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+                        min_spike = self.mtf_min_volume_spike  # 1.6 (оптимизировано)
+                        if action == 2:  # SHORT
+                            min_spike = self.mtf_min_volume_spike_short  # 1.3 (оптимизировано)
+                        if volume_ratio < min_spike:
+                            return False
+                except:
+                    return False
+            
+            # 5. Проверка движения цены от экстремума
+            if self.current_step >= 10:
+                try:
+                    current_price = float(self.df.loc[self.current_step, 'close'])
+                    recent_high = float(self.df.loc[self.current_step-10:self.current_step, 'high'].max())
+                    recent_low = float(self.df.loc[self.current_step-10:self.current_step, 'low'].min())
+                    
+                    if action == 1:  # LONG
+                        distance_from_low = ((current_price - recent_low) / recent_low) * 100
+                        if distance_from_low < self.min_price_distance_pct:
+                            return False
+                    elif action == 2:  # SHORT
+                        distance_from_high = ((recent_high - current_price) / recent_high) * 100
+                        if distance_from_high < self.min_price_distance_pct_short:
+                            return False
+                except:
+                    pass
+            
+            # 6. ОПТИМИЗИРОВАННАЯ проверка volatility_ratio (используем оптимизированные значения)
+            if 'volatility_ratio' in self.df.columns:
+                try:
+                    volatility_ratio = float(self.df.loc[self.current_step, 'volatility_ratio'])
+                    if volatility_ratio < self.min_volatility_ratio:  # 0.0025 (оптимизировано)
+                        return False
+                    if volatility_ratio > self.max_volatility_ratio:  # 1.2 (оптимизировано)
+                        return False
+                except:
+                    return False
+            
+            # 7. ГАРАНТИЯ MIN RR RATIO 1.5
+            sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
+            sl_distance = min(sl_distance, price * self.max_sl_percent)
+            
+            min_tp_for_rr = sl_distance * self.min_rr_ratio
+            
+            min_tp_distance = max(
+                min_tp_for_rr,
+                atr * self.tp_levels[0],  # Используем оптимизированные TP уровни [2.5, 3.0, 3.8]
+                price * self.min_tp_percent
+            )
+            
+            actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
+            
+            if actual_rr < self.min_rr_ratio:
+                self.min_rr_violations += 1
+                if self.min_rr_violations % 20 == 0:
+                    print(f"[FILTER] RR violation {self.min_rr_violations}: {actual_rr:.2f} < {self.min_rr_ratio}")
+                return False
+            
+            # 8. Дополнительная проверка: TP должен быть достижим
+            tp_percent_needed = min_tp_distance / price
+            max_tp_pct = 0.02
+            if action == 2:
+                max_tp_pct = 0.03
+            if tp_percent_needed > max_tp_pct:
+                return False
+            
+            # Сохраняем RR статистику
+            self.rr_stats.append(actual_rr)
+            if len(self.rr_stats) > 100:
+                self.rr_stats.pop(0)
+            
+            # 9. MTF фильтры (если включены)
+            if self.mtf_enabled:
+                if not self._check_mtf_entry_filters(action):
+                    return False
+            
             return True
-        
-        # Проверяем MTF условия
-        return self._check_mtf_entry_filters(action)
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка в фильтрах входа: {e}")
+            return False
     
     def _check_mtf_entry_filters(self, action: int) -> bool:
         """
@@ -552,11 +768,13 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             minus_di_1h = float(row_1h.get('minus_di', 25))
             
             if action_type == 'LONG':
-                # Для LONG: восходящий тренд на 1h
-                return (adx_1h >= 22 and plus_di_1h > minus_di_1h * 1.1)
+                # Для LONG: восходящий тренд на 1h (используем оптимизированный min_adx - 5 для 1h)
+                min_adx_1h = max(22.0, self.min_adx - 5.0)  # 27 - 5 = 22 (совместимо)
+                return (adx_1h >= min_adx_1h and plus_di_1h > minus_di_1h * 1.1)
             else:  # SHORT
-                # Для SHORT: нисходящий тренд на 1h
-                return (adx_1h >= 20 and minus_di_1h > plus_di_1h * 1.1)
+                # Для SHORT: нисходящий тренд на 1h (используем оптимизированный min_adx_short - 2 для 1h)
+                min_adx_1h_short = max(20.0, self.mtf_min_adx_short - 2.0)  # 22 - 2 = 20 (совместимо)
+                return (adx_1h >= min_adx_1h_short and minus_di_1h > plus_di_1h * 1.1)
                 
         except Exception as e:
             return True  # При ошибке пропускаем

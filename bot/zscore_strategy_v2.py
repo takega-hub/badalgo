@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Optional
 
@@ -21,20 +21,25 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StrategyParams:
     window: int = 20  # период для SMA и StdDev
-    z_long: float = -2.5
-    z_short: float = 2.5
+    z_long: float = -2.0  # УЖЕСТОЧЕНО: было -2.5, теперь -2.0 для более сильных сигналов
+    z_short: float = 2.0  # УЖЕСТОЧЕНО: было 2.5, теперь 2.0 для более сильных сигналов
     z_exit: float = 0.5
-    vol_factor: float = 0.8
-    adx_threshold: float = 25.0
+    vol_factor: float = 0.85  # УЖЕСТОЧЕНО: было 0.8, теперь 0.85 для большего объема
+    adx_threshold: float = 20.0  # УЖЕСТОЧЕНО: было 25.0, теперь 20.0 для фильтрации сильных трендов
     epsilon: float = 1e-9
     rsi_enabled: bool = True
     rsi_long_threshold: float = 30.0
     rsi_short_threshold: float = 70.0
-    sma_slope_threshold: float = 0.001
+    sma_slope_threshold: float = 0.0008  # УЖЕСТОЧЕНО: было 0.001, теперь 0.0008 для более плоского рынка
     atr_window: int = 14
     adx_window: int = 14
-    stop_loss_atr: float = 3.0  # StopLoss в единицах ATR
-    take_profit_atr: float = 2.0  # TakeProfit в единицах ATR
+    stop_loss_atr: float = 1.0  # ОПТИМИЗИРОВАНО: было 3.0, теперь 1.0 для меньших потерь
+    take_profit_atr: float = 2.0  # ОПТИМИЗИРОВАНО: было 2.0, остается 2.0 для лучшего соотношения TP/SL = 2.0
+    # Новые параметры для дополнительных фильтров
+    min_volatility: float = 0.001  # Минимальная относительная волатильность (ATR/Close) = 0.1%
+    exclude_hours: list = field(default_factory=lambda: [0, 1, 2])  # Часы для исключения (по умолчанию [0, 1, 2] - ночные часы)
+    use_dynamic_sl_tp: bool = True  # Использовать динамические SL/TP на основе Z-Score
+    require_confirmation: bool = True  # Требовать подтверждение сигнала на следующей свече
 
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
@@ -129,8 +134,12 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     # Volume filter: compare to rolling mean volume
     # Исправлено: для mean reversion нужен нормальный объем, но не обязательно высокий
     # vol_factor = 0.8 означает, что объем должен быть >= 80% от среднего (не слишком низкий)
+    # Если vol_factor = 0, отключаем фильтр (всегда True)
     data["vol_mean"] = data["volume"].rolling(window=params.window, min_periods=1).mean()
-    data["vol_ok"] = data["volume"] >= (data["vol_mean"] * params.vol_factor)
+    if params.vol_factor <= 0:
+        data["vol_ok"] = True
+    else:
+        data["vol_ok"] = data["volume"] >= (data["vol_mean"] * params.vol_factor)
 
     # SMA slope filter to detect flat market
     sma_diff = data["sma"].diff().abs() / (data["sma"].shift(1).replace(0, np.nan).abs() + params.epsilon)
@@ -149,9 +158,30 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     # Determine market state: if ADX too high, pause mean reversion
     data["market_allowed"] = data["adx"] < params.adx_threshold
 
-    # Entry conditions
-    long_entry = (data["z"] <= data["z_long_thr"]) & data["market_allowed"] & data["sma_flat"] & data["vol_ok"]
-    short_entry = (data["z"] >= data["z_short_thr"]) & data["market_allowed"] & data["sma_flat"] & data["vol_ok"]
+    # Фильтр по волатильности (исключить слишком спокойные рынки)
+    data["atr_relative"] = data["atr"] / data["close"]
+    # Если min_volatility = 0, отключаем фильтр (всегда True)
+    if params.min_volatility <= 0:
+        data["volatility_ok"] = True
+    else:
+        data["volatility_ok"] = data["atr_relative"] > params.min_volatility
+
+    # Фильтр по времени (избегать открытия перед важными новостями/ночью)
+    # Пытаемся извлечь час из индекса
+    try:
+        if isinstance(data.index, pd.DatetimeIndex):
+            data["hour"] = data.index.hour
+        else:
+            # Если индекс не DatetimeIndex, пытаемся преобразовать
+            data["hour"] = pd.to_datetime(data.index).hour
+    except:
+        # Если не удалось извлечь час, считаем что время подходит (не фильтруем)
+        data["hour"] = pd.Series([12] * len(data), index=data.index)  # Устанавливаем полдень (не в exclude_hours)
+    data["time_ok"] = ~data["hour"].isin(params.exclude_hours)
+
+    # Entry conditions с новыми фильтрами
+    long_entry = (data["z"] <= data["z_long_thr"]) & data["market_allowed"] & data["sma_flat"] & data["vol_ok"] & data["volatility_ok"] & data["time_ok"]
+    short_entry = (data["z"] >= data["z_short_thr"]) & data["market_allowed"] & data["sma_flat"] & data["vol_ok"] & data["volatility_ok"] & data["time_ok"]
 
     # Apply RSI filter if enabled
     if params.rsi_enabled:
@@ -163,13 +193,44 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     skip_reasons.append((~data["market_allowed"], "skipped: market trending (ADX)"))
     skip_reasons.append((~data["sma_flat"], "skipped: SMA slope indicates strong trend"))
     skip_reasons.append((~data["vol_ok"], "skipped: low volume"))
+    skip_reasons.append((~data["volatility_ok"], "skipped: low volatility"))
+    skip_reasons.append((~data["time_ok"], "skipped: excluded hours"))
     if params.rsi_enabled:
         skip_reasons.append((data["rsi"] >= params.rsi_long_threshold, "skipped: RSI not oversold for LONG"))
         skip_reasons.append((data["rsi"] <= params.rsi_short_threshold, "skipped: RSI not overbought for SHORT"))
 
-    # Fill entry signals and reasons
+    # Fill entry signals and reasons (пока без подтверждения)
     data.loc[long_entry, "signal"] = "LONG"
     data.loc[short_entry, "signal"] = "SHORT"
+    
+    # Механизм подтверждения сигналов (требовать подтверждение на следующей свече)
+    if params.require_confirmation:
+        data["signal_confirmed"] = False
+        data.loc[data.index[0], "signal_confirmed"] = True  # Первая строка всегда подтверждена
+        
+        for i in range(1, len(data)):
+            if data.iloc[i]["signal"] in ["LONG", "SHORT"]:
+                # Проверяем, что сигнал подтверждается на текущей свече
+                prev_z = data.iloc[i-1]["z"]
+                curr_z = data.iloc[i]["z"]
+                
+                if data.iloc[i]["signal"] == "LONG":
+                    # Для LONG: Z-score должен оставаться низким или ухудшаться
+                    confirmed = curr_z <= prev_z or curr_z <= -1.8
+                else:  # SHORT
+                    # Для SHORT: Z-score должен оставаться высоким или увеличиваться
+                    confirmed = curr_z >= prev_z or curr_z >= 1.8
+                
+                data.iloc[i, data.columns.get_loc("signal_confirmed")] = confirmed
+                
+                # Если не подтвержден - отменяем сигнал
+                if not confirmed:
+                    data.iloc[i, data.columns.get_loc("signal")] = ""
+                    data.iloc[i, data.columns.get_loc("reason")] = "skipped: no confirmation"
+            else:
+                data.iloc[i, data.columns.get_loc("signal_confirmed")] = True
+    else:
+        data["signal_confirmed"] = True
 
     # For rows that are candidate entries but were blocked, log reason
     candidates = (data["z"] <= data["z_long_thr"]) | (data["z"] >= data["z_short_thr"])  # price deviated
@@ -193,17 +254,52 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
                         bool(data.iloc[i].get("sma_flat", False)),
                         bool(data.iloc[i].get("vol_ok", False)))
 
-    # Exit logic using Z crossing towards mean and ATR-based SL/TP
-    # Exit LONG when z >= -z_exit OR price reaches TP/SL based on ATR
+    # Динамические SL/TP на основе Z-Score и волатильности
+    def calculate_dynamic_sl_tp(z_abs: float, volatility_scale: float, params: StrategyParams) -> tuple:
+        """Рассчитывает динамические SL/TP на основе Z-Score и волатильности"""
+        if not params.use_dynamic_sl_tp:
+            return params.stop_loss_atr, params.take_profit_atr
+        
+        # Чем сильнее отклонение, тем больше TP и меньше SL
+        if z_abs > 2.5:
+            tp_multiplier = 2.5
+            sl_multiplier = 0.8
+        elif z_abs > 2.0:
+            tp_multiplier = 2.0
+            sl_multiplier = 0.9
+        else:
+            tp_multiplier = 1.5
+            sl_multiplier = 1.0
+        
+        # Корректировка по волатильности
+        if volatility_scale > 0.02:  # Высокая волатильность
+            tp_multiplier *= 0.8
+            sl_multiplier *= 1.2
+        
+        return sl_multiplier, tp_multiplier
+    
+    # Вычисляем динамические SL/TP для каждой строки
+    data["z_abs"] = data["z"].abs()
+    data["volatility_scale"] = data["atr_relative"]
+    sl_tp_pairs = data.apply(
+        lambda row: calculate_dynamic_sl_tp(row["z_abs"], row["volatility_scale"], params),
+        axis=1
+    )
+    data["sl_multiplier"] = [pair[0] for pair in sl_tp_pairs]
+    data["tp_multiplier"] = [pair[1] for pair in sl_tp_pairs]
+    
+    # Exit logic using Z crossing towards mean and ATR-based SL/TP (динамические или фиксированные)
     z_exit = params.z_exit
+    
+    # Используем динамические множители для SL/TP
     long_exit = (data["z"] >= -z_exit) | (
-        (data["close"] >= data["sma"] + params.take_profit_atr * data["atr"]) |
-        (data["close"] <= data["sma"] - params.stop_loss_atr * data["atr"])
+        (data["close"] >= data["sma"] + data["tp_multiplier"] * data["atr"]) |
+        (data["close"] <= data["sma"] - data["sl_multiplier"] * data["atr"])
     )
 
     short_exit = (data["z"] <= z_exit) | (
-        (data["close"] <= data["sma"] - params.take_profit_atr * data["atr"]) |
-        (data["close"] >= data["sma"] + params.stop_loss_atr * data["atr"])
+        (data["close"] <= data["sma"] - data["tp_multiplier"] * data["atr"]) |
+        (data["close"] >= data["sma"] + data["sl_multiplier"] * data["atr"])
     )
 
     # Mark exits
@@ -212,14 +308,14 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     # For SHORT exit when z <= z_exit (closer to 0)
     data.loc[(data["z"] <= z_exit) & (data["signal"] == ""), "signal"] = "EXIT_SHORT"
     
-    # Check ATR based exits if they are closer
+    # Check ATR based exits if they are closer (используем динамические множители)
     long_atr_exit = (
-        (data["close"] >= data["sma"] + params.take_profit_atr * data["atr"]) |
-        (data["close"] <= data["sma"] - params.stop_loss_atr * data["atr"])
+        (data["close"] >= data["sma"] + data["tp_multiplier"] * data["atr"]) |
+        (data["close"] <= data["sma"] - data["sl_multiplier"] * data["atr"])
     )
     short_atr_exit = (
-        (data["close"] <= data["sma"] - params.take_profit_atr * data["atr"]) |
-        (data["close"] >= data["sma"] + params.stop_loss_atr * data["atr"])
+        (data["close"] <= data["sma"] - data["tp_multiplier"] * data["atr"]) |
+        (data["close"] >= data["sma"] + data["sl_multiplier"] * data["atr"])
     )
     
     data.loc[long_atr_exit & (data["signal"] == ""), "signal"] = "EXIT_LONG"
@@ -235,7 +331,8 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     # Keep only relevant columns for downstream systems
     out_cols = list(df.columns) + [
         "sma", "std", "z", "atr", "adx", "rsi", "signal", "reason",
-        "z_long_thr", "z_short_thr", "market_allowed", "sma_flat", "vol_ok"
+        "z_long_thr", "z_short_thr", "market_allowed", "sma_flat", "vol_ok",
+        "volatility_ok", "time_ok", "signal_confirmed", "sl_multiplier", "tp_multiplier"
     ]
     return data[out_cols]
 

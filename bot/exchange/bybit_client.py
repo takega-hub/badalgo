@@ -176,13 +176,238 @@ class BybitClient:
         )
 
     def get_kline_df(
-        self, symbol: str, interval: str, limit: int = 200
+        self, symbol: str, interval: str, limit: int = 200, start: Optional[int] = None, end: Optional[int] = None
     ) -> pd.DataFrame:
         """
-        Получить последние свечи и вернуть в виде DataFrame
+        Получить свечи и вернуть в виде DataFrame
         с колонками timestamp, open, high, low, close, volume.
+        
+        Args:
+            symbol: Торговая пара (например, 'BTCUSDT')
+            interval: Таймфрейм ('15m', '1h', '4h', или '15', '60', '240' для Bybit формата)
+            limit: Количество свечей (максимум 200 за запрос, при большем значении данные будут загружены батчами)
+            start: Начальное время в миллисекундах (опционально)
+            end: Конечное время в миллисекундах (опционально, по умолчанию текущее время)
         """
-        resp = self.get_kline(symbol=symbol, interval=interval, limit=limit)
+        from datetime import datetime, timedelta
+        
+        # Конвертируем интервал в формат Bybit API если необходимо
+        # Bybit использует числовые значения: "1", "3", "5", "15", "30", "60", "240" и т.д.
+        def _convert_interval_to_bybit(interval_str: str) -> str:
+            """Конвертирует '15m' -> '15', '1h' -> '60', и т.д."""
+            interval_str = interval_str.lower().strip()
+            # Если уже числовой формат, возвращаем как есть
+            if interval_str.isdigit():
+                return interval_str
+            
+            # Маппинг для конвертации
+            mapping = {
+                "1m": "1",
+                "3m": "3",
+                "5m": "5",
+                "15m": "15",
+                "30m": "30",
+                "1h": "60",
+                "2h": "120",
+                "4h": "240",
+                "6h": "360",
+                "12h": "720",
+                "1d": "D",
+                "1w": "W",
+                "1M": "M",
+            }
+            return mapping.get(interval_str, "15")  # По умолчанию 15 минут
+        
+        bybit_interval = _convert_interval_to_bybit(interval)
+        
+        # Максимальный лимит за один запрос к Bybit API
+        MAX_LIMIT_PER_REQUEST = 200
+        
+        # Если limit больше максимума и не указаны start/end, вычисляем временной диапазон
+        if limit > MAX_LIMIT_PER_REQUEST and start is None:
+            # Вычисляем интервал в миллисекундах для одного бара
+            interval_ms_map = {
+                '1m': 60 * 1000,
+                '3m': 3 * 60 * 1000,
+                '5m': 5 * 60 * 1000,
+                '15m': 15 * 60 * 1000,
+                '30m': 30 * 60 * 1000,
+                '1h': 60 * 60 * 1000,
+                '2h': 2 * 60 * 60 * 1000,
+                '4h': 4 * 60 * 60 * 1000,
+                '6h': 6 * 60 * 60 * 1000,
+                '12h': 12 * 60 * 60 * 1000,
+                '1d': 24 * 60 * 60 * 1000,
+                '1w': 7 * 24 * 60 * 60 * 1000,
+            }
+            interval_ms = interval_ms_map.get(interval.lower(), 15 * 60 * 1000)  # По умолчанию 15m (используем оригинальный interval для расчета)
+            
+            # Вычисляем start время на основе limit
+            if end is None:
+                end = int(datetime.now().timestamp() * 1000)
+            start = end - (limit * interval_ms)
+        
+        # Если limit больше максимума, загружаем данные батчами
+        if limit > MAX_LIMIT_PER_REQUEST:
+            all_rows = []
+            current_end = end if end is not None else int(datetime.now().timestamp() * 1000)
+            
+            # Вычисляем интервал в миллисекундах для одного бара
+            interval_ms_map = {
+                '1m': 60 * 1000,
+                '3m': 3 * 60 * 1000,
+                '5m': 5 * 60 * 1000,
+                '15m': 15 * 60 * 1000,
+                '30m': 30 * 60 * 1000,
+                '1h': 60 * 60 * 1000,
+                '2h': 2 * 60 * 60 * 1000,
+                '4h': 4 * 60 * 60 * 1000,
+                '6h': 6 * 60 * 60 * 1000,
+                '12h': 12 * 60 * 60 * 1000,
+                '1d': 24 * 60 * 60 * 1000,
+                '1w': 7 * 24 * 60 * 60 * 1000,
+            }
+            interval_ms = interval_ms_map.get(interval.lower(), 15 * 60 * 1000)
+            
+            # Вычисляем start время если не указано
+            if start is None:
+                start = current_end - (limit * interval_ms)
+            
+            remaining = limit
+            seen_timestamps = set()  # Для предотвращения дубликатов
+            is_first_batch = True  # Флаг для первого батча
+            
+            while remaining > 0:
+                batch_limit = min(remaining, MAX_LIMIT_PER_REQUEST)
+                
+                # Для первого батча пробуем без end параметра (получаем самые свежие данные)
+                # Для последующих батчей используем end для получения исторических данных
+                if is_first_batch and end is None:
+                    # Первый запрос без end - получаем самые свежие данные
+                    resp = self.get_kline(
+                        symbol=symbol,
+                        interval=bybit_interval,
+                        limit=batch_limit,
+                    )
+                else:
+                    # Используем end параметр для получения исторических данных
+                    resp = self.get_kline(
+                        symbol=symbol,
+                        interval=bybit_interval,
+                        end=current_end,
+                        limit=batch_limit,
+                    )
+                
+                # Проверяем код ответа
+                ret_code = resp.get("retCode")
+                if ret_code != 0:
+                    ret_msg = resp.get("retMsg", "Unknown error")
+                    raise ValueError(f"Bybit API error (retCode={ret_code}): {ret_msg} for {symbol}")
+                
+                result = resp.get("result", {})
+                raw_list: List[Any] = result.get("list", []) or result.get("rows", [])
+                
+                if not raw_list:
+                    # Если данных больше нет, прекращаем загрузку
+                    if is_first_batch:
+                        # Если первый батч пустой, это критическая ошибка
+                        # Пробуем еще раз с явным end параметром
+                        if end is None:
+                            # Пробуем с текущим временем как end
+                            resp = self.get_kline(
+                                symbol=symbol,
+                                interval=bybit_interval,
+                                end=int(datetime.now().timestamp() * 1000),
+                                limit=batch_limit,
+                            )
+                            ret_code = resp.get("retCode")
+                            if ret_code == 0:
+                                result = resp.get("result", {})
+                                raw_list = result.get("list", []) or result.get("rows", [])
+                                if raw_list:
+                                    # Успешно получили данные, продолжаем
+                                    pass
+                                else:
+                                    raise ValueError(f"No kline data from Bybit for {symbol} - API returned empty result even with explicit end time")
+                            else:
+                                raise ValueError(f"Bybit API error (retCode={ret_code}): {resp.get('retMsg', 'Unknown error')} for {symbol}")
+                        else:
+                            raise ValueError(f"No kline data from Bybit for {symbol} - API returned empty result")
+                    else:
+                        # Для последующих батчей пустой результат означает конец данных
+                        break
+                
+                is_first_batch = False  # После первого успешного батча сбрасываем флаг
+                
+                # Конвертируем данные (Bybit возвращает от новых к старым)
+                batch_rows = []
+                for item in raw_list:
+                    if isinstance(item, dict):
+                        ts = int(item.get("startTime") or item.get("startTimeMs") or item.get("t"))
+                    else:
+                        ts = int(item[0])
+                    
+                    # Пропускаем дубликаты и свечи раньше start времени
+                    if ts in seen_timestamps:
+                        continue
+                    if start is not None and ts < start:
+                        continue
+                    
+                    seen_timestamps.add(ts)
+                    
+                    if isinstance(item, dict):
+                        batch_rows.append({
+                            "timestamp": ts,
+                            "open": float(item["open"]),
+                            "high": float(item["high"]),
+                            "low": float(item["low"]),
+                            "close": float(item["close"]),
+                            "volume": float(item.get("volume") or item.get("turnover") or item.get("v", 0)),
+                        })
+                    else:
+                        batch_rows.append({
+                            "timestamp": ts,
+                            "open": float(item[1]),
+                            "high": float(item[2]),
+                            "low": float(item[3]),
+                            "close": float(item[4]),
+                            "volume": float(item[5]),
+                        })
+                
+                if not batch_rows:
+                    # Если все свечи были отфильтрованы (раньше start), прекращаем
+                    break
+                
+                # Добавляем батч к общему списку (Bybit возвращает от новых к старым, поэтому добавляем в начало)
+                all_rows = batch_rows + all_rows
+                
+                # Обновляем current_end для следующего батча (идем назад во времени)
+                # Берем самое старое время из текущего батча
+                oldest_ts = min(row["timestamp"] for row in batch_rows)
+                current_end = oldest_ts - 1  # Минус 1 мс чтобы не дублировать последнюю свечу
+                
+                remaining -= len(batch_rows)
+                
+                # Если получили меньше данных, чем запрашивали, значит данных больше нет
+                if len(raw_list) < batch_limit:
+                    break
+                
+                # Если достигли start времени, прекращаем
+                if start is not None and current_end <= start:
+                    break
+            
+            if not all_rows:
+                raise ValueError(f"No kline data from Bybit for {symbol} with limit={limit}")
+            
+            df = pd.DataFrame(all_rows)
+            # Упорядочим по времени от старых к новым
+            df = df.sort_values("timestamp").reset_index(drop=True)
+            # Ограничиваем количеством запрошенных свечей (берем последние N свечей)
+            df = df.tail(limit).reset_index(drop=True)
+            return df
+        
+        # Обычный запрос для limit <= MAX_LIMIT_PER_REQUEST
+        resp = self.get_kline(symbol=symbol, interval=bybit_interval, start=start, end=end, limit=min(limit, MAX_LIMIT_PER_REQUEST))
         result = resp.get("result", {})
         raw_list: List[Any] = result.get("list", []) or result.get("rows", [])
         if not raw_list:

@@ -119,8 +119,19 @@ def diagnose_model(model_path: str, symbol: str = "ETHUSDT", interval: str = "15
     confidence_threshold = settings.ml_confidence_threshold
     strategy = MLStrategy(model_path, confidence_threshold)
     
-    print("🔍 Analyzing predictions...")
-    print(f"   Confidence threshold: {confidence_threshold:.2%}")
+    # Определяем эффективный порог для ансамблей
+    is_ensemble = strategy.is_ensemble
+    if is_ensemble:
+        # Для ансамблей используем очень низкий порог (3-5%) для большего количества сигналов
+        effective_threshold = 0.03  # 3% для ансамблей (снижено)
+        print("🔍 Analyzing predictions...")
+        print(f"   Model type: ENSEMBLE (using reduced thresholds)")
+        print(f"   Base confidence threshold: {confidence_threshold:.2%}")
+        print(f"   Effective threshold for ensemble: {effective_threshold:.2%}")
+    else:
+        effective_threshold = confidence_threshold
+        print("🔍 Analyzing predictions...")
+        print(f"   Confidence threshold: {confidence_threshold:.2%}")
     print()
     
     # Анализируем последние 50 баров
@@ -137,8 +148,8 @@ def diagnose_model(model_path: str, symbol: str = "ETHUSDT", interval: str = "15
             predictions_stats[pred_name] += 1
             confidence_stats[pred_name].append(confidence)
             
-            # Проверяем, будет ли сигнал actionable
-            if prediction != 0 and confidence >= confidence_threshold:
+            # Проверяем, будет ли сигнал actionable (используем эффективный порог)
+            if prediction != 0 and confidence >= effective_threshold:
                 actionable_signals += 1
         except Exception as e:
             print(f"⚠️ Error at bar {i}: {e}")
@@ -170,10 +181,13 @@ def diagnose_model(model_path: str, symbol: str = "ETHUSDT", interval: str = "15
         prediction, confidence = strategy.predict(df)
         pred_name = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(prediction, f"UNKNOWN({prediction})")
         
+        # Определяем эффективный порог для ансамблей
+        effective_threshold_for_check = effective_threshold if is_ensemble else confidence_threshold
+        
         print(f"   Prediction: {pred_name} ({prediction})")
         print(f"   Confidence: {confidence:.4f} ({confidence:.2%})")
-        print(f"   Threshold: {confidence_threshold:.4f} ({confidence_threshold:.2%})")
-        print(f"   Will generate signal: {'✅ YES' if (prediction != 0 and confidence >= confidence_threshold) else '❌ NO'}")
+        print(f"   Threshold: {effective_threshold_for_check:.4f} ({effective_threshold_for_check:.2%})")
+        print(f"   Will generate signal: {'✅ YES' if (prediction != 0 and confidence >= effective_threshold_for_check) else '❌ NO'}")
         
         if hasattr(model, "predict_proba"):
             # Получаем вероятности для всех классов
@@ -232,18 +246,46 @@ if __name__ == "__main__":
     import sys
     
     # Определяем путь к модели
+    project_root = pathlib.Path(__file__).parent.parent.parent
+    model_dir = project_root / "ml_models"
+    
     if len(sys.argv) > 1:
-        model_path = sys.argv[1]
+        model_path_arg = sys.argv[1]
+        # Если путь относительный, проверяем в ml_models
+        if not pathlib.Path(model_path_arg).is_absolute():
+            # Проверяем, есть ли файл в ml_models
+            model_path_in_dir = model_dir / model_path_arg
+            if model_path_in_dir.exists():
+                model_path = str(model_path_in_dir)
+            else:
+                # Проверяем, может быть это просто имя файла
+                model_path_in_dir = model_dir / model_path_arg
+                if model_path_in_dir.exists():
+                    model_path = str(model_path_in_dir)
+                else:
+                    # Пробуем как есть
+                    model_path = model_path_arg
+        else:
+            model_path = model_path_arg
     else:
         # Ищем модель по умолчанию
-        project_root = pathlib.Path(__file__).parent.parent.parent
-        model_dir = project_root / "ml_models"
         models = list(model_dir.glob("*.pkl"))
         if not models:
             print("❌ No models found. Please provide model path as argument.")
+            print(f"   Looking in: {model_dir}")
             sys.exit(1)
         model_path = str(models[0])
         print(f"Using model: {model_path}")
+    
+    # Проверяем существование файла
+    if not pathlib.Path(model_path).exists():
+        print(f"❌ Model file not found: {model_path}")
+        print(f"   Looking in: {model_dir}")
+        print(f"\n   Available models:")
+        if model_dir.exists():
+            for model_file in sorted(model_dir.glob("*.pkl")):
+                print(f"     - {model_file.name}")
+        sys.exit(1)
     
     # Определяем символ из имени файла
     model_name = pathlib.Path(model_path).stem

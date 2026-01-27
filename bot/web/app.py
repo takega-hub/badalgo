@@ -1236,6 +1236,7 @@ def api_get_settings():
                 "enable_ict_strategy": settings.enable_ict_strategy,
                 "enable_zscore_strategy": settings.enable_zscore_strategy,
                 "enable_vbo_strategy": settings.enable_vbo_strategy,
+                "enable_breakout_trend_hybrid_strategy": settings.enable_breakout_trend_hybrid_strategy,
                 "enable_amt_of_strategy": settings.enable_amt_of_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
@@ -1322,6 +1323,7 @@ def api_update_settings():
                                "enable_momentum_strategy", 
                                "enable_liquidity_sweep_strategy", "enable_smc_strategy", "enable_ict_strategy",
                                "enable_zscore_strategy", "enable_vbo_strategy",
+                               "enable_breakout_trend_hybrid_strategy",
                                "enable_amt_of_strategy",
                                "ml_stability_filter"):
                         setattr(settings, key, bool(value))
@@ -1355,7 +1357,7 @@ def api_update_settings():
                     elif key == "strategy_priority":
                         # Проверяем допустимые значения приоритета стратегии
                         allowed_priorities = ["trend", "flat", "ml", "momentum", "smc", "ict",
-                                              "zscore", "vbo", "amt_of",
+                                              "zscore", "vbo", "breakout_trend_hybrid", "amt_of",
                                               "hybrid", "confluence"]
                         if value in allowed_priorities:
                             setattr(settings, key, value)
@@ -1463,6 +1465,7 @@ def api_update_settings():
                 "enable_ict_strategy": settings.enable_ict_strategy,
                 "enable_zscore_strategy": settings.enable_zscore_strategy,
                 "enable_vbo_strategy": settings.enable_vbo_strategy,
+                "enable_breakout_trend_hybrid_strategy": settings.enable_breakout_trend_hybrid_strategy,
                 "enable_amt_of_strategy": settings.enable_amt_of_strategy,
                 "strategy_priority": settings.strategy_priority,
                 "ml_model_path": settings.ml_model_path,
@@ -1536,7 +1539,8 @@ def api_update_symbol_strategy_settings(symbol: str):
         bool_fields = [
             'enable_trend_strategy', 'enable_flat_strategy', 'enable_ml_strategy', 'enable_momentum_strategy',
             'enable_smc_strategy', 'enable_ict_strategy',
-            'enable_zscore_strategy', 'enable_vbo_strategy', 'enable_amt_of_strategy'
+            'enable_vbo_strategy', 'enable_breakout_trend_hybrid_strategy',
+            'enable_amt_of_strategy'
         ]
         for f in bool_fields:
             v = getattr(symbol_settings, f, None)
@@ -1728,7 +1732,7 @@ def _run_optimization_async(symbols, days, min_pnl, min_win_rate, auto_apply):
     from generate_report import test_strategy_silent
     
     try:
-        all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "zscore", "vbo"]
+        all_strategies = ["trend", "flat", "momentum", "smc", "ict", "ml", "zscore", "vbo", "breakout_trend_hybrid"]
         total_tests = len(all_strategies) * len(symbols)
         
         with optimization_lock:
@@ -1905,6 +1909,7 @@ def api_all_strategy_stats():
         "ict": get_strategy_stats(strategy_type="ict"),
         "zscore": get_strategy_stats(strategy_type="zscore"),
         "vbo": get_strategy_stats(strategy_type="vbo"),
+        "breakout_trend_hybrid": get_strategy_stats(strategy_type="breakout_trend_hybrid"),
         "all": get_strategy_stats(strategy_type=None),
     }
     return jsonify(all_stats)
@@ -2104,6 +2109,62 @@ def api_ml_test():
         if not model_path:
             return jsonify({"error": f"No ML model found for {symbol}"}), 404
         
+        # Определяем тип модели и реальные пороги
+        model_info = {}
+        try:
+            import pickle
+            from pathlib import Path
+            with open(model_path, "rb") as f:
+                model_data = pickle.load(f)
+            
+            model_type = model_data.get("metadata", {}).get("model_type", "unknown")
+            model_filename = Path(model_path).name
+            
+            # Определяем, является ли модель ансамблем
+            is_ensemble = "ensemble" in model_type.lower() or "ensemble" in model_filename.lower()
+            
+            # Вычисляем реальные пороги на основе типа модели
+            is_volatile = symbol in ("ETHUSDT", "SOLUSDT")
+            
+            if is_ensemble:
+                # Для ансамблей пороги очень низкие
+                effective_confidence = confidence_threshold * 0.05  # 5% от заданного
+                effective_strength = 0.01 if is_volatile else 0.02  # 1-2%
+                stability_threshold = 0.05  # 5%
+            else:
+                # Для одиночных моделей
+                threshold_mult = 0.70 if is_volatile else 0.85
+                effective_confidence = confidence_threshold * threshold_mult
+                
+                # Минимальная сила сигнала
+                strength_thresholds = {
+                    "слабое": 0.0,
+                    "умеренное": 0.6,
+                    "среднее": 0.7,
+                    "сильное": 0.8,
+                    "очень_сильное": 0.9
+                }
+                min_strength_base = strength_thresholds.get(min_signal_strength, 0.6)
+                effective_strength = min_strength_base * 0.3 if is_volatile else min_strength_base
+                
+                # Стабильность
+                if stability_filter:
+                    stability_threshold = max(confidence_threshold * 0.70, 0.35) if is_volatile else max(confidence_threshold * 0.85, 0.45)
+                else:
+                    stability_threshold = None
+            
+            model_info = {
+                "model_type": model_type,
+                "model_filename": model_filename,
+                "is_ensemble": is_ensemble,
+                "effective_confidence_threshold": effective_confidence,
+                "effective_strength_threshold": effective_strength,
+                "stability_threshold": stability_threshold,
+            }
+        except Exception as e:
+            print(f"[web] Warning: Could not load model info: {e}")
+            model_info = {"model_type": "unknown", "is_ensemble": False}
+        
         # Получаем данные для тестирования (последние 1000 свечей)
         client = BybitClient(settings.api)
         interval = "15"  # Фиксированный интервал 15 минут
@@ -2202,6 +2263,7 @@ def api_ml_test():
         
         return jsonify({
             "symbol": symbol,
+            "model_info": model_info,
             "parameters": {
                 "ml_confidence_threshold": confidence_threshold,
                 "ml_min_signal_strength": min_signal_strength,
@@ -2539,6 +2601,14 @@ def api_ml_model_retrain():
                 {"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}
             ), 400
         
+        # Проверяем, не запущен ли уже процесс
+        if (symbol in training_statuses["retrain_single"] and 
+            mode in training_statuses["retrain_single"].get(symbol, {}) and
+            training_statuses["retrain_single"][symbol][mode].get("is_running", False)):
+            return jsonify({
+                "error": f"Обучение для {symbol} ({mode}) уже запущено. Дождитесь завершения."
+            }), 400
+        
         script_name = "retrain_ml_optimized.py" if mode == "optimal" else "retrain_ultra_aggressive.py"
         mode_display = "Оптимальный" if mode == "optimal" else "Агрессивный"
         
@@ -2546,11 +2616,31 @@ def api_ml_model_retrain():
             try:
                 import subprocess
                 import sys
+                import time
+                
+                init_training_status("retrain_single", symbol, mode)
+                update_training_status("retrain_single", 10, f"Начало {mode_display} переобучения для {symbol}...", symbol, mode)
+                
                 print(f"[web] 🚀 Запуск {mode_display} переобучения для {symbol}...")
-                subprocess.run([sys.executable, script_name, "--symbol", symbol], check=True)
+                
+                # Симулируем прогресс (так как скрипт не возвращает промежуточные статусы)
+                update_training_status("retrain_single", 30, f"Сбор данных для {symbol}...", symbol, mode)
+                time.sleep(1)
+                
+                update_training_status("retrain_single", 50, f"Создание признаков для {symbol}...", symbol, mode)
+                time.sleep(1)
+                
+                update_training_status("retrain_single", 70, f"Обучение моделей для {symbol}...", symbol, mode)
+                
+                subprocess.run([sys.executable, script_name, "--symbol", symbol], check=True, cwd=str(project_root))
+                
+                update_training_status("retrain_single", 100, f"{mode_display} переобучение {symbol} завершено!", symbol, mode)
                 print(f"[web] ✅ {mode_display} переобучение {symbol} завершено!")
             except Exception as e:
+                error_msg = str(e)
                 print(f"[web] ❌ Ошибка {symbol} ({mode_display}): {e}")
+                update_training_status("retrain_single", training_statuses["retrain_single"][symbol][mode]["progress"], 
+                                     f"Ошибка: {error_msg}", symbol, mode, error=error_msg)
     
         import threading
         thread = threading.Thread(target=run_single_retrain, daemon=True)
@@ -2567,6 +2657,228 @@ def api_ml_model_retrain():
         )
     except Exception as e:
         return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
+
+
+@app.route("/api/ml/model/train-lstm", methods=["POST"])
+@login_required
+def api_ml_model_train_lstm():
+    """Обучить LSTM модель для одной пары."""
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        data = request.json or {}
+        symbol = data.get("symbol", settings.symbol)
+        
+        # Проверяем доступные пары
+        available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        if symbol not in available_symbols:
+            return jsonify(
+                {"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}
+            ), 400
+        
+        # Проверяем зависимости
+        try:
+            import torch
+            TORCH_AVAILABLE = True
+        except ImportError:
+            TORCH_AVAILABLE = False
+        
+        from bot.ml.model_trainer import LSTM_AVAILABLE
+        
+        if not TORCH_AVAILABLE:
+            return jsonify({
+                "error": "PyTorch is not installed. Install with: pip install torch>=2.0.0"
+            }), 400
+        
+        if not LSTM_AVAILABLE:
+            return jsonify({
+                "error": "LSTM module is not available. Check that bot.ml.lstm_model can be imported"
+            }), 400
+        
+        # Проверяем, не запущен ли уже процесс
+        if (symbol in training_statuses["lstm_single"] and 
+            training_statuses["lstm_single"][symbol].get("is_running", False)):
+            return jsonify({
+                "error": f"Обучение LSTM для {symbol} уже запущено. Дождитесь завершения."
+            }), 400
+        
+        def run_lstm_training():
+            try:
+                import subprocess
+                import sys
+                import time
+                
+                init_training_status("lstm_single", symbol)
+                update_training_status("lstm_single", 10, f"Начало обучения LSTM для {symbol}...", symbol)
+                
+                lstm_script_path = project_root / "train_lstm_model.py"
+                
+                print(f"[web] 🚀 Запуск обучения LSTM для {symbol}...")
+                
+                update_training_status("lstm_single", 30, f"Сбор данных для {symbol}...", symbol)
+                time.sleep(1)
+                
+                update_training_status("lstm_single", 50, f"Создание признаков для {symbol}...", symbol)
+                time.sleep(1)
+                
+                update_training_status("lstm_single", 70, f"Обучение LSTM для {symbol}...", symbol)
+                
+                subprocess.run(
+                    [sys.executable, str(lstm_script_path), "--symbol", symbol],
+                    check=True,
+                    cwd=str(project_root)
+                )
+                
+                update_training_status("lstm_single", 100, f"LSTM для {symbol} обучен!", symbol)
+                print(f"[web] ✅ LSTM для {symbol} обучен!")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[web] ❌ Ошибка при обучении LSTM для {symbol}: {e}")
+                import traceback
+                traceback.print_exc()
+                update_training_status("lstm_single", training_statuses["lstm_single"][symbol]["progress"],
+                                     f"Ошибка: {error_msg}", symbol, error=error_msg)
+        
+        import threading
+        thread = threading.Thread(target=run_lstm_training, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Запущено обучение LSTM для {symbol}",
+            "status": "training",
+            "symbol": symbol
+        })
+    except Exception as e:
+        return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
+
+
+@app.route("/api/ml/model/train-quad-single", methods=["POST"])
+@login_required
+def api_ml_model_train_quad_single():
+    """Обучить QuadEnsemble модель для одной пары."""
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        data = request.json or {}
+        symbol = data.get("symbol", settings.symbol)
+        
+        # Проверяем доступные пары
+        available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        if symbol not in available_symbols:
+            return jsonify(
+                {"error": f"Symbol {symbol} not supported. Available: {available_symbols}"}
+            ), 400
+        
+        # Проверяем зависимости
+        try:
+            import torch
+            TORCH_AVAILABLE = True
+        except ImportError:
+            TORCH_AVAILABLE = False
+        
+        from bot.ml.model_trainer import LIGHTGBM_AVAILABLE, LSTM_AVAILABLE
+        
+        if not TORCH_AVAILABLE:
+            return jsonify({
+                "error": "PyTorch is not installed. Install with: pip install torch>=2.0.0"
+            }), 400
+        
+        if not LIGHTGBM_AVAILABLE:
+            return jsonify({
+                "error": "LightGBM is not installed. Install with: pip install lightgbm>=4.0.0"
+            }), 400
+        
+        if not LSTM_AVAILABLE:
+            return jsonify({
+                "error": "LSTM module is not available. Check that bot.ml.lstm_model can be imported"
+            }), 400
+        
+        # Проверяем, не запущен ли уже процесс
+        if (symbol in training_statuses["quad_single"] and 
+            training_statuses["quad_single"][symbol].get("is_running", False)):
+            return jsonify({
+                "error": f"Обучение QuadEnsemble для {symbol} уже запущено. Дождитесь завершения."
+            }), 400
+        
+        def run_quad_training():
+            try:
+                import subprocess
+                import sys
+                import time
+                
+                init_training_status("quad_single", symbol)
+                update_training_status("quad_single", 10, f"Начало обучения QuadEnsemble для {symbol}...", symbol)
+                
+                quad_script_path = project_root / "train_quad_ensemble.py"
+                
+                print(f"[web] 🚀 Запуск обучения QuadEnsemble для {symbol}...")
+                
+                update_training_status("quad_single", 30, f"Сбор данных для {symbol}...", symbol)
+                time.sleep(1)
+                
+                update_training_status("quad_single", 50, f"Создание признаков для {symbol}...", symbol)
+                time.sleep(1)
+                
+                update_training_status("quad_single", 70, f"Обучение QuadEnsemble для {symbol}...", symbol)
+                
+                subprocess.run(
+                    [sys.executable, str(quad_script_path), "--symbol", symbol],
+                    check=True,
+                    cwd=str(project_root)
+                )
+                
+                update_training_status("quad_single", 100, f"QuadEnsemble для {symbol} обучен!", symbol)
+                print(f"[web] ✅ QuadEnsemble для {symbol} обучен!")
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[web] ❌ Ошибка при обучении QuadEnsemble для {symbol}: {e}")
+                import traceback
+                traceback.print_exc()
+                update_training_status("quad_single", training_statuses["quad_single"][symbol]["progress"],
+                                     f"Ошибка: {error_msg}", symbol, error=error_msg)
+        
+        import threading
+        thread = threading.Thread(target=run_quad_training, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Запущено обучение QuadEnsemble для {symbol}",
+            "status": "training",
+            "symbol": symbol
+        })
+    except Exception as e:
+        return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
+
+
+@app.route("/api/ml/model/training-status", methods=["GET"])
+@login_required
+def api_ml_model_training_status():
+    """Получить статус всех операций обучения."""
+    operation = request.args.get("operation")
+    symbol = request.args.get("symbol")
+    mode = request.args.get("mode")
+    
+    if operation == "retrain_single" and symbol and mode:
+        status = training_statuses["retrain_single"].get(symbol, {}).get(mode, {})
+    elif operation == "retrain_all" and mode:
+        status = training_statuses["retrain_all"].get(mode, {})
+    elif operation == "lstm_single" and symbol:
+        status = training_statuses["lstm_single"].get(symbol, {})
+    elif operation == "quad_single" and symbol:
+        status = training_statuses["quad_single"].get(symbol, {})
+    elif operation == "quad_all":
+        status = training_statuses["quad_all"] or {}
+    else:
+        return jsonify({"error": "Invalid parameters"}), 400
+    
+    return jsonify({
+        "success": True,
+        "status": status
+    })
 
 
 @app.route("/api/ml/model/retrain-all", methods=["POST"])
@@ -2618,6 +2930,257 @@ def api_ml_model_retrain_all():
         
     except Exception as e:
         return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
+
+
+# Глобальные статусы обучения
+training_statuses = {
+    "retrain_single": {},  # {symbol: {mode: status}}
+    "retrain_all": {"optimal": None, "aggressive": None},
+    "lstm_single": {},  # {symbol: status}
+    "quad_single": {},  # {symbol: status}
+    "quad_all": None
+}
+
+def get_training_status_key(operation, symbol=None, mode=None):
+    """Генерирует ключ для статуса обучения."""
+    if operation == "retrain_single":
+        return f"{operation}_{symbol}_{mode}"
+    elif operation == "retrain_all":
+        return f"{operation}_{mode}"
+    elif operation == "lstm_single":
+        return f"{operation}_{symbol}"
+    elif operation == "quad_single":
+        return f"{operation}_{symbol}"
+    elif operation == "quad_all":
+        return "quad_all"
+    return None
+
+def init_training_status(operation, symbol=None, mode=None):
+    """Инициализирует статус обучения."""
+    key = get_training_status_key(operation, symbol, mode)
+    if key:
+        if operation == "retrain_single":
+            if symbol not in training_statuses["retrain_single"]:
+                training_statuses["retrain_single"][symbol] = {}
+            training_statuses["retrain_single"][symbol][mode] = {
+                "is_running": True,
+                "progress": 0,
+                "message": "",
+                "error": None
+            }
+        elif operation == "retrain_all":
+            training_statuses["retrain_all"][mode] = {
+                "is_running": True,
+                "progress": 0,
+                "current_symbol": "",
+                "message": "",
+                "error": None
+            }
+        elif operation == "lstm_single":
+            training_statuses["lstm_single"][symbol] = {
+                "is_running": True,
+                "progress": 0,
+                "message": "",
+                "error": None
+            }
+        elif operation == "quad_single":
+            training_statuses["quad_single"][symbol] = {
+                "is_running": True,
+                "progress": 0,
+                "message": "",
+                "error": None
+            }
+        elif operation == "quad_all":
+            training_statuses["quad_all"] = {
+                "is_running": True,
+                "current_step": "",
+                "current_symbol": "",
+                "progress": 0,
+                "total_steps": 6,
+                "completed_steps": 0,
+                "message": "",
+                "error": None
+            }
+
+def update_training_status(operation, progress, message, symbol=None, mode=None, error=None, current_step=None, current_symbol=None):
+    """Обновляет статус обучения."""
+    if operation == "retrain_single":
+        if symbol in training_statuses["retrain_single"] and mode in training_statuses["retrain_single"][symbol]:
+            training_statuses["retrain_single"][symbol][mode].update({
+                "progress": progress,
+                "message": message,
+                "error": error,
+                "is_running": progress < 100 and error is None
+            })
+    elif operation == "retrain_all":
+        if mode in training_statuses["retrain_all"]:
+            training_statuses["retrain_all"][mode].update({
+                "progress": progress,
+                "current_symbol": current_symbol or "",
+                "message": message,
+                "error": error,
+                "is_running": progress < 100 and error is None
+            })
+    elif operation == "lstm_single":
+        if symbol in training_statuses["lstm_single"]:
+            training_statuses["lstm_single"][symbol].update({
+                "progress": progress,
+                "message": message,
+                "error": error,
+                "is_running": progress < 100 and error is None
+            })
+    elif operation == "quad_single":
+        if symbol in training_statuses["quad_single"]:
+            training_statuses["quad_single"][symbol].update({
+                "progress": progress,
+                "message": message,
+                "error": error,
+                "is_running": progress < 100 and error is None
+            })
+    elif operation == "quad_all":
+        if training_statuses["quad_all"]:
+            training_statuses["quad_all"].update({
+                "current_step": current_step or "",
+                "current_symbol": current_symbol or "",
+                "progress": progress,
+                "message": message,
+                "error": error,
+                "is_running": progress < 100 and error is None
+            })
+            if progress >= 100:
+                training_statuses["quad_all"]["completed_steps"] = training_statuses["quad_all"]["total_steps"]
+
+# Глобальный статус обучения QuadEnsemble (для обратной совместимости)
+quad_ensemble_training_status = training_statuses["quad_all"]
+
+@app.route("/api/ml/model/train-quad-ensemble", methods=["POST"])
+@login_required
+def api_ml_model_train_quad_ensemble():
+    """Обучить LSTM и QuadEnsemble модели для всех пар (BTCUSDT, ETHUSDT, SOLUSDT)."""
+    if not settings:
+        return jsonify({"error": "Settings not loaded"}), 500
+    
+    try:
+        data = request.json or {}
+        
+        # Проверяем, не запущен ли уже процесс
+        if (training_statuses["quad_all"] and 
+            training_statuses["quad_all"].get("is_running", False)):
+            return jsonify({
+                "error": "Обучение уже запущено. Дождитесь завершения текущего процесса."
+            }), 400
+        
+        # Проверяем зависимости
+        try:
+            import torch
+            TORCH_AVAILABLE = True
+        except ImportError:
+            TORCH_AVAILABLE = False
+        
+        from bot.ml.model_trainer import LIGHTGBM_AVAILABLE, LSTM_AVAILABLE
+        
+        if not TORCH_AVAILABLE:
+            return jsonify({
+                "error": "PyTorch is not installed. Install with: pip install torch>=2.0.0"
+            }), 400
+        
+        if not LIGHTGBM_AVAILABLE:
+            return jsonify({
+                "error": "LightGBM is not installed. Install with: pip install lightgbm>=4.0.0"
+            }), 400
+        
+        if not LSTM_AVAILABLE:
+            return jsonify({
+                "error": "LSTM module is not available. Check that bot.ml.lstm_model can be imported"
+            }), 400
+        
+        def update_status(step, symbol, progress, message, error=None):
+            """Обновляет статус обучения."""
+            update_training_status("quad_all", progress, message, current_step=step, current_symbol=symbol, error=error)
+        
+        def run_training():
+            try:
+                import subprocess
+                import sys
+                
+                # Инициализируем статус
+                init_training_status("quad_all")
+                
+                symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+                total_symbols = len(symbols)
+                
+                # === Шаг 1: Обучение LSTM моделей ===
+                print(f"[web] 🚀 Запуск обучения LSTM моделей для всех символов...")
+                lstm_script_path = project_root / "train_lstm_model.py"
+                
+                for idx, symbol in enumerate(symbols):
+                    # Прогресс для LSTM: 0-50% (каждый символ = 50/3 = ~16.67%)
+                    progress = int(((idx + 1) / total_symbols) * 50)
+                    update_status("LSTM Training", symbol, progress, 
+                                f"Обучение LSTM для {symbol}... ({idx+1}/{total_symbols})")
+                    
+                    print(f"[web] 📊 Обучение LSTM для {symbol}...")
+                    subprocess.run(
+                        [sys.executable, str(lstm_script_path), "--symbol", symbol],
+                        check=True,
+                        cwd=str(project_root)
+                    )
+                    print(f"[web] ✅ LSTM для {symbol} обучен!")
+                
+                update_status("LSTM Training", "All", 50, "LSTM модели обучены для всех символов")
+                
+                # === Шаг 2: Обучение QuadEnsemble моделей ===
+                print(f"[web] 🚀 Запуск обучения QuadEnsemble для всех символов...")
+                quad_script_path = project_root / "train_quad_ensemble.py"
+                
+                for idx, symbol in enumerate(symbols):
+                    # Прогресс для QuadEnsemble: 50-100% (каждый символ = 50/3 = ~16.67%)
+                    progress = 50 + int(((idx + 1) / total_symbols) * 50)
+                    update_status("QuadEnsemble Training", symbol, progress,
+                                f"Обучение QuadEnsemble для {symbol}... ({idx+1}/{total_symbols})")
+                    
+                    print(f"[web] 📊 Обучение QuadEnsemble для {symbol}...")
+                    subprocess.run(
+                        [sys.executable, str(quad_script_path), "--symbol", symbol],
+                        check=True,
+                        cwd=str(project_root)
+                    )
+                    print(f"[web] ✅ QuadEnsemble для {symbol} обучен!")
+                
+                update_status("Completed", "All", 100, "Обучение завершено успешно!")
+                print(f"[web] ✅ Обучение LSTM и QuadEnsemble для всех символов завершено!")
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[web] ❌ Ошибка при обучении: {e}")
+                import traceback
+                traceback.print_exc()
+                update_status("Error", "", quad_ensemble_training_status["progress"], 
+                            f"Ошибка: {error_msg}", error=error_msg)
+        
+        # Запускаем в отдельном потоке
+        import threading
+        thread = threading.Thread(target=run_training, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Запущено обучение LSTM и QuadEnsemble для всех пар (BTCUSDT, ETHUSDT, SOLUSDT). Это может занять 30-60 минут.",
+            "status": "training"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Не удалось запустить обучение: {e}"}), 500
+
+
+@app.route("/api/ml/model/train-quad-ensemble/status", methods=["GET"])
+@login_required
+def api_ml_model_train_quad_ensemble_status():
+    """Получить статус обучения QuadEnsemble."""
+    return jsonify({
+        "success": True,
+        "status": training_statuses["quad_all"] or {}
+    })
 
 
 @app.route("/api/signals")

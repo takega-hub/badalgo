@@ -65,9 +65,23 @@ from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
+try:
+    import lightgbm as lgb
+    LIGHTGBM_AVAILABLE = True
+except ImportError:
+    LIGHTGBM_AVAILABLE = False
+    print("[model_trainer] Warning: LightGBM not available. Install with: pip install lightgbm")
 from collections import Counter
 
 from bot.ml.feature_engineering import FeatureEngineer
+
+# Импорт для LSTM (опционально)
+try:
+    from bot.ml.lstm_model import LSTMTrainer
+    LSTM_AVAILABLE = True
+except ImportError:
+    LSTM_AVAILABLE = False
+    print("[model_trainer] Warning: LSTM not available. Install PyTorch for LSTM support.")
 
 
 class PreTrainedVotingEnsemble:
@@ -108,26 +122,333 @@ class WeightedEnsemble:
         self.rf_weight = rf_weight
         self.xgb_weight = xgb_weight
         self.classes_ = np.array([-1, 0, 1])  # SHORT, HOLD, LONG
+
+
+class TripleEnsemble:
+    """Взвешенный ансамбль из RandomForest, XGBoost и LightGBM."""
+    def __init__(self, rf_model, xgb_model, lgb_model, rf_weight=0.33, xgb_weight=0.33, lgb_weight=0.34):
+        self.rf_model = rf_model
+        self.xgb_model = xgb_model
+        self.lgb_model = lgb_model
+        self.rf_weight = rf_weight
+        self.xgb_weight = xgb_weight
+        self.lgb_weight = lgb_weight
+        self.classes_ = np.array([-1, 0, 1])  # SHORT, HOLD, LONG
     
     def predict_proba(self, X):
-        # Получаем вероятности от обеих моделей
+        # Получаем вероятности от всех трех моделей
         rf_proba = self.rf_model.predict_proba(X)
+        
         # Для XGBoost нужно преобразовать классы обратно
         xgb_proba = self.xgb_model.predict_proba(X)
-        # XGBoost возвращает классы 0,1,2, нужно преобразовать в -1,0,1
-        # Переупорядочиваем: [0,1,2] -> [-1,0,1]
         xgb_proba_reordered = np.zeros_like(rf_proba)
         xgb_proba_reordered[:, 0] = xgb_proba[:, 0]  # SHORT (0 -> -1)
         xgb_proba_reordered[:, 1] = xgb_proba[:, 1]  # HOLD (1 -> 0)
         xgb_proba_reordered[:, 2] = xgb_proba[:, 2]  # LONG (2 -> 1)
         
-        # Взвешенное усреднение
+        # Для LightGBM тоже нужно преобразовать
+        lgb_proba = self.lgb_model.predict_proba(X)
+        lgb_proba_reordered = np.zeros_like(rf_proba)
+        lgb_proba_reordered[:, 0] = lgb_proba[:, 0]  # SHORT (0 -> -1)
+        lgb_proba_reordered[:, 1] = lgb_proba[:, 1]  # HOLD (1 -> 0)
+        lgb_proba_reordered[:, 2] = lgb_proba[:, 2]  # LONG (2 -> 1)
+        
+        # Взвешенное усреднение всех трех моделей
         ensemble_proba = (self.rf_weight * rf_proba + 
-                         self.xgb_weight * xgb_proba_reordered)
+                         self.xgb_weight * xgb_proba_reordered +
+                         self.lgb_weight * lgb_proba_reordered)
         return ensemble_proba
     
     def predict(self, X):
         proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+
+class QuadEnsemble:
+    """
+    Взвешенный ансамбль из RandomForest, XGBoost, LightGBM и LSTM.
+    
+    LSTM требует последовательности данных, поэтому predict_proba принимает DataFrame
+    с историей для создания последовательностей.
+    """
+    def __init__(
+        self, 
+        rf_model, 
+        xgb_model, 
+        lgb_model, 
+        lstm_trainer,  # LSTMTrainer объект
+        rf_weight=0.25, 
+        xgb_weight=0.25, 
+        lgb_weight=0.25,
+        lstm_weight=0.25,
+        sequence_length: int = 60,  # Длина последовательности для LSTM
+    ):
+        self.rf_model = rf_model
+        self.xgb_model = xgb_model
+        self.lgb_model = lgb_model
+        self.lstm_trainer = lstm_trainer
+        self.rf_weight = rf_weight
+        self.xgb_weight = xgb_weight
+        self.lgb_weight = lgb_weight
+        self.lstm_weight = lstm_weight
+        self.sequence_length = sequence_length
+        self.classes_ = np.array([-1, 0, 1])  # SHORT, HOLD, LONG
+    
+    def predict_proba(self, X, df_history: Optional[pd.DataFrame] = None):
+        """
+        Предсказывает вероятности для всех четырех моделей.
+        
+        Args:
+            X: Матрица фичей (n_samples, n_features) для RF/XGB/LGB
+            df_history: DataFrame с историей для LSTM (должен содержать все фичи и иметь минимум sequence_length строк)
+        
+        Returns:
+            Массив вероятностей (n_samples, 3) в формате [SHORT, HOLD, LONG]
+        """
+        # Получаем вероятности от классических моделей
+        rf_proba = self.rf_model.predict_proba(X)
+        
+        # Проверяем rf_proba на NaN
+        if np.any(np.isnan(rf_proba)) or not np.all(np.isfinite(rf_proba)):
+            print(f"[QuadEnsemble] Warning: RF proba contains NaN, using uniform distribution")
+            rf_proba = np.ones_like(rf_proba) / 3.0
+        
+        # Для XGBoost нужно преобразовать классы обратно
+        xgb_proba = self.xgb_model.predict_proba(X)
+        
+        # Проверяем xgb_proba на NaN
+        if np.any(np.isnan(xgb_proba)) or not np.all(np.isfinite(xgb_proba)):
+            print(f"[QuadEnsemble] Warning: XGB proba contains NaN, using uniform distribution")
+            xgb_proba = np.ones_like(xgb_proba) / 3.0
+        
+        xgb_proba_reordered = np.zeros_like(rf_proba)
+        xgb_proba_reordered[:, 0] = xgb_proba[:, 0]  # SHORT (0 -> -1)
+        xgb_proba_reordered[:, 1] = xgb_proba[:, 1]  # HOLD (1 -> 0)
+        xgb_proba_reordered[:, 2] = xgb_proba[:, 2]  # LONG (2 -> 1)
+        
+        # Для LightGBM тоже нужно преобразовать
+        lgb_proba = self.lgb_model.predict_proba(X)
+        
+        # Проверяем lgb_proba на NaN
+        if np.any(np.isnan(lgb_proba)) or not np.all(np.isfinite(lgb_proba)):
+            print(f"[QuadEnsemble] Warning: LGB proba contains NaN, using uniform distribution")
+            lgb_proba = np.ones_like(lgb_proba) / 3.0
+        
+        lgb_proba_reordered = np.zeros_like(rf_proba)
+        lgb_proba_reordered[:, 0] = lgb_proba[:, 0]  # SHORT (0 -> -1)
+        lgb_proba_reordered[:, 1] = lgb_proba[:, 1]  # HOLD (1 -> 0)
+        lgb_proba_reordered[:, 2] = lgb_proba[:, 2]  # LONG (2 -> 1)
+        
+        # Определяем n_samples в начале (нужно для обработки исключений)
+        n_samples = len(X)
+        
+        # Для LSTM: создаем последовательности из истории
+        if df_history is not None and len(df_history) >= self.sequence_length:
+            try:
+                # Получаем фичи из истории (те же, что использовались при обучении LSTM)
+                feature_names = self.lstm_trainer.feature_names if hasattr(self.lstm_trainer, 'feature_names') and self.lstm_trainer.feature_names is not None else None
+                
+                if feature_names:
+                    # Проверяем, что все нужные фичи доступны
+                    missing_features = [f for f in feature_names if f not in df_history.columns]
+                    if missing_features:
+                        # Пытаемся создать недостающие фичи динамически
+                        print(f"[QuadEnsemble] Warning: Missing features in history: {missing_features[:5]}... Attempting to create them.")
+                        
+                        # Создаем недостающие фичи, если это возможно
+                        df_history_work = df_history.copy()
+                        try:
+                            # Используем FeatureEngineer для создания всех фичей
+                            from bot.ml.feature_engineering import FeatureEngineer
+                            feature_engineer = FeatureEngineer()
+                            
+                            # Проверяем, есть ли необходимые колонки OHLCV
+                            required_cols = ['open', 'high', 'low', 'close', 'volume']
+                            if all(col in df_history_work.columns for col in required_cols):
+                                # Создаем все технические индикаторы
+                                df_history_work = feature_engineer.create_technical_indicators(df_history_work)
+                                
+                                # Проверяем снова после создания
+                                missing_features_after = [f for f in feature_names if f not in df_history_work.columns]
+                                if missing_features_after:
+                                    # Если все еще есть недостающие фичи, пытаемся создать их вручную
+                                    import pandas_ta as ta
+                                    
+                                    # Создаем SMA фичи
+                                    if 'sma_20' in missing_features_after and 'close' in df_history_work.columns:
+                                        df_history_work['sma_20'] = ta.sma(df_history_work['close'], length=20)
+                                    if 'sma_50' in missing_features_after and 'close' in df_history_work.columns:
+                                        df_history_work['sma_50'] = ta.sma(df_history_work['close'], length=50)
+                                    if 'sma_200' in missing_features_after and 'close' in df_history_work.columns:
+                                        df_history_work['sma_200'] = ta.sma(df_history_work['close'], length=200)
+                                    
+                                    # Создаем EMA фичи
+                                    if 'ema_12' in missing_features_after and 'close' in df_history_work.columns:
+                                        df_history_work['ema_12'] = ta.ema(df_history_work['close'], length=12)
+                                    if 'ema_26' in missing_features_after and 'close' in df_history_work.columns:
+                                        df_history_work['ema_26'] = ta.ema(df_history_work['close'], length=26)
+                                    
+                                    # Проверяем финально
+                                    missing_features_final = [f for f in feature_names if f not in df_history_work.columns]
+                                    if missing_features_final:
+                                        raise ValueError(f"Still missing features after creation attempt: {missing_features_final[:5]}...")
+                                else:
+                                    print(f"[QuadEnsemble] Successfully created all missing features using FeatureEngineer")
+                                
+                                df_history = df_history_work
+                            else:
+                                raise ValueError(f"Missing required OHLCV columns for feature creation: {[c for c in required_cols if c not in df_history_work.columns]}")
+                        except Exception as e:
+                            print(f"[QuadEnsemble] Failed to create missing features: {e}")
+                            raise ValueError(f"Missing features in history: {missing_features[:5]}... and could not create them automatically.")
+                    
+                    # Используем только нужные фичи в правильном порядке
+                    df_features = df_history[feature_names].copy()
+                    
+                    # Проверяем на NaN перед нормализацией
+                    if df_features.isna().any().any():
+                        # Умное заполнение NaN: forward fill для временных рядов, затем backward fill, затем 0
+                        # Это лучше чем просто 0, так как сохраняет структуру данных
+                        df_features = df_features.ffill().bfill().fillna(0.0)
+                else:
+                    # Если feature_names не установлены, пытаемся определить из scaler
+                    if hasattr(self.lstm_trainer, 'scaler') and self.lstm_trainer.scaler is not None:
+                        expected_features = self.lstm_trainer.scaler.n_features_in_ if hasattr(self.lstm_trainer.scaler, 'n_features_in_') else None
+                        if expected_features:
+                            # Используем первые expected_features фичей (как при обучении)
+                            exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+                            feature_cols = [col for col in df_history.columns if col not in exclude_cols]
+                            if len(feature_cols) >= expected_features:
+                                feature_cols = feature_cols[:expected_features]
+                                df_features = df_history[feature_cols].copy()
+                                print(f"[QuadEnsemble] Using first {expected_features} features (feature_names not set)")
+                                
+                                # Проверяем на NaN
+                                if df_features.isna().any().any():
+                                    # Умное заполнение NaN: forward fill, backward fill, затем 0
+                                    df_features = df_features.ffill().bfill().fillna(0.0)
+                            else:
+                                raise ValueError(f"Not enough features: need {expected_features}, got {len(feature_cols)}")
+                        else:
+                            # Используем все фичи кроме OHLCV
+                            exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+                            feature_cols = [col for col in df_history.columns if col not in exclude_cols]
+                            df_features = df_history[feature_cols].copy()
+                            
+                            # Проверяем на NaN
+                            if df_features.isna().any().any():
+                                # Умное заполнение NaN: forward fill, backward fill, затем 0
+                                df_features = df_features.ffill().bfill().fillna(0.0)
+                    else:
+                        # Используем все фичи кроме OHLCV
+                        exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'timestamp']
+                        feature_cols = [col for col in df_history.columns if col not in exclude_cols]
+                        df_features = df_history[feature_cols].copy()
+                        
+                        # Проверяем на NaN
+                        if df_features.isna().any().any():
+                            print(f"[QuadEnsemble] Warning: Features contain NaN, filling with 0")
+                            df_features = df_features.fillna(0.0)
+                
+                # Проверяем количество фичей перед нормализацией
+                if hasattr(self.lstm_trainer, 'scaler') and self.lstm_trainer.scaler is not None:
+                    # Проверяем, что количество фичей соответствует ожидаемому
+                    expected_features = self.lstm_trainer.scaler.n_features_in_ if hasattr(self.lstm_trainer.scaler, 'n_features_in_') else None
+                    if expected_features and len(df_features.columns) != expected_features:
+                        raise ValueError(
+                            f"Feature count mismatch: LSTM expects {expected_features} features, "
+                            f"but got {len(df_features.columns)}. "
+                            f"Expected features: {list(feature_names)[:10] if feature_names else 'unknown'}... "
+                            f"Got features: {list(df_features.columns)[:10]}..."
+                        )
+                    
+                    df_features_scaled = pd.DataFrame(
+                        self.lstm_trainer.scaler.transform(df_features.values),
+                        index=df_features.index,
+                        columns=df_features.columns
+                    )
+                    
+                    # Проверяем на NaN после нормализации
+                    if df_features_scaled.isna().any().any():
+                        # Умное заполнение NaN: forward fill, backward fill, затем 0
+                        df_features_scaled = df_features_scaled.ffill().bfill().fillna(0.0)
+                else:
+                    df_features_scaled = df_features
+                    
+                    # Проверяем на NaN
+                    if df_features_scaled.isna().any().any():
+                        print(f"[QuadEnsemble] Warning: Features contain NaN, filling with 0")
+                        df_features_scaled = df_features_scaled.fillna(0.0)
+                
+                # Создаем последовательности для LSTM
+                lstm_proba = np.zeros((n_samples, 3))
+                
+                for i in range(n_samples):
+                    # Берем последние sequence_length строк для последовательности
+                    end_idx = len(df_features_scaled)
+                    start_idx = max(0, end_idx - self.sequence_length)
+                    sequence = df_features_scaled.iloc[start_idx:end_idx].values
+                    
+                    # Если последовательность короче нужного, дополняем первым значением
+                    if len(sequence) < self.sequence_length:
+                        padding = np.tile(sequence[0:1], (self.sequence_length - len(sequence), 1))
+                        sequence = np.vstack([padding, sequence])
+                    
+                    # Проверяем последовательность на NaN перед предсказанием
+                    if np.any(np.isnan(sequence)) or not np.all(np.isfinite(sequence)):
+                        # Заменяем NaN на 0 или среднее значение
+                        sequence = np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    # Делаем предсказание LSTM
+                    sequence_reshaped = sequence.reshape(1, self.sequence_length, -1)
+                    _, proba = self.lstm_trainer.predict(sequence_reshaped)
+                    
+                    # Проверяем proba на NaN
+                    if np.any(np.isnan(proba)) or not np.all(np.isfinite(proba)):
+                        # Используем равномерное распределение для этого образца
+                        proba = np.array([[0.33, 0.34, 0.33]])
+                    
+                    # LSTM возвращает вероятности в формате [SHORT(0), HOLD(1), LONG(2)]
+                    # Преобразуем в [-1, 0, 1]
+                    lstm_proba[i, 0] = proba[0, 0]  # SHORT
+                    lstm_proba[i, 1] = proba[0, 1]  # HOLD
+                    lstm_proba[i, 2] = proba[0, 2]  # LONG
+            except Exception as e:
+                # Если LSTM не может сделать предсказание, используем равномерное распределение
+                print(f"[QuadEnsemble] Warning: LSTM prediction failed: {e}. Using uniform probabilities.")
+                lstm_proba = np.ones((n_samples, 3)) / 3.0
+        else:
+            # Если нет истории, используем равномерное распределение для LSTM
+            lstm_proba = np.ones((n_samples, 3)) / 3.0
+        
+        # Проверяем lstm_proba на NaN перед вычислением ансамбля
+        if np.any(np.isnan(lstm_proba)) or not np.all(np.isfinite(lstm_proba)):
+            print(f"[QuadEnsemble] Warning: LSTM proba contains NaN, using uniform distribution")
+            lstm_proba = np.ones_like(lstm_proba) / 3.0
+        
+        # Взвешенное усреднение всех четырех моделей
+        ensemble_proba = (
+            self.rf_weight * rf_proba + 
+            self.xgb_weight * xgb_proba_reordered +
+            self.lgb_weight * lgb_proba_reordered +
+            self.lstm_weight * lstm_proba
+        )
+        
+        # Проверяем результат на NaN и нормализуем
+        if np.any(np.isnan(ensemble_proba)) or not np.all(np.isfinite(ensemble_proba)):
+            print(f"[QuadEnsemble] Warning: Ensemble proba contains NaN after combination, using uniform distribution")
+            ensemble_proba = np.ones_like(ensemble_proba) / 3.0
+        else:
+            # Нормализуем вероятности (сумма должна быть 1.0)
+            row_sums = ensemble_proba.sum(axis=1, keepdims=True)
+            # Избегаем деления на ноль
+            row_sums = np.where(row_sums == 0, 1.0, row_sums)
+            ensemble_proba = ensemble_proba / row_sums
+        
+        return ensemble_proba
+    
+    def predict(self, X, df_history: Optional[pd.DataFrame] = None):
+        proba = self.predict_proba(X, df_history)
         return self.classes_[np.argmax(proba, axis=1)]
 
 
@@ -351,6 +672,112 @@ class ModelTrainer:
         
         return model, metrics
     
+    def train_lightgbm_classifier(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        n_estimators: int = 100,
+        max_depth: int = 6,
+        learning_rate: float = 0.1,
+        random_state: int = 42,
+        class_weight: Optional[Dict[int, float]] = None,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """
+        Обучает LightGBM классификатор.
+        
+        Args:
+            X: Матрица фичей
+            y: Целевая переменная (-1 = SHORT, 0 = HOLD, 1 = LONG)
+            n_estimators: Количество деревьев
+            max_depth: Максимальная глубина дерева
+            learning_rate: Скорость обучения
+            random_state: Seed для воспроизводимости
+            class_weight: Кастомные веса классов (если None, используется автоматическая балансировка)
+        
+        Returns:
+            (model, metrics) - обученная модель и метрики
+        """
+        if not LIGHTGBM_AVAILABLE:
+            raise ImportError("LightGBM is not installed. Install with: pip install lightgbm")
+        
+        print(f"[model_trainer] Training LightGBM Classifier...")
+        print(f"  Samples: {len(X)}, Features: {X.shape[1]}")
+        
+        # LightGBM может работать с ненормализованными данными, но нормализуем для консистентности
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Преобразуем y для LightGBM (нужны индексы 0,1,2 вместо -1,0,1)
+        y_lgb = y + 1  # -1,0,1 -> 0,1,2
+        
+        # Вычисляем веса классов для LightGBM
+        if class_weight is not None:
+            # Используем переданные кастомные веса
+            class_weights_dict = {}
+            for orig_cls, weight in class_weight.items():
+                lgb_cls = orig_cls + 1  # Преобразуем -1,0,1 -> 0,1,2
+                class_weights_dict[int(lgb_cls)] = weight
+            print(f"  Using custom class weights: {class_weights_dict}")
+        else:
+            # Вычисляем веса классов автоматически
+            unique_classes, class_counts = np.unique(y_lgb, return_counts=True)
+            total_samples = len(y_lgb)
+            class_weights_dict = {}
+            
+            for cls, count in zip(unique_classes, class_counts):
+                if count > 0:
+                    base_weight = total_samples / (len(unique_classes) * count)
+                    if cls == 1:  # HOLD - уменьшаем вес
+                        class_weights_dict[int(cls)] = base_weight * 0.8
+                    else:  # LONG (2) или SHORT (0) - увеличиваем вес
+                        class_weights_dict[int(cls)] = base_weight * 1.5
+            print(f"  Using auto-balanced class weights: {class_weights_dict}")
+        
+        # Создаем и обучаем модель
+        model = lgb.LGBMClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            random_state=random_state,
+            n_jobs=-1,
+            verbose=-1,  # Отключаем вывод
+            class_weight=class_weights_dict if class_weights_dict else None,
+            objective='multiclass',
+            num_class=3,
+        )
+        
+        # Обучаем модель
+        model.fit(X_scaled, y_lgb)
+        
+        # Time-series cross-validation
+        tscv = TimeSeriesSplit(n_splits=5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            cv_scores = cross_val_score(model, X_scaled, y_lgb, cv=tscv, scoring="accuracy", n_jobs=1)
+        
+        # Предсказания
+        y_pred_lgb = model.predict(X_scaled)
+        y_pred = y_pred_lgb - 1  # Обратно в -1,0,1
+        accuracy = accuracy_score(y, y_pred)
+        
+        # Метрики
+        metrics = {
+            "accuracy": accuracy,
+            "cv_mean": cv_scores.mean(),
+            "cv_std": cv_scores.std(),
+            "classification_report": classification_report(y, y_pred, output_dict=True),
+            "confusion_matrix": confusion_matrix(y, y_pred).tolist(),
+            "feature_importance": dict(zip(
+                self.feature_engineer.get_feature_names(),
+                model.feature_importances_
+            )),
+        }
+        
+        print(f"[model_trainer] Training completed:")
+        print(f"  Accuracy: {accuracy:.4f}")
+        print(f"  CV Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+        
+        return model, metrics
+    
     def save_model(
         self, 
         model: Any, 
@@ -452,9 +879,13 @@ class ModelTrainer:
         xgb_n_estimators: int = 100,
         xgb_max_depth: int = 6,
         xgb_learning_rate: float = 0.1,
-        ensemble_method: str = "voting",  # "voting" или "weighted_average"
+        ensemble_method: str = "voting",  # "voting", "weighted_average" или "triple"
         random_state: int = 42,
         class_weight: Optional[Dict[int, float]] = None,
+        include_lightgbm: bool = False,  # Включить LightGBM в ансамбль
+        lgb_n_estimators: int = 100,
+        lgb_max_depth: int = 6,
+        lgb_learning_rate: float = 0.1,
     ) -> Tuple[Any, Dict[str, Any]]:
         """
         Обучает ансамбль из RandomForest и XGBoost.
@@ -474,7 +905,10 @@ class ModelTrainer:
         Returns:
             (ensemble_model, metrics) - обученный ансамбль и метрики
         """
-        print(f"[model_trainer] Training Ensemble Model ({ensemble_method})...")
+        ensemble_name = f"{ensemble_method}"
+        if include_lightgbm and ensemble_method == "triple":
+            ensemble_name = "triple (RF+XGB+LGB)"
+        print(f"[model_trainer] Training Ensemble Model ({ensemble_name})...")
         print(f"  Samples: {len(X)}, Features: {X.shape[1]}")
         print(f"  Class distribution: {Counter(y)}")
         
@@ -482,7 +916,9 @@ class ModelTrainer:
         X_scaled = self.scaler.fit_transform(X)
         
         # Обучаем отдельные модели
-        print(f"\n  [1/2] Training RandomForest...")
+        model_count = 3 if (include_lightgbm and ensemble_method == "triple") else 2
+        
+        print(f"\n  [1/{model_count}] Training RandomForest...")
         rf_model, rf_metrics = self.train_random_forest_classifier(
             X, y,
             n_estimators=rf_n_estimators,
@@ -491,7 +927,7 @@ class ModelTrainer:
             class_weight=class_weight,  # Передаем веса классов
         )
         
-        print(f"\n  [2/2] Training XGBoost...")
+        print(f"\n  [2/{model_count}] Training XGBoost...")
         xgb_model, xgb_metrics = self.train_xgboost_classifier(
             X, y,
             n_estimators=xgb_n_estimators,
@@ -501,29 +937,62 @@ class ModelTrainer:
             class_weight=class_weight,  # Передаем веса классов
         )
         
-        # Вычисляем веса на основе CV метрик для обоих методов
+        lgb_model = None
+        lgb_metrics = None
+        
+        # Если включен LightGBM и метод "triple", обучаем LightGBM
+        if include_lightgbm and ensemble_method == "triple":
+            if not LIGHTGBM_AVAILABLE:
+                print(f"\n  ⚠️  LightGBM not available, skipping...")
+                include_lightgbm = False
+            else:
+                print(f"\n  [3/{model_count}] Training LightGBM...")
+                lgb_model, lgb_metrics = self.train_lightgbm_classifier(
+                    X, y,
+                    n_estimators=lgb_n_estimators,
+                    max_depth=lgb_max_depth,
+                    learning_rate=lgb_learning_rate,
+                    random_state=random_state,
+                    class_weight=class_weight,  # Передаем веса классов
+                )
+        
+        # Вычисляем веса на основе CV метрик
         rf_cv_score = rf_metrics.get("cv_mean", 0.5)
         xgb_cv_score = xgb_metrics.get("cv_mean", 0.5)
-        total_score = rf_cv_score + xgb_cv_score
-        if total_score > 0:
-            rf_weight = rf_cv_score / total_score
-            xgb_weight = xgb_cv_score / total_score
+        
+        if include_lightgbm and lgb_model is not None:
+            lgb_cv_score = lgb_metrics.get("cv_mean", 0.5)
+            total_score = rf_cv_score + xgb_cv_score + lgb_cv_score
+            if total_score > 0:
+                rf_weight = rf_cv_score / total_score
+                xgb_weight = xgb_cv_score / total_score
+                lgb_weight = lgb_cv_score / total_score
+            else:
+                rf_weight = xgb_weight = lgb_weight = 1.0 / 3.0
         else:
-            rf_weight = xgb_weight = 0.5
+            total_score = rf_cv_score + xgb_cv_score
+            if total_score > 0:
+                rf_weight = rf_cv_score / total_score
+                xgb_weight = xgb_cv_score / total_score
+            else:
+                rf_weight = xgb_weight = 0.5
+            lgb_weight = 0.0
         
         # Создаем ансамбль
-        if ensemble_method == "voting":
+        if ensemble_method == "triple" and include_lightgbm and lgb_model is not None:
+            # Тройной ансамбль: RF + XGB + LGB
+            ensemble = TripleEnsemble(rf_model, xgb_model, lgb_model, rf_weight, xgb_weight, lgb_weight)
+            print(f"  Ensemble weights: RF={rf_weight:.3f}, XGB={xgb_weight:.3f}, LGB={lgb_weight:.3f}")
+        elif ensemble_method == "voting":
             # Используем класс, определенный на уровне модуля
             ensemble = PreTrainedVotingEnsemble(rf_model, xgb_model, rf_weight, xgb_weight)
-            
+            print(f"  Ensemble weights: RF={rf_weight:.3f}, XGB={xgb_weight:.3f}")
         elif ensemble_method == "weighted_average":
             # Используем класс, определенный на уровне модуля
             ensemble = WeightedEnsemble(rf_model, xgb_model, rf_weight, xgb_weight)
-        
+            print(f"  Ensemble weights: RF={rf_weight:.3f}, XGB={xgb_weight:.3f}")
         else:
             raise ValueError(f"Unknown ensemble_method: {ensemble_method}")
-        
-        print(f"  Ensemble weights: RF={rf_weight:.3f}, XGB={xgb_weight:.3f}")
         
         # Улучшенная валидация: Walk-Forward Validation
         print(f"\n  Performing Walk-Forward Validation...")
@@ -562,8 +1031,26 @@ class ModelTrainer:
                 )
                 xgb_fold.fit(X_train_fold, y_train_xgb)
                 
+                # Обучаем LightGBM на fold (если включен)
+                lgb_fold = None
+                if include_lightgbm and ensemble_method == "triple" and LIGHTGBM_AVAILABLE:
+                    y_train_lgb = y_train_fold + 1
+                    lgb_fold = lgb.LGBMClassifier(
+                        n_estimators=lgb_n_estimators,
+                        max_depth=lgb_max_depth,
+                        learning_rate=lgb_learning_rate,
+                        random_state=random_state,
+                        n_jobs=-1,
+                        verbose=-1,
+                        objective='multiclass',
+                        num_class=3,
+                    )
+                    lgb_fold.fit(X_train_fold, y_train_lgb)
+                
                 # Создаем ансамбль для fold
-                if ensemble_method == "voting":
+                if ensemble_method == "triple" and include_lightgbm and lgb_fold is not None:
+                    ensemble_fold = TripleEnsemble(rf_fold, xgb_fold, lgb_fold, rf_weight, xgb_weight, lgb_weight)
+                elif ensemble_method == "voting":
                     ensemble_fold = PreTrainedVotingEnsemble(rf_fold, xgb_fold, rf_weight, xgb_weight)
                 else:
                     ensemble_fold = WeightedEnsemble(rf_fold, xgb_fold, rf_weight, xgb_weight)
@@ -605,9 +1092,11 @@ class ModelTrainer:
             "confusion_matrix": confusion_matrix(y, y_pred).tolist(),
             "rf_metrics": rf_metrics,
             "xgb_metrics": xgb_metrics,
+            "lgb_metrics": lgb_metrics if lgb_metrics else None,
             "ensemble_method": ensemble_method,
             "rf_weight": rf_weight,  # Веса ансамбля
             "xgb_weight": xgb_weight,
+            "lgb_weight": lgb_weight if include_lightgbm else None,
         }
         
         print(f"\n[model_trainer] Ensemble training completed:")
@@ -617,6 +1106,169 @@ class ModelTrainer:
         print(f"  F1-Score: {f1:.4f}")
         print(f"  CV Accuracy: {metrics['cv_mean']:.4f} (+/- {metrics['cv_std'] * 2:.4f})")
         print(f"  CV F1-Score: {metrics['cv_f1_mean']:.4f}")
+        if include_lightgbm and lgb_metrics:
+            print(f"  LightGBM CV Accuracy: {lgb_metrics.get('cv_mean', 0):.4f}")
+        
+        return ensemble, metrics
+    
+    def train_quad_ensemble(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        df: pd.DataFrame,  # Полный DataFrame для LSTM (нужен для последовательностей)
+        rf_n_estimators: int = 100,
+        rf_max_depth: Optional[int] = 10,
+        xgb_n_estimators: int = 100,
+        xgb_max_depth: int = 6,
+        xgb_learning_rate: float = 0.1,
+        lgb_n_estimators: int = 100,
+        lgb_max_depth: int = 6,
+        lgb_learning_rate: float = 0.1,
+        lstm_sequence_length: int = 60,
+        lstm_hidden_size: int = 64,
+        lstm_num_layers: int = 2,
+        lstm_epochs: int = 50,
+        random_state: int = 42,
+        class_weight: Optional[Dict[int, float]] = None,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """
+        Обучает ансамбль из RandomForest, XGBoost, LightGBM и LSTM.
+        
+        Args:
+            X: Матрица фичей
+            y: Целевая переменная (-1 = SHORT, 0 = HOLD, 1 = LONG)
+            df: Полный DataFrame с историей для LSTM (должен содержать все фичи)
+            rf_n_estimators: Количество деревьев для RandomForest
+            rf_max_depth: Максимальная глубина для RandomForest
+            xgb_n_estimators: Количество деревьев для XGBoost
+            xgb_max_depth: Максимальная глубина для XGBoost
+            xgb_learning_rate: Скорость обучения для XGBoost
+            lgb_n_estimators: Количество деревьев для LightGBM
+            lgb_max_depth: Максимальная глубина для LightGBM
+            lgb_learning_rate: Скорость обучения для LightGBM
+            lstm_sequence_length: Длина последовательности для LSTM
+            lstm_hidden_size: Размер скрытого слоя LSTM
+            lstm_num_layers: Количество слоев LSTM
+            lstm_epochs: Количество эпох обучения LSTM
+            random_state: Seed для воспроизводимости
+            class_weight: Кастомные веса классов
+        
+        Returns:
+            (ensemble_model, metrics) - обученный ансамбль и метрики
+        """
+        if not LSTM_AVAILABLE:
+            raise ImportError("LSTM is not available. Install PyTorch for LSTM support.")
+        
+        if not LIGHTGBM_AVAILABLE:
+            raise ImportError("LightGBM is not available. Install with: pip install lightgbm")
+        
+        print(f"[model_trainer] Training Quad Ensemble (RF+XGB+LGB+LSTM)...")
+        print(f"  Samples: {len(X)}, Features: {X.shape[1]}")
+        print(f"  Class distribution: {Counter(y)}")
+        
+        # Нормализуем фичи
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Обучаем классические модели
+        print(f"\n  [1/4] Training RandomForest...")
+        rf_model, rf_metrics = self.train_random_forest_classifier(
+            X, y,
+            n_estimators=rf_n_estimators,
+            max_depth=rf_max_depth,
+            random_state=random_state,
+            class_weight=class_weight,
+        )
+        
+        print(f"\n  [2/4] Training XGBoost...")
+        xgb_model, xgb_metrics = self.train_xgboost_classifier(
+            X, y,
+            n_estimators=xgb_n_estimators,
+            max_depth=xgb_max_depth,
+            learning_rate=xgb_learning_rate,
+            random_state=random_state,
+            class_weight=class_weight,
+        )
+        
+        print(f"\n  [3/4] Training LightGBM...")
+        lgb_model, lgb_metrics = self.train_lightgbm_classifier(
+            X, y,
+            n_estimators=lgb_n_estimators,
+            max_depth=lgb_max_depth,
+            learning_rate=lgb_learning_rate,
+            random_state=random_state,
+            class_weight=class_weight,
+        )
+        
+        print(f"\n  [4/4] Training LSTM...")
+        # Обучаем LSTM на полном DataFrame
+        lstm_trainer = LSTMTrainer(
+            sequence_length=lstm_sequence_length,
+            hidden_size=lstm_hidden_size,
+            num_layers=lstm_num_layers,
+            num_epochs=lstm_epochs,
+        )
+        
+        # Подготавливаем данные для LSTM (добавляем target колонку)
+        df_lstm = df.copy()
+        if 'target' not in df_lstm.columns:
+            # Создаем target колонку из y (нужно синхронизировать индексы)
+            # Предполагаем, что y соответствует последним len(y) строкам df
+            df_lstm['target'] = 0  # Инициализируем нулями
+            df_lstm.iloc[-len(y):, df_lstm.columns.get_loc('target')] = y
+        
+        lstm_model, lstm_metrics = lstm_trainer.train(df_lstm, validation_split=0.2)
+        
+        # Устанавливаем feature_names в lstm_trainer для использования при предсказании
+        # Используем те же фичи, что и для классических моделей
+        if hasattr(self, 'feature_engineer'):
+            lstm_trainer.feature_names = self.feature_engineer.get_feature_names()
+        else:
+            # Если feature_engineer недоступен, извлекаем фичи из DataFrame
+            exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'timestamp', 'target']
+            lstm_trainer.feature_names = [col for col in df_lstm.columns if col not in exclude_cols]
+        
+        # Вычисляем веса на основе CV метрик
+        rf_cv_score = rf_metrics.get("cv_mean", 0.5)
+        xgb_cv_score = xgb_metrics.get("cv_mean", 0.5)
+        lgb_cv_score = lgb_metrics.get("cv_mean", 0.5)
+        lstm_cv_score = lstm_metrics.get("accuracy", 0.5)  # LSTM использует accuracy вместо cv_mean
+        
+        total_score = rf_cv_score + xgb_cv_score + lgb_cv_score + lstm_cv_score
+        if total_score > 0:
+            rf_weight = rf_cv_score / total_score
+            xgb_weight = xgb_cv_score / total_score
+            lgb_weight = lgb_cv_score / total_score
+            lstm_weight = lstm_cv_score / total_score
+        else:
+            rf_weight = xgb_weight = lgb_weight = lstm_weight = 0.25
+        
+        # Создаем QuadEnsemble
+        ensemble = QuadEnsemble(
+            rf_model, 
+            xgb_model, 
+            lgb_model, 
+            lstm_trainer,
+            rf_weight=rf_weight,
+            xgb_weight=xgb_weight,
+            lgb_weight=lgb_weight,
+            lstm_weight=lstm_weight,
+            sequence_length=lstm_sequence_length,
+        )
+        
+        print(f"  Ensemble weights: RF={rf_weight:.3f}, XGB={xgb_weight:.3f}, LGB={lgb_weight:.3f}, LSTM={lstm_weight:.3f}")
+        
+        # Метрики ансамбля
+        metrics = {
+            "rf_metrics": rf_metrics,
+            "xgb_metrics": xgb_metrics,
+            "lgb_metrics": lgb_metrics,
+            "lstm_metrics": lstm_metrics,
+            "rf_weight": rf_weight,
+            "xgb_weight": xgb_weight,
+            "lgb_weight": lgb_weight,
+            "lstm_weight": lstm_weight,
+            "ensemble_method": "quad",
+        }
         
         return ensemble, metrics
 
