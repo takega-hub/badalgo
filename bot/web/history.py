@@ -636,6 +636,33 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
             # Если не удалось распарсить, используем как есть
             ts_str = str(timestamp)
     
+    # ВАЖНО: Добавляем префикс стратегии к reason, если его там нет
+    # Это необходимо для правильной фильтрации и отображения сигналов в админке
+    reason_normalized = reason
+    if strategy_type and strategy_type != "unknown":
+        # Маппинг типов стратегий на префиксы
+        strategy_prefix_map = {
+            "zscore": "zscore_",
+            "vbo": "vbo_",
+            "ict": "ict_",
+            "smc": "smc_",
+            "ml": "ml_",
+            "trend": "trend_",
+            "flat": "range_",  # flat стратегия использует префикс "range_"
+            "momentum": "momentum_",
+            "liquidity": "liquidity_",
+            "amt_of": "amt_of_",
+        }
+        
+        prefix = strategy_prefix_map.get(strategy_type.lower(), "")
+        if prefix and not reason.startswith(prefix):
+            # Добавляем префикс только если его нет
+            reason_normalized = f"{prefix}{reason}"
+        else:
+            reason_normalized = reason
+    else:
+        reason_normalized = reason
+    
     # Нормализуем price для сравнения (округление до 2 знаков)
     price_normalized = round(float(price), 2)
     
@@ -657,8 +684,11 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
                    ts_str.startswith(existing_ts[:16]))
         
         # Сравниваем reason, symbol и strategy_type (не сравниваем цену, так как latest сигнал может иметь обновленную цену)
+        # Используем reason_normalized для сравнения, чтобы учитывать префикс стратегии
+        # Также сравниваем с оригинальным reason для обратной совместимости
+        reason_match = (existing_reason == reason_normalized or existing_reason == reason)
         if (ts_match and 
-            existing_reason == reason and 
+            reason_match and 
             existing_symbol == symbol and
             existing_strategy == strategy_type):
             # Найден сигнал с таким же timestamp, reason, symbol и strategy - это latest сигнал, заменяем его
@@ -684,12 +714,13 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
             ts_str_for_id = ts_str_for_id.split('+')[0]
         elif 'Z' in ts_str_for_id:
             ts_str_for_id = ts_str_for_id.replace('Z', '')
-        id_string = f"{ts_str_for_id}_{action}_{reason}_{price_normalized:.4f}"
+        # ВАЖНО: Используем reason_normalized для генерации signal_id
+        id_string = f"{ts_str_for_id}_{action}_{reason_normalized}_{price_normalized:.4f}"
         signal_id = hashlib.md5(id_string.encode()).hexdigest()[:16]
     
-    # Если strategy_type не указан или "unknown", пытаемся определить по префиксу reason
+    # Если strategy_type не указан или "unknown", пытаемся определить по префиксу reason_normalized
     if strategy_type == "unknown" or not strategy_type:
-        reason_lower = reason.lower()
+        reason_lower = reason_normalized.lower()
         if reason_lower.startswith("ml_"):
             strategy_type = "ml"
         elif reason_lower.startswith("smc_"):
@@ -712,7 +743,7 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
     signal = {
         "timestamp": ts_str,
         "action": action,
-        "reason": reason,
+        "reason": reason_normalized,  # ВАЖНО: Сохраняем reason с префиксом стратегии для правильной фильтрации
         "price": price_normalized,
         "symbol": symbol,
         "strategy_type": strategy_type,

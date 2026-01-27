@@ -4884,9 +4884,11 @@ def run_live_from_api(
                 s for s in all_signals
                 if s.reason.startswith("ict_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
             ]
+            # ВАЖНО: Фильтруем Z-Score сигналы по префиксу "zscore_" или по наличию "_poc_" в reason
+            # Это позволяет обрабатывать сигналы из истории, которые могут иметь reason "LONG_poc_130.00"
             zscore_signals_only = [
                 s for s in all_signals
-                if s.reason.startswith("zscore_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
+                if (s.reason.startswith("zscore_") or "_poc_" in s.reason.lower()) and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
             ]
             vbo_signals_only = [
                 s for s in all_signals
@@ -5120,7 +5122,8 @@ def run_live_from_api(
                     # Отмечаем, что мы сохранили latest сигнал от этой стратегии
                     seen_signal_keys_cycle.add(strategy_key)
                     
-                    # Проверяем, является ли сигнал свежим после сохранения
+                    # ВАЖНО: Проверяем, является ли сигнал свежим после сохранения
+                    # Если сигнал свежий - добавляем его в all_signals для немедленной обработки
                     is_fresh_after_save = False
                     try:
                         current_time_utc = datetime.now(timezone.utc)
@@ -5128,6 +5131,30 @@ def run_live_from_api(
                         is_fresh_after_save = age_from_now_minutes <= 15
                     except:
                         pass
+                    
+                    # КРИТИЧЕСКИ ВАЖНО: Если сигнал свежий, добавляем его в all_signals для немедленной обработки
+                    # Это гарантирует, что каждый новый сигнал будет обработан немедленно и единожды
+                    if is_fresh_after_save:
+                        # Проверяем, нет ли уже такого сигнала в all_signals
+                        signal_already_in_all = False
+                        for existing_sig in all_signals:
+                            if (hasattr(existing_sig, 'signal_id') and existing_sig.signal_id and 
+                                sig_signal_id and existing_sig.signal_id == sig_signal_id):
+                                signal_already_in_all = True
+                                break
+                            # Также проверяем по цене и reason
+                            if (abs(existing_sig.price - sig.price) / sig.price <= 0.001 and 
+                                existing_sig.reason == sig.reason):
+                                signal_already_in_all = True
+                                break
+                        
+                        if not signal_already_in_all:
+                            all_signals.append(sig)
+                            _log(
+                                f"⚡ Added fresh signal to all_signals for immediate processing: "
+                                f"{sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [ID: {sig_signal_id or 'none'}]",
+                                symbol
+                            )
                     
                     freshness_marker = "⚡ FRESH" if is_fresh_after_save else "⏳ NOT FRESH"
                     _log(f"💾 Saved latest {strategy_type_name} signal to history: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_log.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts_log, 'strftime') else ts_log}] {freshness_marker}", symbol)
@@ -5733,52 +5760,53 @@ def run_live_from_api(
             
             # ДОПОЛНИТЕЛЬНО: Проверяем свежесть сигналов из истории и обновляем timestamp в available_signals
             # Это гарантирует, что сигналы, только что сохраненные в историю, будут обнаружены немедленно
-            if not fresh_signals_available:
-                try:
-                    from bot.web.history import get_signals
-                    # Получаем последние сигналы из истории для текущего символа
-                    recent_signals = get_signals(limit=10, symbol_filter=symbol)
-                    current_time_utc = datetime.now(timezone.utc)
-                    
-                    for hist_signal in recent_signals:
-                        try:
-                            # Получаем timestamp из истории
-                            hist_timestamp_str = hist_signal.get("timestamp", "")
-                            if not hist_timestamp_str:
-                                continue
-                            
-                            # Парсим timestamp (ВАЖНО: в истории хранится MSK время)
-                            import pytz
-                            msk_tz = pytz.timezone('Europe/Moscow')
-                            if isinstance(hist_timestamp_str, str):
-                                # Пробуем разные форматы
-                                try:
-                                    hist_ts = pd.Timestamp(hist_timestamp_str)
-                                except:
-                                    continue
-                            else:
+            # ВАЖНО: Проверяем историю всегда, а не только когда нет свежих сигналов из объектов
+            # Это позволяет обрабатывать свежие сигналы из истории даже если есть свежие сигналы из объектов
+            try:
+                from bot.web.history import get_signals
+                # Получаем последние сигналы из истории для текущего символа
+                recent_signals = get_signals(limit=10, symbol_filter=symbol)
+                current_time_utc = datetime.now(timezone.utc)
+                
+                for hist_signal in recent_signals:
+                    try:
+                        # Получаем timestamp из истории
+                        hist_timestamp_str = hist_signal.get("timestamp", "")
+                        if not hist_timestamp_str:
+                            continue
+                        
+                        # Парсим timestamp (ВАЖНО: в истории хранится MSK время)
+                        import pytz
+                        msk_tz = pytz.timezone('Europe/Moscow')
+                        if isinstance(hist_timestamp_str, str):
+                            # Пробуем разные форматы
+                            try:
                                 hist_ts = pd.Timestamp(hist_timestamp_str)
-                            
-                            # Нормализуем timezone: если время в MSK, конвертируем в UTC для сравнения
-                            if hist_ts.tzinfo is None:
-                                # Если нет таймзоны, пытаемся определить по строке
-                                if '+03:00' in str(hist_timestamp_str) or 'Europe/Moscow' in str(hist_timestamp_str):
-                                    hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
-                                else:
-                                    hist_ts = hist_ts.tz_localize('UTC')
-                            elif str(hist_ts.tz) == 'Europe/Moscow' or '+03:00' in str(hist_ts.tz):
-                                # Если время в MSK, конвертируем в UTC
-                                hist_ts = hist_ts.tz_convert('UTC')
+                            except:
+                                continue
+                        else:
+                            hist_ts = pd.Timestamp(hist_timestamp_str)
+                        
+                        # Нормализуем timezone: если время в MSK, конвертируем в UTC для сравнения
+                        if hist_ts.tzinfo is None:
+                            # Если нет таймзоны, пытаемся определить по строке
+                            if '+03:00' in str(hist_timestamp_str) or 'Europe/Moscow' in str(hist_timestamp_str):
+                                hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
                             else:
-                                hist_ts = hist_ts.tz_convert('UTC')
-                            
-                            hist_ts_py = hist_ts.to_pydatetime()
-                            
-                            # Проверяем возраст сигнала (должен быть не старше 15 минут)
-                            # ВАЖНО: Учитываем, что timestamp в истории в MSK, поэтому конвертируем в UTC для сравнения
-                            age_from_now_minutes = abs((current_time_utc - hist_ts_py).total_seconds()) / 60
-                            
-                            if age_from_now_minutes <= 15:
+                                hist_ts = hist_ts.tz_localize('UTC')
+                        elif str(hist_ts.tz) == 'Europe/Moscow' or '+03:00' in str(hist_ts.tz):
+                            # Если время в MSK, конвертируем в UTC
+                            hist_ts = hist_ts.tz_convert('UTC')
+                        else:
+                            hist_ts = hist_ts.tz_convert('UTC')
+                        
+                        hist_ts_py = hist_ts.to_pydatetime()
+                        
+                        # Проверяем возраст сигнала (должен быть не старше 15 минут)
+                        # ВАЖНО: Учитываем, что timestamp в истории в MSK, поэтому конвертируем в UTC для сравнения
+                        age_from_now_minutes = abs((current_time_utc - hist_ts_py).total_seconds()) / 60
+                        
+                        if age_from_now_minutes <= 15:
                                 # Сигнал свежий (не старше 15 минут) - проверяем, что он actionable (не HOLD)
                                 hist_action = hist_signal.get("action", "").upper()
                                 if hist_action in ("LONG", "SHORT"):
@@ -5817,10 +5845,20 @@ def run_live_from_api(
                                         hist_signal_obj.signal_id = hist_signal_id
                                     
                                     # Проверяем, есть ли уже такой сигнал в available_signals
+                                    # ВАЖНО: Сравниваем по signal_id если он есть, иначе по цене и reason
                                     signal_already_exists = False
                                     for name, sig in available_signals:
+                                        # Сначала проверяем по signal_id (самый надежный способ)
+                                        if hist_signal_id and hasattr(sig, 'signal_id') and sig.signal_id == hist_signal_id:
+                                            signal_already_exists = True
+                                            break
+                                        
+                                        # Если signal_id не совпадает, проверяем по цене и reason
                                         price_match = abs(sig.price - hist_price) / hist_price <= 0.001 if hist_price > 0 else False
-                                        reason_match = sig.reason == hist_reason
+                                        # Сравниваем reason с учетом возможного префикса "zscore_"
+                                        sig_reason_normalized = sig.reason.replace("zscore_", "") if sig.reason.startswith("zscore_") else sig.reason
+                                        hist_reason_normalized = hist_reason.replace("zscore_", "") if hist_reason.startswith("zscore_") else hist_reason
+                                        reason_match = sig_reason_normalized == hist_reason_normalized
                                         
                                         if price_match and reason_match:
                                             signal_already_exists = True
@@ -5847,15 +5885,30 @@ def run_live_from_api(
                                     
                                     # Если сигнала нет в available_signals, добавляем его
                                     if not signal_already_exists:
-                                        # Определяем имя стратегии по reason
-                                        strategy_name = "zscore" if hist_reason.startswith("zscore_") else "unknown"
+                                        # Определяем имя стратегии по reason и strategy_type
+                                        hist_strategy_type = hist_signal.get("strategy_type", "").lower()
+                                        
+                                        # ВАЖНО: Если reason не начинается с префикса стратегии, добавляем его
+                                        # Это нужно для правильной фильтрации сигналов по стратегиям
+                                        if hist_strategy_type == "zscore" and not hist_reason.startswith("zscore_"):
+                                            # Добавляем префикс "zscore_" к reason для совместимости с фильтрацией
+                                            hist_reason = f"zscore_{hist_reason}"
+                                            hist_signal_obj.reason = hist_reason
+                                        
+                                        strategy_name = hist_strategy_type if hist_strategy_type else "unknown"
+                                        
+                                        # ВАЖНО: Добавляем сигнал в all_signals для правильной фильтрации по стратегиям
+                                        all_signals.append(hist_signal_obj)
                                         available_signals.append((strategy_name, hist_signal_obj))
+                                        
                                         _log(
-                                            f"✅ Added fresh signal from history to available_signals: {hist_action} @ ${hist_price:.2f} "
-                                            f"({hist_reason}) - age: {age_from_now_minutes:.1f} min [ID: {hist_signal_id or 'none'}]",
+                                            f"✅ Added fresh signal from history to all_signals and available_signals: {hist_action} @ ${hist_price:.2f} "
+                                            f"({hist_reason}) - age: {age_from_now_minutes:.1f} min [ID: {hist_signal_id or 'none'}] "
+                                            f"[strategy: {hist_strategy_type}]",
                                             symbol
                                         )
                                     
+                                    # Отмечаем, что найден свежий сигнал из истории
                                     fresh_signals_available = True
                                     _log(
                                         f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_price:.2f} ({hist_reason}) - "
@@ -5863,12 +5916,12 @@ def run_live_from_api(
                                         symbol
                                     )
                                     break
-                        except Exception as e:
-                            # Пропускаем сигналы с ошибками парсинга
-                            continue
-                except Exception as e:
-                    # Если не удалось проверить историю - продолжаем с проверкой объектов
-                    pass
+                    except Exception as e:
+                        # Пропускаем сигналы с ошибками парсинга
+                        continue
+            except Exception as e:
+                # Если не удалось проверить историю - продолжаем с проверкой объектов
+                pass
             
             # Если есть свежие сигналы - логируем для информации
             if fresh_signals_available:

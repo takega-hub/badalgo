@@ -17,7 +17,7 @@ class SignalDiagnostics:
     """
     
     # Константы
-    SIGNAL_FRESHNESS_SECONDS = 60  # Сигнал считается свежим (сек)
+    SIGNAL_FRESHNESS_SECONDS = 900  # Сигнал считается свежим (15 минут = 900 сек) - соответствует логике обработки в live.py
     DIAGNOSTIC_INTERVAL = 300  # Интервал диагностики (сек)
     MIN_VALID_DATA_RATIO = 0.7  # Минимальный процент валидных данных
     INDICATOR_WARMUP_PERIODS = {
@@ -408,7 +408,8 @@ class SignalDiagnostics:
         
         # Проверка свежести сигналов
         if signal_analysis["fresh_signals"] == 0 and signal_analysis["total"] > 0:
-            recommendations.append("⚠️ Есть сигналы, но все устарели (>60с)")
+            fresh_threshold_minutes = self.SIGNAL_FRESHNESS_SECONDS // 60
+            recommendations.append(f"⚠️ Есть сигналы, но все устарели (>{fresh_threshold_minutes} минут)")
         
         result["recommendations"] = recommendations
     
@@ -472,7 +473,8 @@ class SignalDiagnostics:
         signals = result["signal_analysis"]
         self.log_func("📡 СИГНАЛЫ:")
         self.log_func(f"  Всего: {signals['total']}")
-        self.log_func(f"  Свежих (≤{self.SIGNAL_FRESHNESS_SECONDS}с): {signals['fresh_signals']}")
+        fresh_threshold_minutes = self.SIGNAL_FRESHNESS_SECONDS // 60
+        self.log_func(f"  Свежих (≤{fresh_threshold_minutes} минут): {signals['fresh_signals']}")
         
         if signals['total'] > 0:
             # Детали по действиям
@@ -810,7 +812,7 @@ def quick_signal_check(symbol: str, all_signals: List[Any], strategies_enabled: 
     Returns:
         Словарь с краткой статистикой
     """
-    fresh_threshold = 60  # 1 минута
+    fresh_threshold = 900  # 15 минут - соответствует логике обработки сигналов в live.py
     current_time = datetime.now(timezone.utc)
     
     fresh_signals = 0

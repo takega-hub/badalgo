@@ -181,7 +181,19 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
         else:
             continue
 
-        reason = row.get("reason") or f"zscore_{sig.lower()}"
+        # ВАЖНО: Убеждаемся, что reason всегда начинается с префикса "zscore_"
+        # Это необходимо для правильной фильтрации сигналов по стратегиям
+        raw_reason = row.get("reason") or ""
+        if raw_reason and not raw_reason.startswith("zscore_"):
+            # Если reason есть, но не начинается с "zscore_", добавляем префикс
+            reason = f"zscore_{raw_reason}"
+        elif raw_reason:
+            # Если reason уже начинается с "zscore_", используем как есть
+            reason = raw_reason
+        else:
+            # Если reason нет, создаем стандартный
+            reason = f"zscore_{sig.lower()}"
+        
         price = float(row.get("close", row.get("price", float('nan'))))
 
         try:
