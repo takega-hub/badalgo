@@ -479,9 +479,10 @@ class MLStrategy:
                 # Для ансамблей вероятности распределяются более равномерно, поэтому
                 # используем разницу между LONG/SHORT и HOLD вместо абсолютной уверенности
                 
-                # ДЛЯ АНСАМБЛЕЙ: Если LONG или SHORT выше минимального порога (1%) и выше другого,
+                # ДЛЯ АНСАМБЛЕЙ: Если LONG или SHORT выше минимального порога (0.1%) и выше другого,
                 # принимаем сигнал ДАЖЕ ЕСЛИ HOLD выше обоих (это нормально для ансамблей)
-                ensemble_absolute_min = 0.01  # Минимальная абсолютная уверенность 1% (очень низкий для максимального количества сигналов)
+                # Используем очень низкий порог (0.1%) чтобы не игнорировать слабые сигналы от ансамблей
+                ensemble_absolute_min = 0.001  # Минимальная абсолютная уверенность 0.1% (очень низкий для максимального количества сигналов)
                 
                 # Определяем предсказание: выбираем LONG или SHORT если они выше минимума и выше другого
                 # Игнорируем HOLD для ансамблей, так как он часто доминирует из-за распределения вероятностей
@@ -701,14 +702,14 @@ class MLStrategy:
             profit_pct = int(target_profit_pct_margin)
             
             # Проверяем минимальную силу сигнала (только для LONG/SHORT, не для HOLD)
-            # Для ансамблей используем очень мягкие пороги
+            # Для ансамблей используем очень мягкие пороги - НЕ ИГНОРИРУЕМ СЛАБЫЕ СИГНАЛЫ
             if self.is_ensemble:
-                # Для ансамблей почти отключаем проверку min_strength, так как они распределяют уверенность
-                # Используем очень низкий порог (1-2%) для максимального количества сигналов
+                # Для ансамблей почти полностью отключаем проверку min_strength
+                # Используем очень низкий порог (0.1-0.5%) чтобы не блокировать слабые сигналы
                 if is_volatile_symbol:
-                    min_strength = 0.01  # 1% для волатильных символов (очень низкий)
+                    min_strength = 0.001  # 0.1% для волатильных символов (почти отключен)
                 else:
-                    min_strength = 0.02  # 2% для стабильных символов (очень низкий)
+                    min_strength = 0.005  # 0.5% для стабильных символов (почти отключен)
             else:
                 # Для одиночных моделей используем стандартные пороги
                 if is_volatile_symbol:
@@ -992,26 +993,28 @@ class MLStrategy:
             # Возвращаем только LONG, SHORT или HOLD
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
-                # Для ансамблей почти отключаем проверку confidence_threshold
+                # Для ансамблей почти полностью отключаем проверку confidence_threshold
+                # НЕ ИГНОРИРУЕМ СЛАБЫЕ СИГНАЛЫ ОТ АНСАМБЛЕЙ
                 if self.is_ensemble:
-                    # Для ансамблей используем очень низкий порог (2-3% от стандартного) для максимального количества сигналов
-                    threshold_mult = 0.02 if is_volatile_symbol else 0.03
-                    # Для ансамблей также снижаем dynamic_threshold
-                    dynamic_threshold = self.confidence_threshold * 0.05  # 5% от стандартного (очень низкий)
+                    # Для ансамблей используем очень низкий порог (0.1-0.5% от стандартного) для максимального количества сигналов
+                    threshold_mult = 0.001 if is_volatile_symbol else 0.005  # 0.1-0.5% от стандартного
+                    # Для ансамблей также снижаем dynamic_threshold до минимума
+                    dynamic_threshold = self.confidence_threshold * 0.01  # 1% от стандартного (очень низкий, почти отключен)
                 else:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
                 
                 effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
+                # Для ансамблей effective_threshold очень низкий (0.1-0.5%), поэтому слабые сигналы НЕ блокируются
                 if confidence < effective_threshold:
-                    # Модель не уверена - HOLD
+                    # Модель не уверена - HOLD (для ансамблей это почти никогда не срабатывает)
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Для ансамблей и волатильных символов делаем фильтр стабильности очень мягким
+                # Для ансамблей делаем фильтр стабильности очень мягким - НЕ БЛОКИРУЕМ СЛАБЫЕ СИГНАЛЫ
                 if self.stability_filter and has_position == Bias.SHORT:
                     if self.is_ensemble:
-                        stability_threshold = 0.05  # Для ансамблей почти отключен (5%)
+                        stability_threshold = 0.001  # Для ансамблей почти полностью отключен (0.1%)
                     elif is_volatile_symbol:
                         stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
                     else:
@@ -1049,26 +1052,28 @@ class MLStrategy:
                 return Signal(row.name, Action.LONG, reason, current_price, indicators_info=indicators_info)
             
             elif prediction == -1:  # SHORT
-                # Для ансамблей почти отключаем проверку confidence_threshold
+                # Для ансамблей почти полностью отключаем проверку confidence_threshold
+                # НЕ ИГНОРИРУЕМ СЛАБЫЕ СИГНАЛЫ ОТ АНСАМБЛЕЙ
                 if self.is_ensemble:
-                    # Для ансамблей используем очень низкий порог (2-3% от стандартного) для максимального количества сигналов
-                    threshold_mult = 0.02 if is_volatile_symbol else 0.03
-                    # Для ансамблей также снижаем dynamic_threshold
-                    dynamic_threshold = self.confidence_threshold * 0.05  # 5% от стандартного (очень низкий)
+                    # Для ансамблей используем очень низкий порог (0.1-0.5% от стандартного) для максимального количества сигналов
+                    threshold_mult = 0.001 if is_volatile_symbol else 0.005  # 0.1-0.5% от стандартного
+                    # Для ансамблей также снижаем dynamic_threshold до минимума
+                    dynamic_threshold = self.confidence_threshold * 0.01  # 1% от стандартного (очень низкий, почти отключен)
                 else:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
                 
                 effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
+                # Для ансамблей effective_threshold очень низкий (0.1-0.5%), поэтому слабые сигналы НЕ блокируются
                 if confidence < effective_threshold:
-                    # Модель не уверена - HOLD
+                    # Модель не уверена - HOLD (для ансамблей это почти никогда не срабатывает)
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Для ансамблей и волатильных символов делаем фильтр стабильности очень мягким
+                # Для ансамблей делаем фильтр стабильности очень мягким - НЕ БЛОКИРУЕМ СЛАБЫЕ СИГНАЛЫ
                 if self.stability_filter and has_position == Bias.LONG:
                     if self.is_ensemble:
-                        stability_threshold = 0.05  # Для ансамблей почти отключен (5%)
+                        stability_threshold = 0.001  # Для ансамблей почти полностью отключен (0.1%)
                     elif is_volatile_symbol:
                         stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
                     else:
