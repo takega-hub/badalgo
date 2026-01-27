@@ -158,12 +158,21 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
     if df_signals is None or df_signals.empty:
         return results
 
+    # ВАЖНО: Фильтруем сигналы только для последних свечей (последние 3 свечи)
+    # Это предотвращает генерацию сигналов для старых данных
+    # Используем только последние 3 свечи, чтобы гарантировать свежесть сигналов
+    MAX_SIGNAL_AGE_CANDLES = 3
+    if len(df_signals) > MAX_SIGNAL_AGE_CANDLES:
+        # Берем только последние N свечей для генерации сигналов
+        df_signals_filtered = df_signals.tail(MAX_SIGNAL_AGE_CANDLES)
+    else:
+        df_signals_filtered = df_signals
+    
     # Определяем индекс последней строки для обновления timestamp свежих сигналов
-    last_row_idx = len(df_signals) - 1
-    last_row_position = -1
+    last_row_idx = len(df_signals_filtered) - 1
     
     # df_signals содержит колонку 'signal' с значениями "LONG"/"SHORT"/"EXIT_*"
-    for position, (idx, row) in enumerate(df_signals.iterrows()):
+    for position, (idx, row) in enumerate(df_signals_filtered.iterrows()):
         sig = str(row.get("signal", "")).upper()
         if sig == "LONG":
             action = Action.LONG

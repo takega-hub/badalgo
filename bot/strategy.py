@@ -64,7 +64,28 @@ def build_signals(
     object; we attempt to derive a strategy name from it.
     """
     state = state or {}
-    params = params or {}
+    
+    # Вспомогательная функция для безопасного получения значения из params
+    # Поддерживает как словари, так и объекты dataclass (StrategyParams)
+    def get_param(key: str, default: t.Any, alt_key: t.Optional[str] = None):
+        if params is None:
+            return default
+        if isinstance(params, dict):
+            # Сначала пробуем основной ключ
+            if key in params:
+                return params[key]
+            # Если есть альтернативный ключ, пробуем его
+            if alt_key and alt_key in params:
+                return params[alt_key]
+            return default
+        # Если это объект (dataclass), используем getattr
+        if hasattr(params, key):
+            return getattr(params, key, default)
+        # Если есть альтернативный ключ, пробуем его
+        if alt_key and hasattr(params, alt_key):
+            return getattr(params, alt_key, default)
+        return default
+    
     out: List[Signal] = []
 
     # derive name
@@ -90,36 +111,36 @@ def build_signals(
         if name == 'FLAT':
             res = generate_flat_signal(
                 df,
-                rsi_period=params.get('rsi_period', 14),
-                rsi_base_low=params.get('rsi_base_low', 35),
-                rsi_base_high=params.get('rsi_base_high', 65),
-                bb_period=params.get('bb_period', 20),
-                bb_mult=params.get('bb_mult', 2.0),
-                bb_compression_factor=params.get('bb_compression_factor', 0.8),
-                min_history=params.get('min_history', 50),
+                rsi_period=get_param('rsi_period', 14, alt_key='rsi_length'),
+                rsi_base_low=get_param('rsi_base_low', 35, alt_key='range_rsi_oversold'),
+                rsi_base_high=get_param('rsi_base_high', 65, alt_key='range_rsi_overbought'),
+                bb_period=get_param('bb_period', 20, alt_key='bb_length'),
+                bb_mult=get_param('bb_mult', 2.0, alt_key='bb_std'),
+                bb_compression_factor=get_param('bb_compression_factor', 0.8),
+                min_history=get_param('min_history', 50),
             )
         elif name == 'MOMENTUM':
             res = generate_momentum_signal(
                 df,
-                ema_short=params.get('ema_short', 20),
-                ema_long=params.get('ema_long', 50),
-                vol_lookback=params.get('vol_lookback', 100),
-                vol_top_pct=params.get('vol_top_pct', 0.75),
-                min_history=params.get('min_history', 50),
+                ema_short=get_param('ema_short', 20, alt_key='ema_fast_length'),
+                ema_long=get_param('ema_long', 50, alt_key='ema_slow_length'),
+                vol_lookback=get_param('vol_lookback', 100),
+                vol_top_pct=get_param('vol_top_pct', 0.75),
+                min_history=get_param('min_history', 50),
             )
         else:
             # default to TREND
             res = generate_trend_signal(
                 df,
                 state=state,
-                sma_period=params.get('sma_period', 21),
-                atr_period=params.get('atr_period', 14),
-                atr_multiplier=params.get('atr_multiplier', 2.0),
-                max_pyramid=params.get('max_pyramid', 2),
-                min_history=params.get('min_history', 100),
-                use_mtf_filter=params.get('use_mtf_filter', False),
-                mtf_timeframe=params.get('mtf_timeframe', '1h'),
-                mtf_ema_period=params.get('mtf_ema_period', 50),
+                sma_period=get_param('sma_period', 21, alt_key='sma_length'),
+                atr_period=get_param('atr_period', 14, alt_key='adx_length'),
+                atr_multiplier=get_param('atr_multiplier', 2.0, alt_key='trend_atr_multiplier'),
+                max_pyramid=get_param('max_pyramid', 2, alt_key='trend_max_pyramid'),
+                min_history=get_param('min_history', 100),
+                use_mtf_filter=get_param('use_mtf_filter', False),
+                mtf_timeframe=get_param('mtf_timeframe', '1h'),
+                mtf_ema_period=get_param('mtf_ema_period', 50),
             )
     except Exception as e:
         # Логируем ошибку для диагностики
