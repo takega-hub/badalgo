@@ -71,18 +71,54 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
             # Проверяем последнюю строку для диагностики
             last_row = df_signals.iloc[-1]
             if "z" in df_signals.columns:
-                last_z = float(last_row.get("z", 0))
-                last_adx = float(last_row.get("adx", 0)) if "adx" in df_signals.columns else 0
-                last_rsi = float(last_row.get("rsi", 0)) if "rsi" in df_signals.columns else 0
-                last_sma_flat = bool(last_row.get("sma_flat", False)) if "sma_flat" in df_signals.columns else False
-                last_vol_ok = bool(last_row.get("vol_ok", False)) if "vol_ok" in df_signals.columns else False
-                last_market_allowed = bool(last_row.get("market_allowed", False)) if "market_allowed" in df_signals.columns else False
+                # Безопасное извлечение значений из Series
+                def safe_get_float(row, col, default=0):
+                    if col not in df_signals.columns:
+                        return default
+                    val = row[col]
+                    if pd.isna(val):
+                        return default
+                    # Если это Series, берем первое значение
+                    if isinstance(val, pd.Series):
+                        val = val.iloc[0] if len(val) > 0 else default
+                    return float(val) if pd.notna(val) else default
+                
+                def safe_get_bool(row, col, default=False):
+                    if col not in df_signals.columns:
+                        return default
+                    val = row[col]
+                    if pd.isna(val):
+                        return default
+                    # Если это Series, берем первое значение
+                    if isinstance(val, pd.Series):
+                        val = val.iloc[0] if len(val) > 0 else default
+                    return bool(val) if pd.notna(val) else default
+                
+                def safe_get_str(row, col, default=""):
+                    if col not in df_signals.columns:
+                        return default
+                    val = row[col]
+                    if pd.isna(val):
+                        return default
+                    # Если это Series, берем первое значение
+                    if isinstance(val, pd.Series):
+                        val = val.iloc[0] if len(val) > 0 else default
+                    return str(val) if pd.notna(val) else default
+                
+                last_z = safe_get_float(last_row, "z", 0)
+                last_adx = safe_get_float(last_row, "adx", 0)
+                last_rsi = safe_get_float(last_row, "rsi", 0)
+                last_sma_flat = safe_get_bool(last_row, "sma_flat", False)
+                last_vol_ok = safe_get_bool(last_row, "vol_ok", False)
+                last_market_allowed = safe_get_bool(last_row, "market_allowed", False)
+                last_signal = safe_get_str(last_row, "signal", "")
+                last_reason = safe_get_str(last_row, "reason", "")
                 
                 logger.debug(
                     f"[Z-Score] {symbol} Last row diagnostics: z={last_z:.2f}, adx={last_adx:.2f}, "
                     f"rsi={last_rsi:.2f}, sma_flat={last_sma_flat}, vol_ok={last_vol_ok}, "
-                    f"market_allowed={last_market_allowed}, signal={last_row.get('signal', '')}, "
-                    f"reason={last_row.get('reason', '')}"
+                    f"market_allowed={last_market_allowed}, signal={last_signal}, "
+                    f"reason={last_reason}"
                 )
                 
                 # Подсчитываем количество сигналов
