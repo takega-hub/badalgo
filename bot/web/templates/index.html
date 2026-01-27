@@ -5113,7 +5113,7 @@
                         <h3 style="color: ${isEnsemble ? '#00ff88' : '#00d4ff'}; margin: 0 0 10px 0; font-size: 1.3em;">
                             ${isEnsemble ? '🎯' : '📊'} Model Type: <span style="font-weight: bold;">${modelTypeDisplay}</span>
                         </h3>
-                        ${isEnsemble ? '<p style="color: #aaa; margin: 0; font-size: 0.9em;">Ensemble combines Random Forest and XGBoost for better performance</p>' : ''}
+                        ${isEnsemble ? `<p style="color: #aaa; margin: 0; font-size: 0.9em;">${metadata.model_type && metadata.model_type.includes('quad') ? 'QuadEnsemble combines Random Forest, XGBoost, LightGBM and LSTM for better performance' : metadata.model_type && metadata.model_type.includes('triple') ? 'TripleEnsemble combines Random Forest, XGBoost and LightGBM for better performance' : 'Ensemble combines Random Forest and XGBoost for better performance'}</p>` : ''}
                     </div>
                 `;
                 
@@ -5199,6 +5199,8 @@
                                     <span class="stat-value">${((ensembleMetrics.rf_weight || 0) * 100).toFixed(1)}%</span>
                                     <span style="color: #aaa; margin-left: 15px;">XGBoost: </span>
                                     <span class="stat-value">${((ensembleMetrics.xgb_weight || 0) * 100).toFixed(1)}%</span>
+                                    ${ensembleMetrics.lgb_weight ? `<span style="color: #aaa; margin-left: 15px;">LightGBM: </span><span class="stat-value">${(ensembleMetrics.lgb_weight * 100).toFixed(1)}%</span>` : ''}
+                                    ${ensembleMetrics.lstm_weight ? `<span style="color: #aaa; margin-left: 15px;">LSTM: </span><span class="stat-value">${(ensembleMetrics.lstm_weight * 100).toFixed(1)}%</span>` : ''}
                                 </div>
                                 ${ensembleMetrics.ensemble_method ? `<p style="color: #888; font-size: 0.85em; margin-top: 5px;">Method: ${ensembleMetrics.ensemble_method}</p>` : ''}
                             </div>

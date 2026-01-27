@@ -844,6 +844,88 @@ class ModelTrainer:
                 cls: (count / total * 100) for cls, count in class_distribution.items()
             } if total > 0 else {}
         
+        # Для QuadEnsemble метрики находятся внутри rf_metrics, xgb_metrics и т.д.
+        # Вычисляем агрегированные метрики для ансамбля
+        if model_type == "quad_ensemble" and "rf_metrics" in metrics:
+            # Для QuadEnsemble вычисляем средневзвешенные метрики
+            rf_metrics = metrics.get("rf_metrics", {})
+            xgb_metrics = metrics.get("xgb_metrics", {})
+            lgb_metrics = metrics.get("lgb_metrics", {})
+            lstm_metrics = metrics.get("lstm_metrics", {})
+            
+            # Веса моделей
+            rf_weight = metrics.get("rf_weight", 0.25)
+            xgb_weight = metrics.get("xgb_weight", 0.25)
+            lgb_weight = metrics.get("lgb_weight", 0.25)
+            lstm_weight = metrics.get("lstm_weight", 0.25)
+            
+            # Вычисляем средневзвешенные метрики
+            ensemble_accuracy = (
+                rf_metrics.get("accuracy", 0.0) * rf_weight +
+                xgb_metrics.get("accuracy", 0.0) * xgb_weight +
+                lgb_metrics.get("accuracy", 0.0) * lgb_weight +
+                lstm_metrics.get("accuracy", 0.0) * lstm_weight
+            )
+            
+            ensemble_cv_mean = (
+                rf_metrics.get("cv_mean", 0.0) * rf_weight +
+                xgb_metrics.get("cv_mean", 0.0) * xgb_weight +
+                lgb_metrics.get("cv_mean", 0.0) * lgb_weight +
+                (lstm_metrics.get("accuracy", 0.0) if "cv_mean" not in lstm_metrics else lstm_metrics.get("cv_mean", 0.0)) * lstm_weight
+            )
+            
+            # Для precision, recall, f1_score берем из лучшей модели или среднее
+            ensemble_precision = (
+                rf_metrics.get("precision", 0.0) * rf_weight +
+                xgb_metrics.get("precision", 0.0) * xgb_weight +
+                lgb_metrics.get("precision", 0.0) * lgb_weight +
+                lstm_metrics.get("precision", 0.0) * lstm_weight
+            ) if any("precision" in m for m in [rf_metrics, xgb_metrics, lgb_metrics, lstm_metrics]) else None
+            
+            ensemble_recall = (
+                rf_metrics.get("recall", 0.0) * rf_weight +
+                xgb_metrics.get("recall", 0.0) * xgb_weight +
+                lgb_metrics.get("recall", 0.0) * lgb_weight +
+                lstm_metrics.get("recall", 0.0) * lstm_weight
+            ) if any("recall" in m for m in [rf_metrics, xgb_metrics, lgb_metrics, lstm_metrics]) else None
+            
+            ensemble_f1_score = (
+                rf_metrics.get("f1_score", 0.0) * rf_weight +
+                xgb_metrics.get("f1_score", 0.0) * xgb_weight +
+                lgb_metrics.get("f1_score", 0.0) * lgb_weight +
+                lstm_metrics.get("f1_score", 0.0) * lstm_weight
+            ) if any("f1_score" in m for m in [rf_metrics, xgb_metrics, lgb_metrics, lstm_metrics]) else None
+            
+            ensemble_cv_f1_mean = (
+                rf_metrics.get("cv_f1_mean", 0.0) * rf_weight +
+                xgb_metrics.get("cv_f1_mean", 0.0) * xgb_weight +
+                lgb_metrics.get("cv_f1_mean", 0.0) * lgb_weight +
+                lstm_metrics.get("cv_f1_mean", 0.0) * lstm_weight
+            ) if any("cv_f1_mean" in m for m in [rf_metrics, xgb_metrics, lgb_metrics, lstm_metrics]) else None
+            
+            # Используем вычисленные метрики
+            accuracy = ensemble_accuracy
+            cv_mean = ensemble_cv_mean
+            cv_std = (
+                rf_metrics.get("cv_std", 0.0) * rf_weight +
+                xgb_metrics.get("cv_std", 0.0) * xgb_weight +
+                lgb_metrics.get("cv_std", 0.0) * lgb_weight +
+                lstm_metrics.get("cv_std", 0.0) * lstm_weight
+            )
+            precision = ensemble_precision
+            recall = ensemble_recall
+            f1_score = ensemble_f1_score
+            cv_f1_mean = ensemble_cv_f1_mean
+        else:
+            # Для обычных моделей используем метрики напрямую
+            accuracy = metrics.get("accuracy", 0.0)
+            cv_mean = metrics.get("cv_mean", 0.0)
+            cv_std = metrics.get("cv_std", 0.0)
+            precision = metrics.get("precision", None)
+            recall = metrics.get("recall", None)
+            f1_score = metrics.get("f1_score", None)
+            cv_f1_mean = metrics.get("cv_f1_mean", None)
+        
         model_data = {
             "model": model,
             "scaler": scaler,
@@ -859,15 +941,17 @@ class ModelTrainer:
                 "interval": interval,
                 "model_type": model_type,
                 "trained_at": datetime.now().isoformat(),
-                "accuracy": metrics.get("accuracy", 0.0),
-                "cv_mean": metrics.get("cv_mean", 0.0),
-                "cv_std": metrics.get("cv_std", 0.0),
-                "precision": metrics.get("precision", 0.0),
-                "recall": metrics.get("recall", 0.0),
-                "f1_score": metrics.get("f1_score", 0.0),
-                "cv_f1_mean": metrics.get("cv_f1_mean", 0.0),
+                "accuracy": accuracy,
+                "cv_mean": cv_mean,
+                "cv_std": cv_std,
+                "precision": precision if precision is not None else 0.0,
+                "recall": recall if recall is not None else 0.0,
+                "f1_score": f1_score if f1_score is not None else 0.0,
+                "cv_f1_mean": cv_f1_mean if cv_f1_mean is not None else 0.0,
                 "rf_weight": metrics.get("rf_weight", None),  # Веса ансамбля (только для ансамблей)
                 "xgb_weight": metrics.get("xgb_weight", None),
+                "lgb_weight": metrics.get("lgb_weight", None),  # Для QuadEnsemble
+                "lstm_weight": metrics.get("lstm_weight", None),  # Для QuadEnsemble
                 "ensemble_method": metrics.get("ensemble_method", None),
             }
         }

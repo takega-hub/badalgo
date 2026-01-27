@@ -2066,6 +2066,8 @@ def api_ml_model_info():
             "cv_f1_mean": metadata.get("cv_f1_mean"),
             "rf_weight": metadata.get("rf_weight"),
             "xgb_weight": metadata.get("xgb_weight"),
+            "lgb_weight": metadata.get("lgb_weight"),  # Для TripleEnsemble и QuadEnsemble
+            "lstm_weight": metadata.get("lstm_weight"),  # Для QuadEnsemble
             "ensemble_method": metadata.get("ensemble_method"),
         }
     
