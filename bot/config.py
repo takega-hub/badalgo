@@ -634,7 +634,9 @@ def load_settings() -> AppSettings:
             current_model_matches = False
             if settings.ml_model_path:
                 model_path_obj = pathlib.Path(settings.ml_model_path)
-                if model_path_obj.exists() and f"_{settings.symbol}_" in model_path_obj.name:
+                model_filename = model_path_obj.name
+                # Проверяем соответствие символа для всех форматов: ensemble_SYMBOL_15, triple_ensemble_SYMBOL_15, quad_ensemble_SYMBOL_15
+                if model_path_obj.exists() and f"_{settings.symbol}_" in model_filename:
                     current_model_matches = True
                     _config_log(f"[config] Current ML model matches symbol {settings.symbol}: {settings.ml_model_path}")
             
@@ -651,8 +653,8 @@ def load_settings() -> AppSettings:
                             found_model = str(model_file)
                             break
                 else:
-                    # Автоматический выбор: предпочитаем ensemble > rf > xgb
-                    for model_type in ["ensemble", "rf", "xgb"]:
+                    # Автоматический выбор: предпочитаем quad_ensemble > triple_ensemble > ensemble > rf > xgb
+                    for model_type in ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]:
                         pattern = f"{model_type}_{settings.symbol}_*.pkl"
                         for model_file in sorted(models_dir.glob(pattern), reverse=True):
                             if model_file.is_file():
@@ -687,7 +689,7 @@ def load_settings() -> AppSettings:
         settings.strategy_type = ml_strategy_type
     if ml_model_path:
         settings.ml_model_path = ml_model_path
-    if ml_model_type_for_all and ml_model_type_for_all.lower() in ("rf", "xgb", "ensemble"):
+    if ml_model_type_for_all and ml_model_type_for_all.lower() in ("rf", "xgb", "ensemble", "triple_ensemble", "quad_ensemble"):
         settings.ml_model_type_for_all = ml_model_type_for_all.lower()
         _config_log(f"[config] ML_MODEL_TYPE_FOR_ALL loaded from .env: {settings.ml_model_type_for_all}")
     if ml_confidence:
@@ -727,8 +729,8 @@ def load_settings() -> AppSettings:
                             found_model = str(model_file)
                             break
                 else:
-                    # Автоматический выбор: предпочитаем ensemble > rf > xgb
-                    for model_type in ["ensemble", "rf", "xgb"]:
+                    # Автоматический выбор: предпочитаем quad_ensemble > triple_ensemble > ensemble > rf > xgb
+                    for model_type in ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]:
                         pattern = f"{model_type}_{settings.symbol}_*.pkl"
                         for model_file in sorted(models_dir.glob(pattern), reverse=True):
                             if model_file.is_file():

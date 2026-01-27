@@ -3653,12 +3653,26 @@ def run_live_from_api(
                                     found_model = str(model_file)
                                     break
                         else:
-                            # Автоматический выбор: предпочитаем ensemble > rf > xgb
-                            # Сначала ищем ensemble
-                            for model_file in sorted(models_dir.glob(f"ensemble_{symbol}_*.pkl"), reverse=True):
+                            # Автоматический выбор: предпочитаем quad_ensemble > triple_ensemble > ensemble > rf > xgb
+                            # Сначала ищем quad_ensemble
+                            for model_file in sorted(models_dir.glob(f"quad_ensemble_{symbol}_*.pkl"), reverse=True):
                                 if model_file.is_file():
                                     found_model = str(model_file)
                                     break
+                            
+                            # Если quad_ensemble не найден, пробуем triple_ensemble
+                            if not found_model:
+                                for model_file in sorted(models_dir.glob(f"triple_ensemble_{symbol}_*.pkl"), reverse=True):
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        break
+                            
+                            # Если triple_ensemble не найден, пробуем ensemble
+                            if not found_model:
+                                for model_file in sorted(models_dir.glob(f"ensemble_{symbol}_*.pkl"), reverse=True):
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        break
                             
                             # Если ensemble не найден, пробуем rf_
                             if not found_model:

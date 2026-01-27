@@ -399,27 +399,35 @@ class MultiSymbolManager:
                         if explicit_model_path.exists():
                             # Извлекаем символ и тип модели из имени файла
                             model_filename = explicit_model_path.name
-                            # Формат: ensemble_BTCUSDT_15.pkl или rf_ETHUSDT_15.pkl
+                            # Формат: ensemble_BTCUSDT_15.pkl, triple_ensemble_ETHUSDT_15.pkl, quad_ensemble_SOLUSDT_15.pkl или rf_ETHUSDT_15.pkl
                             if "_" in model_filename:
                                 parts = model_filename.replace('.pkl', '').split('_')
-                                if len(parts) >= 2 and parts[1] == symbol:
-                                    # Модель соответствует текущему символу
-                                    # Теперь проверяем, соответствует ли она типу модели из ml_model_type_for_all
+                                # Проверяем, соответствует ли модель символу
+                                # Может быть: ensemble_SYMBOL_15, triple_ensemble_SYMBOL_15, quad_ensemble_SYMBOL_15, rf_SYMBOL_15
+                                symbol_match = False
+                                model_type_from_filename = ""
+                                
+                                # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_15
+                                if len(parts) >= 3 and (parts[0] == "triple" or parts[0] == "quad"):
+                                    model_type_from_filename = f"{parts[0]}_{parts[1]}".lower()  # triple_ensemble или quad_ensemble
+                                    if parts[2] == symbol:
+                                        symbol_match = True
+                                # Для обычных моделей: формат ensemble_SYMBOL_15, rf_SYMBOL_15
+                                elif len(parts) >= 2:
                                     model_type_from_filename = parts[0].lower()  # ensemble, rf, xgb
-                                    
-                                    # Если ml_model_type_for_all задан, проверяем соответствие
+                                    if parts[1] == symbol:
+                                        symbol_match = True
+                                
+                                if symbol_match:
+                                    # ВАЖНО: Явно выбранная модель имеет приоритет над ml_model_type_for_all
+                                    # Используем её независимо от ml_model_type_for_all
+                                    found_model = str(explicit_model_path)
                                     if model_type_preference:
                                         if model_type_from_filename == model_type_preference.lower():
-                                            # Модель соответствует и символу, и типу - используем её
-                                            found_model = str(explicit_model_path)
                                             print(f"[MultiSymbol] ✅ Using explicitly selected model for {symbol}: {found_model} (matches type: {model_type_preference})")
                                         else:
-                                            # Модель соответствует символу, но не типу - игнорируем её
-                                            # Убрано verbose сообщение о несовпадении модели - это нормальное поведение
-                                            pass
+                                            print(f"[MultiSymbol] ✅ Using explicitly selected model for {symbol}: {found_model} (overrides type preference: {model_type_preference})")
                                     else:
-                                        # ml_model_type_for_all не задан - используем явно выбранную модель
-                                        found_model = str(explicit_model_path)
                                         print(f"[MultiSymbol] ✅ Using explicitly selected model for {symbol}: {found_model}")
                     
                     # ЕСЛИ явно выбранная модель не найдена или не соответствует символу/типу, ищем автоматически
@@ -434,15 +442,35 @@ class MultiSymbolManager:
                                     print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} model: {found_model}")
                                     break
                         else:
-                            # Автоматический выбор: предпочитаем ensemble > rf > xgb
-                            # Сначала ищем ensemble
-                            ensemble_pattern = f"ensemble_{symbol}_*.pkl"
-                            print(f"[MultiSymbol] 🔍 Auto-selection: Looking for Ensemble models matching: {ensemble_pattern}")
-                            for model_file in sorted(models_dir.glob(ensemble_pattern), reverse=True):  # Новые модели первыми
+                            # Автоматический выбор: предпочитаем quad_ensemble > triple_ensemble > ensemble > rf > xgb
+                            # Сначала ищем quad_ensemble
+                            quad_pattern = f"quad_ensemble_{symbol}_*.pkl"
+                            print(f"[MultiSymbol] 🔍 Auto-selection: Looking for QuadEnsemble models matching: {quad_pattern}")
+                            for model_file in sorted(models_dir.glob(quad_pattern), reverse=True):  # Новые модели первыми
                                 if model_file.is_file():
                                     found_model = str(model_file)
-                                    print(f"[MultiSymbol] ✅ Found Ensemble model: {found_model}")
+                                    print(f"[MultiSymbol] ✅ Found QuadEnsemble model: {found_model}")
                                     break
+                            
+                            # Если quad_ensemble не найден, пробуем triple_ensemble
+                            if not found_model:
+                                triple_pattern = f"triple_ensemble_{symbol}_*.pkl"
+                                print(f"[MultiSymbol] 🔍 QuadEnsemble not found, looking for TripleEnsemble models matching: {triple_pattern}")
+                                for model_file in sorted(models_dir.glob(triple_pattern), reverse=True):  # Новые модели первыми
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        print(f"[MultiSymbol] ✅ Found TripleEnsemble model: {found_model}")
+                                        break
+                            
+                            # Если triple_ensemble не найден, пробуем ensemble
+                            if not found_model:
+                                ensemble_pattern = f"ensemble_{symbol}_*.pkl"
+                                print(f"[MultiSymbol] 🔍 TripleEnsemble not found, looking for Ensemble models matching: {ensemble_pattern}")
+                                for model_file in sorted(models_dir.glob(ensemble_pattern), reverse=True):  # Новые модели первыми
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        print(f"[MultiSymbol] ✅ Found Ensemble model: {found_model}")
+                                        break
                             
                             # Если ensemble не найден, пробуем rf_
                             if not found_model:
@@ -469,7 +497,7 @@ class MultiSymbolManager:
                         if model_type_preference:
                             print(f"[MultiSymbol]    Searched for: {model_type_preference}_{symbol}_*.pkl")
                         else:
-                            print(f"[MultiSymbol]    Searched for: ensemble_{symbol}_*.pkl, rf_{symbol}_*.pkl, xgb_{symbol}_*.pkl")
+                            print(f"[MultiSymbol]    Searched for: quad_ensemble_{symbol}_*.pkl, triple_ensemble_{symbol}_*.pkl, ensemble_{symbol}_*.pkl, rf_{symbol}_*.pkl, xgb_{symbol}_*.pkl")
                     
                     self._model_cache[symbol] = found_model
                     self._model_cache_keys[symbol] = cache_key
