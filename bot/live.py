@@ -472,45 +472,68 @@ def _calculate_tp_sl_for_signal(
         Tuple (take_profit_price, stop_loss_price) или (None, None) если не удалось рассчитать
     """
     try:
-        # Если в сигнале уже есть рекомендованные уровни (SMC или ML), используем их
+        # Если в сигнале уже есть рекомендованные уровни (ICT, SMC или ML), используем их
         if hasattr(sig, 'stop_loss') and sig.stop_loss and hasattr(sig, 'take_profit') and sig.take_profit:
-            # Используем предрассчитанные уровни, но проверяем, что SL соответствует настройкам (7-10% от маржи)
             pre_tp = sig.take_profit
             pre_sl = sig.stop_loss
             
-            # Получаем настройки SL от маржи
-            sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
-            leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+            # Определяем тип стратегии для специальной обработки
+            is_ict_strategy = sig.reason.startswith("ict_")
             
-            # Преобразуем проценты от маржи в проценты от цены
-            min_sl_pct_from_price = 0.07 / leverage  # Минимум 7% от маржи = 0.7% от цены при 10x
-            max_sl_pct_from_price = 0.10 / leverage  # Максимум 10% от маржи = 1% от цены при 10x
-            target_sl_pct_from_price = sl_pct_margin / leverage  # Целевой SL от маржи
-            
-            # Проверяем, соответствует ли предрассчитанный SL настройкам
-            if sig.action == Action.LONG:
-                sl_deviation_pct = abs(entry_price - pre_sl) / entry_price
-            else:  # SHORT
-                sl_deviation_pct = abs(pre_sl - entry_price) / entry_price
-            
-            # Если SL слишком маленький (меньше 7% от маржи), пересчитываем на основе настроек
-            if sl_deviation_pct < min_sl_pct_from_price:
-                _log(f"⚠️ Pre-calculated SL too small ({sl_deviation_pct*100:.2f}% from price < {min_sl_pct_from_price*100:.2f}%), recalculating from settings ({target_sl_pct_from_price*100:.2f}% from price = {sl_pct_margin*100:.0f}% from margin)", settings.symbol)
+            if is_ict_strategy:
+                # ICT использует структурные стопы (за ликвидностью) - не применяем проверку на 7-10% от маржи
+                # Только проверяем, что SL не превышает максимальный риск (1.5% от цены)
+                leverage = settings.leverage if hasattr(settings, 'leverage') else 10
                 if sig.action == Action.LONG:
-                    pre_sl = entry_price * (1 - target_sl_pct_from_price)
+                    sl_deviation_pct = abs(entry_price - pre_sl) / entry_price
                 else:  # SHORT
-                    pre_sl = entry_price * (1 + target_sl_pct_from_price)
-            elif sl_deviation_pct > max_sl_pct_from_price:
-                _log(f"⚠️ Pre-calculated SL too large ({sl_deviation_pct*100:.2f}% from price > {max_sl_pct_from_price*100:.2f}%), recalculating from settings ({target_sl_pct_from_price*100:.2f}% from price = {sl_pct_margin*100:.0f}% from margin)", settings.symbol)
-                if sig.action == Action.LONG:
-                    pre_sl = entry_price * (1 - target_sl_pct_from_price)
-                else:  # SHORT
-                    pre_sl = entry_price * (1 + target_sl_pct_from_price)
+                    sl_deviation_pct = abs(pre_sl - entry_price) / entry_price
+                
+                max_risk_pct = getattr(settings.strategy, 'ict_risk_limit_pct', 0.015)  # 1.5% по умолчанию
+                if sl_deviation_pct > max_risk_pct:
+                    _log(f"⚠️ ICT SL exceeds max risk ({sl_deviation_pct*100:.2f}% > {max_risk_pct*100:.2f}%), adjusting to {max_risk_pct*100:.2f}%", settings.symbol)
+                    if sig.action == Action.LONG:
+                        pre_sl = entry_price * (1 - max_risk_pct)
+                    else:  # SHORT
+                        pre_sl = entry_price * (1 + max_risk_pct)
+                    # Пересчитываем TP с новым риском
+                    risk = abs(entry_price - pre_sl)
+                    rr_ratio = getattr(settings.strategy, 'ict_rr_ratio', 2.0)
+                    pre_tp = entry_price + (risk * rr_ratio) if sig.action == Action.LONG else entry_price - (risk * rr_ratio)
+                
+                _log(f"✅ ICT: Using structural SL/TP: TP={pre_tp:.2f}, SL={pre_sl:.2f} (Risk: {sl_deviation_pct*100:.2f}% = {sl_deviation_pct*leverage*100:.1f}% from margin)", settings.symbol)
+                return pre_tp, pre_sl
             else:
-                _log(f"✅ Pre-calculated SL is within range ({sl_deviation_pct*100:.2f}% from price = {sl_deviation_pct*leverage*100:.0f}% from margin)", settings.symbol)
-            
-            _log(f"Using levels: TP={pre_tp:.2f}, SL={pre_sl:.2f} (SL: {abs(entry_price-pre_sl)/entry_price*100:.2f}% from price = {abs(entry_price-pre_sl)/entry_price*leverage*100:.0f}% from margin)", settings.symbol)
-            return pre_tp, pre_sl
+                # Для других стратегий (ML, SMC) проверяем соответствие настройкам (7-10% от маржи)
+                sl_pct_margin = settings.risk.stop_loss_pct if hasattr(settings, 'risk') and hasattr(settings.risk, 'stop_loss_pct') else 0.15
+                leverage = settings.leverage if hasattr(settings, 'leverage') else 10
+                
+                min_sl_pct_from_price = 0.07 / leverage
+                max_sl_pct_from_price = 0.10 / leverage
+                target_sl_pct_from_price = sl_pct_margin / leverage
+                
+                if sig.action == Action.LONG:
+                    sl_deviation_pct = abs(entry_price - pre_sl) / entry_price
+                else:  # SHORT
+                    sl_deviation_pct = abs(pre_sl - entry_price) / entry_price
+                
+                if sl_deviation_pct < min_sl_pct_from_price:
+                    _log(f"⚠️ Pre-calculated SL too small ({sl_deviation_pct*100:.2f}% from price < {min_sl_pct_from_price*100:.2f}%), recalculating from settings", settings.symbol)
+                    if sig.action == Action.LONG:
+                        pre_sl = entry_price * (1 - target_sl_pct_from_price)
+                    else:  # SHORT
+                        pre_sl = entry_price * (1 + target_sl_pct_from_price)
+                elif sl_deviation_pct > max_sl_pct_from_price:
+                    _log(f"⚠️ Pre-calculated SL too large ({sl_deviation_pct*100:.2f}% from price > {max_sl_pct_from_price*100:.2f}%), recalculating from settings", settings.symbol)
+                    if sig.action == Action.LONG:
+                        pre_sl = entry_price * (1 - target_sl_pct_from_price)
+                    else:  # SHORT
+                        pre_sl = entry_price * (1 + target_sl_pct_from_price)
+                else:
+                    _log(f"✅ Pre-calculated SL is within range ({sl_deviation_pct*100:.2f}% from price = {sl_deviation_pct*leverage*100:.0f}% from margin)", settings.symbol)
+                
+                _log(f"Using levels: TP={pre_tp:.2f}, SL={pre_sl:.2f} (SL: {abs(entry_price-pre_sl)/entry_price*100:.2f}% from price = {abs(entry_price-pre_sl)/entry_price*leverage*100:.0f}% from margin)", settings.symbol)
+                return pre_tp, pre_sl
 
         strategy_type = None
         if sig.reason.startswith("ml_"):
@@ -701,7 +724,7 @@ def _calculate_tp_sl_for_signal(
             # SL: 1.1% от цены (11% от маржи при 10x) - дает больше пространства для пробоя
             # RR: ~2.9:1 - сбалансированное соотношение для пробоев
             
-            tp_pct_from_price = 0.032  # 3.2% от цены = 32% от маржи при 10x
+            tp_pct_from_price = 0.022  # 2.2% от цены = 22% от маржи при 10x
             sl_pct_from_price = 0.011   # 1.1% от цены = 11% от маржи при 10x (немного больше для пробоев)
             
             # Проверяем максимальные границы из настроек

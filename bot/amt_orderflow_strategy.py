@@ -116,8 +116,21 @@ class AbsorptionConfig:
 
 @dataclass
 class VolumeProfileConfig:
+    """
+    Конфиг для Volume Profile.
+
+    Исторически содержал только price_step и value_area_pct.
+    В live.py Z-Score стратегия начала передавать дополнительные поля
+    session_start_utc / session_end_utc, чтобы ограничивать сессию.
+
+    Чтобы сохранить обратную совместимость и не ломать AMT-логику,
+    мы добавляем эти поля как опциональные и игнорируем их
+    в build_volume_profile_from_ohlcv (там используется только price_step).
+    """
     price_step: float = 10.0
     value_area_pct: float = 0.70
+    session_start_utc: Optional[datetime] = None
+    session_end_utc: Optional[datetime] = None
 
 @dataclass
 class LhOrderflowConfig:

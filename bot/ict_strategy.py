@@ -492,6 +492,122 @@ class ICTStrategy:
                 json.dump(data_to_save, f, default=_default, indent=2)
         except: pass
 
+    def update_position_status(
+        self,
+        position: Dict[str, Any],
+        current_price: float,
+        jaw: Optional[pd.Series] = None,
+        teeth: Optional[pd.Series] = None,
+        lips: Optional[pd.Series] = None,
+        index: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Обновляет статус позиции ICT: безубыток и трейлинг.
+        
+        Returns:
+            Dict с ключами:
+            - 'set_sl': новый уровень стоп-лосса (если требуется)
+            - 'partial_close_qty': количество для частичного закрытия (если требуется)
+            - 'reason': причина действия
+        """
+        if not position:
+            return None
+        
+        try:
+            entry_price = float(position.get('avg_price', 0) or position.get('entry_price', 0))
+            current_sl = float(position.get('stop_loss', 0) or 0)
+            side = position.get('side', '').upper()
+            
+            if not entry_price or not side:
+                return None
+            
+            is_long = side == 'BUY' or side == 'LONG'
+            
+            # Вычисляем текущий риск (расстояние от входа до текущего SL)
+            if current_sl > 0:
+                if is_long:
+                    initial_risk = abs(entry_price - current_sl)
+                else:
+                    initial_risk = abs(current_sl - entry_price)
+            else:
+                # Если SL не установлен, используем дефолтный риск 1%
+                initial_risk = entry_price * 0.01
+            
+            if initial_risk <= 0:
+                return None
+            
+            # Вычисляем текущую прибыль в R
+            if is_long:
+                current_profit = current_price - entry_price
+            else:
+                current_profit = entry_price - current_price
+            
+            current_profit_r = current_profit / initial_risk if initial_risk > 0 else 0
+            
+            # Параметры из настроек
+            breakeven_rr = getattr(self.params, 'ict_breakeven_rr', 1.0)
+            breakeven_buffer = getattr(self.params, 'ict_breakeven_buffer_pct', 0.0015)
+            partial_rr = getattr(self.params, 'ict_partial_rr', 2.0)
+            partial_pct = getattr(self.params, 'ict_partial_pct', 0.5)
+            
+            actions = {}
+            
+            # 1. Безубыток: при достижении 1.0R переводим SL в +0.15%
+            if current_profit_r >= breakeven_rr:
+                if is_long:
+                    new_sl = entry_price * (1 + breakeven_buffer)
+                    # Проверяем, что новый SL выше текущего
+                    if current_sl == 0 or new_sl > current_sl:
+                        actions['set_sl'] = new_sl
+                        actions['reason'] = f'Breakeven activated at {current_profit_r:.2f}R'
+                else:  # SHORT
+                    new_sl = entry_price * (1 - breakeven_buffer)
+                    # Проверяем, что новый SL ниже текущего
+                    if current_sl == 0 or new_sl < current_sl:
+                        actions['set_sl'] = new_sl
+                        actions['reason'] = f'Breakeven activated at {current_profit_r:.2f}R'
+            
+            # 2. Частичное закрытие: при достижении 2.0R закрываем 50% позиции
+            # (опционально, можно включить позже)
+            # if current_profit_r >= partial_rr:
+            #     qty = float(position.get('size', 0) or 0)
+            #     if qty > 0:
+            #         actions['partial_close_qty'] = qty * partial_pct
+            #         actions['reason'] = f'Partial close at {current_profit_r:.2f}R'
+            
+            # 3. Трейлинг по Аллигатору (если включен)
+            if getattr(self.params, 'ict_enable_alligator_trailing', True) and jaw is not None and teeth is not None and lips is not None and index is not None:
+                try:
+                    jaw_val = float(jaw.iloc[index]) if index < len(jaw) else None
+                    teeth_val = float(teeth.iloc[index]) if index < len(teeth) else None
+                    lips_val = float(lips.iloc[index]) if index < len(lips) else None
+                    
+                    if all(v is not None for v in [jaw_val, teeth_val, lips_val]):
+                        trailing_buffer = getattr(self.params, 'ict_trailing_buffer_pct', 0.0005)
+                        
+                        if is_long:
+                            # Для LONG: трейлим по нижней линии Аллигатора (челюсть)
+                            trailing_sl = jaw_val * (1 - trailing_buffer)
+                            if trailing_sl > entry_price * (1 + breakeven_buffer):  # Не ниже безубытка
+                                if current_sl == 0 or trailing_sl > current_sl:
+                                    actions['set_sl'] = trailing_sl
+                                    actions['reason'] = f'Alligator trailing (Jaw: {jaw_val:.2f})'
+                        else:  # SHORT
+                            # Для SHORT: трейлим по верхней линии Аллигатора (челюсть)
+                            trailing_sl = jaw_val * (1 + trailing_buffer)
+                            if trailing_sl < entry_price * (1 - breakeven_buffer):  # Не выше безубытка
+                                if current_sl == 0 or trailing_sl < current_sl:
+                                    actions['set_sl'] = trailing_sl
+                                    actions['reason'] = f'Alligator trailing (Jaw: {jaw_val:.2f})'
+                except Exception as e:
+                    logger.debug(f"ICT trailing error: {e}")
+            
+            return actions if actions else None
+            
+        except Exception as e:
+            logger.error(f"ICT update_position_status error: {e}")
+            return None
+
     def find_liquidity_sweeps_alternative(self, df: pd.DataFrame, lookback_bars: int = 50) -> List[ICTLiquidity]:
         if len(df) < lookback_bars + 1: return []
         liquidity_zones = []
