@@ -52,6 +52,7 @@ from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
 from bot.vbo_strategy import build_vbo_signals
 from bot.breakout_trend_hybrid import build_breakout_trend_signals
+from bot.zscore_strategy import build_zscore_signals
 from bot.amt_orderflow_strategy import (
     detect_absorption_squeeze_short,
     AbsorptionConfig,
@@ -4361,12 +4362,10 @@ def run_live_from_api(
             # Z-Score стратегия удалена - используется только как индикатор для других стратегий
             # VBO (Volatility Breakout) стратегия
             if symbol_strategy_settings.enable_vbo_strategy:
-
                         zscore_signals = build_zscore_signals(df_ready, current_settings.strategy, symbol=symbol)
-                        # Обновляем статус после генерации
-
+                        zscore_poc = None  # POC не используется в текущей реализации
                         
-                        for sig in zscore_generated:
+                        for sig in zscore_signals:
                             # Если удалось посчитать POC, добавляем его в reason, чтобы TP/SL могли использовать TP=POC
                             if zscore_poc is not None and "_poc_" not in sig.reason:
                                 sig.reason = f"{sig.reason}_poc_{zscore_poc:.2f}"

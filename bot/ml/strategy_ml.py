@@ -305,6 +305,113 @@ class MLStrategy:
         
         return X_scaled
     
+    def prepare_features_with_df(self, df: pd.DataFrame, skip_feature_creation: bool = False) -> tuple[np.ndarray, pd.DataFrame]:
+        """
+        Подготавливает фичи из DataFrame и возвращает как массив, так и DataFrame с фичами.
+        
+        Args:
+            df: DataFrame с OHLCV данными и индикаторами (может уже содержать фичи)
+            skip_feature_creation: Если True, пропускает создание фичей (предполагается, что они уже созданы)
+        
+        Returns:
+            (X_scaled, df_with_features) где:
+            - X_scaled: Нормализованный массив фичей для модели
+            - df_with_features: DataFrame со всеми фичами (для передачи в QuadEnsemble)
+        """
+        # Если фичи уже созданы (skip_feature_creation=True), используем их напрямую
+        if skip_feature_creation:
+            df_with_features = df.copy()
+        else:
+            # Создаем фичи заново (для обратной совместимости)
+            # Проверяем, есть ли timestamp как колонка (нужно для feature_engineer)
+            df_work = df.copy()
+            if "timestamp" in df_work.columns and not isinstance(df_work.index, pd.DatetimeIndex):
+                df_work = df_work.set_index("timestamp")
+            elif "timestamp" not in df_work.columns and not isinstance(df_work.index, pd.DatetimeIndex):
+                # Если нет timestamp, создаем его из индекса
+                if isinstance(df_work.index, pd.DatetimeIndex):
+                    pass  # Уже DatetimeIndex
+                else:
+                    # Пытаемся создать временной индекс
+                    df_work.index = pd.to_datetime(df_work.index, errors='coerce')
+            
+            # Создаем все необходимые фичи через FeatureEngineer
+            if not skip_feature_creation:
+                print(f"[ml_strategy] Preparing features: input DataFrame has {len(df_work)} rows")
+            try:
+                df_with_features = self.feature_engineer.create_technical_indicators(df_work)
+                if not skip_feature_creation:
+                    print(f"[ml_strategy] After create_technical_indicators: {len(df_with_features)} rows, {len(df_with_features.columns)} columns")
+            except TypeError as e:
+                if "'>' not supported" in str(e) or "NoneType" in str(e):
+                    print(f"[ml_strategy] ❌ ERROR: Comparison with None detected in create_technical_indicators")
+                    print(f"[ml_strategy]   Error: {e}")
+                    raise
+                raise
+        
+        # Проверяем, что есть хотя бы основные данные (OHLCV)
+        key_columns = ["open", "high", "low", "close", "volume"]
+        if all(col in df_with_features.columns for col in key_columns):
+            rows_before = len(df_with_features)
+            df_with_features = df_with_features[df_with_features[key_columns].notna().any(axis=1)]
+            rows_after = len(df_with_features)
+        else:
+            missing_key_cols = [col for col in key_columns if col not in df_with_features.columns]
+            raise ValueError(f"Missing key columns: {missing_key_cols}")
+        
+        if len(df_with_features) == 0:
+            raise ValueError("No data available after filtering key columns")
+        
+        # Заполняем NaN в фичах
+        feature_columns = [col for col in df_with_features.columns if col not in key_columns]
+        if feature_columns:
+            df_with_features[feature_columns] = df_with_features[feature_columns].ffill().bfill().fillna(0.0)
+        
+        # Проверяем наличие всех необходимых фичей
+        missing_features = [f for f in self.feature_names if f not in df_with_features.columns]
+        if missing_features:
+            # Заполняем отсутствующие фичи нулями
+            zeros_df = pd.DataFrame(
+                0.0,
+                index=df_with_features.index,
+                columns=missing_features,
+            )
+            df_with_features = pd.concat([df_with_features, zeros_df], axis=1)
+        
+        # Выбираем только нужные фичи в правильном порядке
+        X = df_with_features[self.feature_names].values
+        
+        if len(X) == 0:
+            raise ValueError("No data available after feature selection")
+        
+        # Нормализуем
+        try:
+            X_scaled = self.scaler.transform(X)
+        except ValueError as e:
+            if "features" in str(e).lower() or "n_features" in str(e).lower():
+                scaler_expected = getattr(self.scaler, 'n_features_in_', None)
+                if scaler_expected is None:
+                    try:
+                        scaler_expected = self.scaler.mean_.shape[0] if hasattr(self.scaler, 'mean_') else None
+                    except:
+                        pass
+                
+                if scaler_expected and X.shape[1] != scaler_expected:
+                    if X.shape[1] < scaler_expected:
+                        missing_count = scaler_expected - X.shape[1]
+                        zeros = np.zeros((X.shape[0], missing_count))
+                        X = np.hstack([X, zeros])
+                    elif X.shape[1] > scaler_expected:
+                        X = X[:, :scaler_expected]
+                    
+                    X_scaled = self.scaler.transform(X)
+                else:
+                    raise
+            else:
+                raise
+        
+        return X_scaled, df_with_features
+    
     def predict(self, df: pd.DataFrame, skip_feature_creation: bool = False) -> tuple[int, float]:
         """
         Делает предсказание на основе последнего бара.
@@ -324,7 +431,8 @@ class MLStrategy:
         
         try:
             # Подготавливаем фичи (создаст все необходимые индикаторы или использует уже созданные)
-            X = self.prepare_features(df, skip_feature_creation=skip_feature_creation)
+            # Нужно получить и X (массив фичей) и df_with_features (DataFrame с фичами) для QuadEnsemble
+            X, df_with_features = self.prepare_features_with_df(df, skip_feature_creation=skip_feature_creation)
             
             # Берем последний образец
             X_last = X[-1:].reshape(1, -1)
@@ -338,7 +446,8 @@ class MLStrategy:
             # Проверяем, является ли это QuadEnsemble (требует историю для LSTM)
             if hasattr(self.model, 'lstm_trainer') and hasattr(self.model, 'sequence_length'):
                 # QuadEnsemble: передаем историю данных для LSTM
-                proba = self.model.predict_proba(X_last, df_history=df)[0]
+                # Используем df_with_features, который уже содержит все фичи
+                proba = self.model.predict_proba(X_last, df_history=df_with_features)[0]
             else:
                 # Обычные модели и ансамбли (TripleEnsemble, etc.)
                 proba = self.model.predict_proba(X_last)[0]
@@ -379,28 +488,30 @@ class MLStrategy:
                 if long_prob >= ensemble_absolute_min and long_prob > short_prob:
                     # LONG выше SHORT и выше минимума - принимаем LONG
                     prediction = 1  # LONG
-                    confidence = long_prob
-                    # Увеличиваем уверенность на основе относительной разницы с SHORT
-                    relative_confidence = (long_prob - short_prob) / short_prob if short_prob > 0 else 0.0
+                    # Используем реальную вероятность LONG, но увеличиваем на основе относительной разницы
+                    # НО не превышаем саму вероятность long_prob
+                    relative_confidence = (long_prob - short_prob) / (short_prob + 1e-10) if short_prob > 0 else long_prob
                     # Проверяем на NaN
                     if np.isnan(relative_confidence) or not np.isfinite(relative_confidence):
                         relative_confidence = 0.0
-                    # Нормализуем уверенность: увеличиваем на основе разницы с SHORT
-                    confidence = min(long_prob * (1 + relative_confidence * 2.0), 1.0)
+                    # Увеличиваем уверенность, но не более чем до long_prob (реальная вероятность)
+                    # Используем более консервативный множитель
+                    confidence = min(long_prob * (1 + relative_confidence * 0.5), long_prob)
                     # Проверяем результат на NaN
                     if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = long_prob
                 elif short_prob >= ensemble_absolute_min and short_prob > long_prob:
                     # SHORT выше LONG и выше минимума - принимаем SHORT
                     prediction = -1  # SHORT
-                    confidence = short_prob
-                    # Увеличиваем уверенность на основе относительной разницы с LONG
-                    relative_confidence = (short_prob - long_prob) / long_prob if long_prob > 0 else 0.0
+                    # Используем реальную вероятность SHORT, но увеличиваем на основе относительной разницы
+                    # НО не превышаем саму вероятность short_prob
+                    relative_confidence = (short_prob - long_prob) / (long_prob + 1e-10) if long_prob > 0 else short_prob
                     # Проверяем на NaN
                     if np.isnan(relative_confidence) or not np.isfinite(relative_confidence):
                         relative_confidence = 0.0
-                    # Нормализуем уверенность: увеличиваем на основе разницы с LONG
-                    confidence = min(short_prob * (1 + relative_confidence * 2.0), 1.0)
+                    # Увеличиваем уверенность, но не более чем до short_prob (реальная вероятность)
+                    # Используем более консервативный множитель
+                    confidence = min(short_prob * (1 + relative_confidence * 0.5), short_prob)
                     # Проверяем результат на NaN
                     if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = short_prob
@@ -410,6 +521,8 @@ class MLStrategy:
                     confidence = hold_prob
                 
                 # Fallback: если логика не сработала, используем стандартную
+                # НО только если prediction действительно 0 (HOLD)
+                # Если prediction уже установлен (LONG или SHORT), не переопределяем его
                 if prediction == 0:
                     prediction_idx = np.argmax(proba)
                     prediction = prediction_idx - 1  # 0->-1, 1->0, 2->1
@@ -417,6 +530,13 @@ class MLStrategy:
                     # Проверяем на NaN
                     if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = hold_prob if np.isfinite(hold_prob) else 0.0
+                    # Убеждаемся, что confidence не превышает реальную вероятность
+                    if prediction == 1:  # LONG
+                        confidence = min(confidence, long_prob)
+                    elif prediction == -1:  # SHORT
+                        confidence = min(confidence, short_prob)
+                    else:  # HOLD
+                        confidence = min(confidence, hold_prob)
                 
                 # Обновляем историю уверенности
                 if len(self.confidence_history) >= self.max_history_size:

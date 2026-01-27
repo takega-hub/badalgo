@@ -1366,7 +1366,7 @@ def api_update_settings():
                             return jsonify({"error": f"Invalid strategy_priority: {value}. Allowed: {', '.join(allowed_priorities)}"}), 400
                     elif key == "ml_model_type_for_all":
                         # Проверяем допустимые значения типа модели для всех пар
-                        allowed_types = ["rf", "xgb", "ensemble", ""]
+                        allowed_types = ["rf", "xgb", "ensemble", "triple_ensemble", "quad_ensemble", ""]
                         # Безопасная обработка: проверяем None и пустые значения
                         if value is None or value == "":
                             # Если пустое значение, устанавливаем None (авто-выбор)
@@ -2054,7 +2054,7 @@ def api_ml_model_info():
     
     # Определяем, является ли модель ансамблем
     model_type = metadata.get("model_type", "").lower() if metadata else ""
-    is_ensemble = "ensemble" in model_type
+    is_ensemble = "ensemble" in model_type or "triple" in model_type or "quad" in model_type
     
     # Получаем дополнительные метрики для ансамбля
     ensemble_metrics = {}
@@ -2121,7 +2121,9 @@ def api_ml_test():
             model_filename = Path(model_path).name
             
             # Определяем, является ли модель ансамблем
-            is_ensemble = "ensemble" in model_type.lower() or "ensemble" in model_filename.lower()
+            is_ensemble = ("ensemble" in model_type.lower() or "ensemble" in model_filename.lower() or
+                          "triple" in model_type.lower() or "triple" in model_filename.lower() or
+                          "quad" in model_type.lower() or "quad" in model_filename.lower())
             
             # Вычисляем реальные пороги на основе типа модели
             is_volatile = symbol in ("ETHUSDT", "SOLUSDT")
@@ -2497,6 +2499,12 @@ def api_ml_models_list():
                     "ensemble": "🎯 Ensemble (RF + XGBoost)",
                     "ensemble_weighted": "🎯 Ensemble (Weighted)",
                     "ensemble_voting": "🎯 Ensemble (Voting)",
+                    "triple_ensemble": "🚀 TripleEnsemble (RF + XGBoost + LightGBM)",
+                    "triple_ensemble_ultra_aggressive": "🚀 TripleEnsemble (RF + XGBoost + LightGBM)",
+                    "quad_ensemble": "🌟 QuadEnsemble (RF + XGBoost + LightGBM + LSTM)",
+                    "lgb": "LightGBM",
+                    "lightgbm": "LightGBM",
+                    "lstm": "LSTM",
                     "unknown": "Unknown"
                 }.get(model_type.lower(), model_type.upper())
                 
@@ -2523,7 +2531,9 @@ def api_ml_models_list():
                     "recall": recall,
                     "f1_score": f1_score,
                     "cv_f1_mean": cv_f1_mean,
-                    "is_ensemble": "ensemble" in model_type.lower(),
+                    "is_ensemble": ("ensemble" in model_type.lower() or 
+                                  "triple" in model_type.lower() or 
+                                  "quad" in model_type.lower()),
                 })
             except Exception as e:
                 print(f"[web] Error loading model metadata for {model_file}: {e}")

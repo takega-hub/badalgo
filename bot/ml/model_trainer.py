@@ -252,8 +252,10 @@ class QuadEnsemble:
                     # Проверяем, что все нужные фичи доступны
                     missing_features = [f for f in feature_names if f not in df_history.columns]
                     if missing_features:
-                        # Пытаемся создать недостающие фичи динамически
-                        print(f"[QuadEnsemble] Warning: Missing features in history: {missing_features[:5]}... Attempting to create them.")
+                        # Пытаемся создать недостающие фичи динамически (только один раз, не логируем каждый раз)
+                        if not hasattr(self, '_feature_creation_warned'):
+                            print(f"[QuadEnsemble] Warning: Missing features in history: {missing_features[:5]}... Attempting to create them.")
+                            self._feature_creation_warned = True
                         
                         # Создаем недостающие фичи, если это возможно
                         df_history_work = df_history.copy()
@@ -292,14 +294,14 @@ class QuadEnsemble:
                                     missing_features_final = [f for f in feature_names if f not in df_history_work.columns]
                                     if missing_features_final:
                                         raise ValueError(f"Still missing features after creation attempt: {missing_features_final[:5]}...")
-                                else:
-                                    print(f"[QuadEnsemble] Successfully created all missing features using FeatureEngineer")
                                 
                                 df_history = df_history_work
                             else:
                                 raise ValueError(f"Missing required OHLCV columns for feature creation: {[c for c in required_cols if c not in df_history_work.columns]}")
                         except Exception as e:
-                            print(f"[QuadEnsemble] Failed to create missing features: {e}")
+                            if not hasattr(self, '_feature_creation_error_logged'):
+                                print(f"[QuadEnsemble] Failed to create missing features: {e}")
+                                self._feature_creation_error_logged = True
                             raise ValueError(f"Missing features in history: {missing_features[:5]}... and could not create them automatically.")
                     
                     # Используем только нужные фичи в правильном порядке
@@ -309,6 +311,10 @@ class QuadEnsemble:
                     if df_features.isna().any().any():
                         # Умное заполнение NaN: forward fill для временных рядов, затем backward fill, затем 0
                         # Это лучше чем просто 0, так как сохраняет структуру данных
+                        # Логируем только один раз
+                        if not hasattr(self, '_nan_warning_logged'):
+                            print(f"[QuadEnsemble] Warning: Features contain NaN before scaling, filling intelligently")
+                            self._nan_warning_logged = True
                         df_features = df_features.ffill().bfill().fillna(0.0)
                 else:
                     # Если feature_names не установлены, пытаемся определить из scaler
