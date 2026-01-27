@@ -428,19 +428,29 @@ def build_volume_profile_from_ohlcv(df: pd.DataFrame, config: Optional[VolumePro
 
 def _compute_cvd_metrics(trades_df: pd.DataFrame, lookback_seconds: int = 60, current_time: Optional[datetime] = None) -> Optional[Dict[str, float]]:
     if trades_df.empty: return None
+    # Проверяем наличие необходимых колонок
+    required_cols = ["time", "side", "qty"]
+    if not all(col in trades_df.columns for col in required_cols):
+        return None
     now_utc = current_time or datetime.now(timezone.utc)
     if now_utc.tzinfo is None: now_utc = now_utc.replace(tzinfo=timezone.utc)
     dt_lb = now_utc - timedelta(seconds=lookback_seconds)
     # Исправлено: используем tz_convert вместо передачи tz в конструктор
     start_ts = _safe_utc_timestamp(dt_lb)
-    if trades_df["time"].dt.tz is None:
-        trades_df = trades_df.copy()
-        trades_df["time"] = pd.to_datetime(trades_df["time"], utc=True)
-    w_df = trades_df[trades_df["time"] >= start_ts]
-    if w_df.empty: return None
-    w_df = w_df.copy(); w_df["signed_vol"] = np.where(w_df["side"].str.upper() == "BUY", w_df["qty"], -w_df["qty"])
-    cvd_s = w_df["signed_vol"].cumsum()
-    return {"delta_velocity": float(cvd_s.iloc[-1] - cvd_s.iloc[0]), "avg_abs_delta": float(w_df["signed_vol"].abs().mean()), "total_volume": float(w_df["qty"].sum())}
+    try:
+        if trades_df["time"].dt.tz is None:
+            trades_df = trades_df.copy()
+            trades_df["time"] = pd.to_datetime(trades_df["time"], utc=True)
+        w_df = trades_df[trades_df["time"] >= start_ts]
+        if w_df.empty: return None
+        w_df = w_df.copy(); w_df["signed_vol"] = np.where(w_df["side"].str.upper() == "BUY", w_df["qty"], -w_df["qty"])
+        cvd_s = w_df["signed_vol"].cumsum()
+        return {"delta_velocity": float(cvd_s.iloc[-1] - cvd_s.iloc[0]), "avg_abs_delta": float(w_df["signed_vol"].abs().mean()), "total_volume": float(w_df["qty"].sum())}
+    except (KeyError, AttributeError, TypeError) as e:
+        # Логируем ошибку для диагностики
+        import logging
+        logging.getLogger(__name__).warning(f"_compute_cvd_metrics error: {e}, columns: {list(trades_df.columns)}")
+        return None
 
 def _parse_trades(raw: List[Dict[str, Any]]) -> pd.DataFrame:
     rows = []
@@ -451,9 +461,14 @@ def _parse_trades(raw: List[Dict[str, Any]]) -> pd.DataFrame:
             if ts == 0 or p <= 0 or q <= 0 or s not in ["BUY", "SELL"]: continue
             rows.append({"time": datetime.fromtimestamp(ts/1000.0, tz=timezone.utc), "price": p, "qty": q, "side": s})
         except: continue
+    # Создаем DataFrame с явно указанными колонками, даже если rows пустой
+    if rows:
     df = pd.DataFrame(rows)
-    if not df.empty: df["time"] = pd.to_datetime(df["time"], utc=True)
+    df["time"] = pd.to_datetime(df["time"], utc=True)
     return df.sort_values("time")
+    else:
+        # Возвращаем пустой DataFrame с правильными колонками
+        return pd.DataFrame(columns=["time", "price", "qty", "side"])
 
 def detect_absorption_squeeze_short(client: BybitClient, symbol: str, current_price: float, config: Optional[AbsorptionConfig] = None, trades_df: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> Optional[Signal]:
     cfg = config or AbsorptionConfig(); df_t = trades_df if trades_df is not None else _parse_trades(client.get_recent_trades(symbol, limit=1000))
@@ -467,7 +482,7 @@ def detect_absorption_squeeze_short(client: BybitClient, symbol: str, current_pr
         p_chg = abs(df_t["price"].iloc[-1] - df_t["price"].iloc[0]) / df_t["price"].iloc[0] * 100
         if p_chg > cfg.max_price_drift_pct: return None
         return Signal(timestamp=now_ts, action=Action.SHORT, price=current_price, reason=f"abs_short_cvd_{int(cvd_d)}")
-    return None
+        return None
 
 def detect_absorption_squeeze_long(client: BybitClient, symbol: str, current_price: float, config: Optional[AbsorptionConfig] = None, trades_df: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> Optional[Signal]:
     cfg = config or AbsorptionConfig(); df_t = trades_df if trades_df is not None else _parse_trades(client.get_recent_trades(symbol, limit=1000))
@@ -481,7 +496,7 @@ def detect_absorption_squeeze_long(client: BybitClient, symbol: str, current_pri
         p_chg = abs(df_t["price"].iloc[-1] - df_t["price"].iloc[0]) / df_t["price"].iloc[0] * 100
         if p_chg > cfg.max_price_drift_pct: return None
         return Signal(timestamp=now_ts, action=Action.LONG, price=current_price, reason=f"abs_long_cvd_{int(cvd_d)}")
-    return None
+        return None
 
 def get_signals_for_symbol(client: BybitClient, symbol: str, current_price: float, df_ohlcv: pd.DataFrame, settings: Any, trades_df: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> List[Signal]:
     return generate_amt_signals(client, symbol, current_price, df_ohlcv, trades_df, current_time)

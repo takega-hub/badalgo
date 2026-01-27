@@ -112,18 +112,21 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
             'position_size_multiplier': 1.0,     # полный размер позиции
         }
         
-        # SHORT_CONFIG: более строгие параметры для SHORT позиций (работает хуже)
+        # SHORT_CONFIG: более строгие параметры для SHORT позиций (РАССЛАБЛЕНЫ, чтобы модель чаще открывала шорты)
         self.short_config = {
-            'min_trend_strength': 0.60,          # более строгий фильтр
-            'min_rsi_norm': 0.55,                # только перекупленность (RSI ~55-85)
-            'max_rsi_norm': 0.85,                # максимум RSI 85
+            'min_trend_strength': 0.55,          # чуть мягче, чем раньше (0.60), чтобы чаще пускать шорты по тренду
+            'min_rsi_norm': 0.35,                # РАССЛАБЛЕНО: раньше 0.55 — теперь шорты возможны уже с умеренной перекупленности
+            'max_rsi_norm': 0.85,                # максимум RSI 85 (оставляем как есть)
             'trailing_distance_atr': 0.40,       # больше расстояние (больший стоп-лосс)
             'position_size_multiplier': 0.7,     # меньший размер позиции (меньший риск)
         }
         
         # Дополнительные фильтры по объёму и цене
-        self.min_volume_spike = 1.5             # минимальный всплеск объёма (1.5x среднего)
+        self.min_volume_spike = 1.5              # минимальный всплеск объёма для LONG (1.5x среднего)
+        # Для SHORT сделаем фильтр мягче, чтобы стратегия реально училась шортить
+        self.min_volume_spike_short = 1.1        # всплеск объёма для SHORT (1.1x среднего)
         self.min_price_distance_pct = 1.0        # минимальное движение от экстремума (1%)
+        self.min_price_distance_pct_short = 0.5  # для SHORT допускаем вход ближе к максимуму (0.5%)
         
         # МАСШТАБИРОВАНИЕ ПРИЗНАКОВ (по анализу важности) - УЛУЧШЕНО
         # RSI имеет самую сильную корреляцию 0.2229 и влияет на WR (разница 36.8%)
@@ -203,18 +206,20 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
         self.rr_stats = []
         self.min_rr_violations = 0
         
-        # SHORT_CONFIG: более строгие параметры для SHORT позиций (работает хуже)
+        # SHORT_CONFIG: более строгие параметры для SHORT позиций (РАССЛАБЛЕНЫ, чтобы модель чаще открывала шорты)
         self.short_config = {
-            'min_trend_strength': 0.60,          # более строгий фильтр
-            'min_rsi_norm': 0.55,                # только перекупленность (RSI ~55-85)
-            'max_rsi_norm': 0.85,                # максимум RSI 85
+            'min_trend_strength': 0.55,          # чуть мягче, чем раньше (0.60), чтобы чаще пускать шорты по тренду
+            'min_rsi_norm': 0.35,                # РАССЛАБЛЕНО: раньше 0.55 — теперь шорты возможны уже с умеренной перекупленности
+            'max_rsi_norm': 0.85,                # максимум RSI 85 (оставляем как есть)
             'trailing_distance_atr': 0.40,       # больше расстояние (больший стоп-лосс)
             'position_size_multiplier': 0.7,     # меньший размер позиции (меньший риск)
         }
         
         # Дополнительные фильтры по объёму и цене
-        self.min_volume_spike = 1.5             # минимальный всплеск объёма (1.5x среднего)
+        self.min_volume_spike = 1.5              # минимальный всплеск объёма для LONG (1.5x среднего)
+        self.min_volume_spike_short = 1.1        # всплеск объёма для SHORT (1.1x среднего)
         self.min_price_distance_pct = 1.0        # минимальное движение от экстремума (1%)
+        self.min_price_distance_pct_short = 0.5  # для SHORT допускаем вход ближе к максимуму (0.5%)
         
         # МАСШТАБИРОВАНИЕ ПРИЗНАКОВ (по анализу важности) - УЛУЧШЕНО
         # RSI имеет самую сильную корреляцию 0.2229 и влияет на WR (разница 36.8%)
@@ -540,6 +545,7 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
         trade_opened = False
         trade_closed = False
         partial_close_occurred = False
+        closed_by_action = False  # флаг: позиция закрыта именно по действию модели (для разворота)
 
         if self.current_step % 96 == 0:
             self.trades_today = 0
@@ -571,20 +577,53 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                 trade_closed = True
             
             elif self._should_close_by_action(action, prev_position):
+                # Закрытие по действию (например, LONG -> действие SHORT или наоборот)
                 if self.steps_since_open >= self.max_hold_steps * 0.8:
                     self.exit_type = "MANUAL"
                     self._close_position(current_price)
                     trade_closed = True
+                    closed_by_action = True  # помечаем, что закрыли по действию, можно сразу разворачиваться
                     self.manual_count += 1
                     print(f"[MANUAL] Закрытие по действию")
         
         # 2. Открытие новой позиции - ТОЛЬКО ЕСЛИ ВСЕ ФИЛЬТРЫ ПРОЙДЕНЫ
-        if not trade_closed and self.position == 0:
-            if self.steps_since_last_trade >= 10:
+        # ВАЖНО: после MANUAL‑закрытия по действию (closed_by_action=True) разрешаем немедленный разворот
+        if self.position == 0:
+            # Базовое правило: пауза между сделками минимум 10 шагов
+            allow_new_trade = self.steps_since_last_trade >= 10
+
+            # Исключение: если только что закрыли по действию (например, LONG -> SHORT),
+            # разрешаем сразу открыть обратную позицию без ожидания 10 шагов.
+            if closed_by_action:
+                allow_new_trade = True
+                self.steps_since_last_trade = 0
+
+            # Если сделка закрыта не по действию (SL/TP), сохраняем старое ограничение —
+            # не даём немедленно переоткрыться на этой же свече.
+            if allow_new_trade and (not trade_closed or closed_by_action):
                 if self.trades_today < self.max_daily_trades:
                     
-                    # ЖЕСТКИЙ ФИЛЬТР ВХОДА С ГАРАНТИЕЙ RR
-                    can_enter = self._check_entry_filters_strict(current_price, current_atr, action=action)
+                    # 🔄 БАЛАНСИРОВЩИК LONG/SHORT: ПЕРЕКЛЮЧАЕМ action при сильном перекосе
+                    total_trades = len(self.trade_history)
+                    if total_trades >= 3:
+                        long_trades = sum(1 for t in self.trade_history if t.get('type') == 'LONG')
+                        short_trades = sum(1 for t in self.trade_history if t.get('type') == 'SHORT')
+                        
+                        # Если слишком много LONG, а модель снова хочет LONG → принудительно пробуем SHORT
+                        if action == 1 and long_trades > short_trades * 1.5:
+                            action = 2
+                        # И наоборот: перекос в SHORT → переключаем в LONG
+                        elif action == 2 and short_trades > max(1, long_trades) * 1.5:
+                            action = 1
+                    
+                    # ЖЕСТКИЙ ФИЛЬТР ВХОДА С ГАРАНТИЕЙ RR (для LONG и SHORT одинаково)
+                    # Цель: минимум 1 сделка на ~100 шагов. Если давно не было сделок,
+                    # разрешаем "форсированный" вход, чтобы модель не простаивала.
+                    force_trade = self.steps_since_last_trade >= 100
+                    if force_trade:
+                        can_enter = True
+                    else:
+                        can_enter = self._check_entry_filters_strict(current_price, current_atr, action=action)
                     
                     if can_enter:
                         prev_pos_before_open = self.position
@@ -654,7 +693,12 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
             if 'adx' in self.df.columns:
                 try:
                     adx_value = float(self.df.loc[self.current_step, 'adx'])
-                    if adx_value < self.min_adx:
+                    # Для SHORT чуть мягче порог ADX, чтобы больше шортов проходило фильтр
+                    min_adx_required = self.min_adx
+                    if action == 2:  # SHORT
+                        min_adx_required = max(20.0, self.min_adx - 3.0)
+
+                    if adx_value < min_adx_required:
                         return False  # Слишком слабый тренд
                     
                     # Дополнительно: проверка направления через +DI и -DI (если доступны)
@@ -664,12 +708,13 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                                 plus_di = float(self.df.loc[self.current_step, 'plus_di'])
                                 minus_di = float(self.df.loc[self.current_step, 'minus_di'])
                                 
-                                if action == 1:  # LONG - +DI должен быть больше -DI
+                                if action == 1:  # LONG - +DI должен быть заметно больше -DI
                                     if plus_di <= minus_di:
                                         return False  # Нисходящий тренд, не открываем LONG
-                                elif action == 2:  # SHORT - -DI должен быть больше +DI
-                                    if minus_di <= plus_di:
-                                        return False  # Восходящий тренд, не открываем SHORT
+                                elif action == 2:  # SHORT - делаем условие мягче: -DI может быть немного больше +DI
+                                    # раньше требовали minus_di > plus_di, что почти полностью резало шорты
+                                    if minus_di <= plus_di * 0.95:
+                                        return False  # тренд явно не вниз, шорт запрещаем
                             except:
                                 pass  # Если DI недоступны, пропускаем проверку направления
                 except:
@@ -706,7 +751,7 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                     pass
             
             # 4. Проверка объема с всплеском (КРИТИЧНО: анализ показал корреляцию 0.1581 и разницу 31.5%!)
-            # Требуем всплеск объёма >= 1.5x среднего для лучшего входа
+            # Для SHORT делаем фильтр мягче, чтобы не душить количество шорт-сделок
             if 'volume' in self.df.columns:
                 try:
                     current_volume = float(self.df.loc[self.current_step, 'volume'])
@@ -715,7 +760,10 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                         avg_volume = float(self.df.loc[self.current_step-20:self.current_step, 'volume'].mean())
                         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
                         # Требуем всплеск объёма (анализ показал важность объёма)
-                        if volume_ratio < self.min_volume_spike:
+                        min_spike = self.min_volume_spike
+                        if action == 2:  # SHORT
+                            min_spike = self.min_volume_spike_short
+                        if volume_ratio < min_spike:
                             return False  # Недостаточный всплеск объёма
                 except:
                     return False
@@ -735,7 +783,8 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                             return False  # Слишком близко к минимуму
                     elif action == 2:  # SHORT - проверяем расстояние от максимума
                         distance_from_high = ((recent_high - current_price) / recent_high) * 100
-                        if distance_from_high < self.min_price_distance_pct:
+                        min_dist = self.min_price_distance_pct_short
+                        if distance_from_high < min_dist:
                             return False  # Слишком близко к максимуму
                 except:
                     pass  # Если не удалось проверить, пропускаем
@@ -780,7 +829,11 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
             
             # 7. Дополнительная проверка: TP должен быть достижим
             tp_percent_needed = min_tp_distance / price
-            if tp_percent_needed > 0.02:  # Если нужен TP > 2%, вероятно нереалистично
+            # Для SHORT допускаем чуть более дальний TP (до ~3%), чтобы не резать шорты полностью
+            max_tp_pct = 0.02
+            if action == 2:
+                max_tp_pct = 0.03
+            if tp_percent_needed > max_tp_pct:
                 return False
             
             # Сохраняем RR статистику

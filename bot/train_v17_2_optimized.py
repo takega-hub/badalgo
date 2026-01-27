@@ -117,8 +117,8 @@ class RRMonitoringCallback(BaseCallback):
 def setup_directories():
     """Создание необходимых директорий"""
     directories = [
-        './logs/v17_optimized',
-        './models/v17_optimized',
+        './logs/v17_2_optimized',
+        './models/v17_2_optimized',
         './data'
     ]
     
@@ -617,7 +617,7 @@ def train_optimized_model():
         )
         
         # Проверяем, есть ли существующая модель для продолжения обучения
-        model_path = "./models/v17_optimized/ppo_final"
+        model_path = "./models/v17_2_optimized/ppo_final"
         continue_training = False
         
         # Проверяем аргументы командной строки
@@ -664,7 +664,7 @@ def train_optimized_model():
                 clip_range=0.15,
                 vf_coef=0.6,
                 max_grad_norm=0.5,
-                tensorboard_log="./logs/v17_optimized/tensorboard/"
+                tensorboard_log="./logs/v17_2_optimized/tensorboard/"
             )
         
         # Callback для мониторинга
@@ -886,7 +886,7 @@ def test_model(model, test_df, obs_cols):
     print("🧪 ТЕСТИРОВАНИЕ НА НОВЫХ ДАННЫХ")
     print("="*60)
     
-    test_log_file = os.path.abspath('./logs/v17_optimized/test_results.csv')
+    test_log_file = os.path.abspath('./logs/v17_2_optimized/test_results.csv')
     
     def make_test_env():
         # Используем больше тестовых данных для статистически значимых результатов
@@ -898,7 +898,7 @@ def test_model(model, test_df, obs_cols):
             slippage=0.0005,
             log_file=test_log_file,
             log_open_positions=True,
-            open_log_file=os.path.abspath('./logs/v17_optimized/opens_test_results.csv'),
+            open_log_file=os.path.abspath('./logs/v17_2_optimized/opens_test_results.csv'),
             training_mode='optimized'
         )
         return env
@@ -977,9 +977,9 @@ def main():
     print("🎉 ОПТИМИЗИРОВАННОЕ ОБУЧЕНИЕ ЗАВЕРШЕНО!")
     print("="*60)
     print("📁 Результаты сохранены в:")
-    print("   - Модели: ./models/v17_optimized/")
-    print("   - Логи: ./logs/v17_optimized/")
-    print("   - Tensorboard логи: ./logs/v17_optimized/tensorboard/")
+    print("   - Модели: ./models/v17_2_optimized/")
+    print("   - Логи: ./logs/v17_2_optimized/")
+    print("   - Tensorboard логи: ./logs/v17_2_optimized/tensorboard/")
 
 
 if __name__ == "__main__":

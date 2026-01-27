@@ -8,6 +8,68 @@ from typing import Dict, Tuple, Optional, List, Any
 from datetime import datetime
 import matplotlib.pyplot as plt
 
+# Импорты для интеграции сигналов стратегий
+# ВАЖНО: поддерживаем ОДНОВРЕМЕННО два сценария:
+#  1) Запуск как пакет:      python -m bot.train_v17_optimized
+#  2) Запуск как скрипт:     python bot/train_v17_optimized.py
+# Поэтому сначала пробуем абсолютные импорты `bot.*`, затем относительные `.*/.ml.*`.
+try:
+    from bot.zscore_strategy_v2 import generate_signals as generate_zscore_signals
+    from bot.config import StrategyParams
+    ZSCORE_AVAILABLE = True
+except ImportError:
+    try:
+        from .zscore_strategy_v2 import generate_signals as generate_zscore_signals
+        from .config import StrategyParams
+        ZSCORE_AVAILABLE = True
+    except ImportError as e:
+        ZSCORE_AVAILABLE = False
+        print(f"⚠️ ZScore strategy not available: {e}")
+
+try:
+    from bot.smc_strategy import build_smc_signals
+    SMC_AVAILABLE = True
+except ImportError:
+    try:
+        from .smc_strategy import build_smc_signals
+        SMC_AVAILABLE = True
+    except ImportError as e:
+        SMC_AVAILABLE = False
+        print(f"⚠️ SMC strategy not available: {e}")
+
+try:
+    from bot.ict_strategy import ICTStrategy
+    ICT_AVAILABLE = True
+except ImportError:
+    try:
+        from .ict_strategy import ICTStrategy
+        ICT_AVAILABLE = True
+    except ImportError as e:
+        ICT_AVAILABLE = False
+        print(f"⚠️ ICT strategy not available: {e}")
+
+try:
+    from bot.strategy import build_signals, generate_trend_signal, generate_flat_signal, generate_momentum_signal
+    TREND_FLAT_MOMENTUM_AVAILABLE = True
+except ImportError:
+    try:
+        from .strategy import build_signals, generate_trend_signal, generate_flat_signal, generate_momentum_signal
+        TREND_FLAT_MOMENTUM_AVAILABLE = True
+    except ImportError as e:
+        TREND_FLAT_MOMENTUM_AVAILABLE = False
+        print(f"⚠️ Trend/Flat/Momentum strategies not available: {e}")
+
+try:
+    from bot.ml.strategy_ml import build_ml_signals
+    ML_AVAILABLE = True
+except ImportError:
+    try:
+        from .ml.strategy_ml import build_ml_signals
+        ML_AVAILABLE = True
+    except ImportError as e:
+        ML_AVAILABLE = False
+        print(f"⚠️ ML strategy not available: {e}")
+
 
 class CryptoTradingEnvV17_Optimized(gym.Env):
     """
@@ -33,7 +95,9 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                  max_daily_trades: int = 5,
                  trade_cooldown_steps: int = 10,
                  render_mode: Optional[str] = None,
-                 training_mode: str = "optimized"):
+                 training_mode: str = "optimized",
+                 use_strategy_signals: bool = True,
+                 strategy_signals_weight: float = 0.3):
         """
         Инициализация оптимизированной среды
         """
@@ -47,28 +111,55 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         self.slippage = slippage
         self.log_file = log_file
         
+        # ИНТЕГРАЦИЯ СИГНАЛОВ СТРАТЕГИЙ
+        # ВАЖНО: форма observation_space должна быть стабильной,
+        # поэтому количество сигналов стратегий фиксировано (14),
+        # а флаг use_strategy_signals управляет только тем, считаем ли мы их реально,
+        # или возвращаем нули.
+        self.use_strategy_signals = use_strategy_signals
+        self.strategy_signals_weight = strategy_signals_weight
+        
+        # Инициализация стратегий (если доступны)
+        self.strategy_params = None
+        self.ict_strategy = None
+        if use_strategy_signals:
+            try:
+                from bot.config import StrategyParams
+                self.strategy_params = StrategyParams()
+                if ICT_AVAILABLE:
+                    self.ict_strategy = ICTStrategy(self.strategy_params)
+            except Exception as e:
+                # Не меняем self.use_strategy_signals, чтобы размер observation_space оставался консистентным.
+                # В случае ошибки _get_strategy_signals() просто вернет нули.
+                print(f"⚠️ Не удалось инициализировать стратегии: {e}")
+        
+        # PRECOMPUTE: ZSCORE сигналы (1 раз на весь df) — чтобы честно эмулировать внешние стратегии
+        # и не пересчитывать сигналы на каждом шаге.
+        self._precompute_strategy_signals()
+        
         # ОПТИМИЗИРОВАННЫЕ ПАРАМЕТРЫ
         self.base_rr_ratio = rr_ratio
         self.atr_multiplier = atr_multiplier
         self.min_rr_ratio = 1.5  # ГАРАНТИРОВАННЫЙ МИНИМУМ RR 1.5:1
         
-        # TP уровни: делаем более достижимыми (по итогам анализа)
-        self.tp_levels = [1.5, 2.2, 3.0]
-        # Больше закрытий на первых уровнях (фиксируем часть прибыли раньше)
-        self.tp_close_percentages = [0.30, 0.40, 0.30]
+        # TP уровни: более агрессивные цели для увеличения GOOD/EXCELLENT сделок
+        self.tp_levels = [1.8, 2.5, 3.5]  # УВЕЛИЧЕНО с [1.5, 2.2, 3.0] для лучшего качества
+        # Больше оставляем для финального TP (фиксируем больше прибыли на последнем уровне)
+        self.tp_close_percentages = [0.25, 0.35, 0.40]  # ИЗМЕНЕНО с [0.30, 0.40, 0.30]
         
-        # Трейлинг-стоп: менее агрессивный (по отчёту много SL_TRAILING)
-        # Базовая дистанция (дальше динамически расширяем при росте прибыли)
-        self.trailing_activation_atr = 0.35   # базовая для LONG (для SHORT задаём отдельно в _update_trailing_stop)
-        self.trailing_distance_atr = 0.40
-        self.protective_trailing_atr = 0.60
+        # Трейлинг-стоп: менее агрессивный (по отчёту много SL_TRAILING - 37.9%!)
+        # 🔥 УЛУЧШЕНО: позже активация и шире дистанция для уменьшения SL_TRAILING закрытий
+        self.trailing_activation_atr = 1.50   # УВЕЛИЧЕНО с 1.20 до 1.50 - активируем еще позже (даем больше пространства)
+        self.trailing_distance_atr = 0.90     # УВЕЛИЧЕНО с 0.70 до 0.90 - шире дистанция (меньше ложных срабатываний)
+        self.protective_trailing_atr = 0.90    # УВЕЛИЧЕНО с 0.60 до 0.90 - защитный трейлинг шире
         # Время удержания
         self.max_hold_steps = 60
         self.min_hold_steps = 8
         
         # УЖЕСТОЧЕННЫЕ ФИЛЬТРЫ ВХОДА (УЛУЧШЕНО)
-        self.min_sl_percent = 0.003           # Минимальный SL 0.3% (оставляем как есть)
-        self.max_sl_percent = 0.007           # УМЕНЬШЕНО с 0.008 до 0.007 - более строгий SL
+        # 🔥 УВЕЛИЧЕНО min_sl_percent: анализ показал 42% SL_INITIAL закрытий - SL слишком близко!
+        self.min_sl_percent = 0.004           # УВЕЛИЧЕНО с 0.003 до 0.004 (рекомендация анализа)
+        self.max_sl_percent = 0.008           # УВЕЛИЧЕНО с 0.007 до 0.008 - даем больше пространства
 
         self.min_tp_percent = 0.006          # УМЕНЬШЕНО с 0.008 до 0.006 - TP уровни уже снижены до [1.8, 2.5, 3.5]
         
@@ -87,8 +178,9 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         # Используем ADX (Average Directional Index) - стандартный индикатор силы тренда
         # ADX > 25 = сильный тренд, ADX > 30 = очень сильный тренд
         
-        # БАЗОВЫЕ ЗНАЧЕНИЯ ФИЛЬТРОВ (баланс качества и количества сделок)
-        self.base_min_adx = 20.0  # Оптимальный баланс: достаточно строгий, но не блокирует все сделки
+        # БАЗОВЫЕ ЗНАЧЕНИЯ ФИЛЬТРОВ (БОЛЕЕ МЯГКАЯ ВЕРСИЯ ПО ОТЧЁТУ)
+        # Возвращаем ADX ближе к рекомендованным значениям (20–25)
+        self.base_min_adx = 20.0  # БЫЛО 25.0 — смягчаем до 20.0
         self.base_min_trend_strength = 0.55
         
         # АДАПТИВНЫЕ ФИЛЬТРЫ: ослабляются при отсутствии сделок
@@ -173,8 +265,11 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         # Пространства действий и наблюдений
         self.action_space = spaces.Discrete(3)
         
-        # Размер наблюдения
-        n_features = len(self.obs_cols) + 12
+        # Размер наблюдения: market_data + strategy_signals (14) + position_state (12)
+        # Количество сигналов стратегий фиксировано (14), чтобы избежать рассинхрона форм
+        # с векторизованным окружением и сохранёнными моделями.
+        n_strategy_signals = 14
+        n_features = len(self.obs_cols) + n_strategy_signals + 12
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -249,6 +344,55 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         }
         
         self.reset()
+
+    def _precompute_strategy_signals(self) -> None:
+        """Предварительный расчет сигналов стратегий на всём DataFrame.
+
+        Сейчас делаем пилот только для ZScore: создаём колонки:
+        - sig_zscore_long (0/1)
+        - sig_zscore_short (0/1)
+        """
+        try:
+            # Инициализируем колонки нулями, чтобы форма наблюдений была стабильной
+            self.df["sig_zscore_long"] = 0.0
+            self.df["sig_zscore_short"] = 0.0
+
+            if not self.use_strategy_signals:
+                return
+
+            if not ZSCORE_AVAILABLE or self.strategy_params is None:
+                return
+
+            # ВАЖНО: ZScore ожидает OHLCV. Берём копию, чтобы не мутировать self.df в стратегии.
+            df_in = self.df[["open", "high", "low", "close", "volume"]].copy()
+            z_df = generate_zscore_signals(df_in, self.strategy_params)
+            if z_df is None or len(z_df) == 0 or "signal" not in z_df.columns:
+                return
+
+            # Приводим длину на всякий случай (защита от несовпадений)
+            n = min(len(self.df), len(z_df))
+            sig = z_df["signal"].astype(str).iloc[:n]
+
+            self.df.loc[: n - 1, "sig_zscore_long"] = (sig == "LONG").astype(float).values
+            self.df.loc[: n - 1, "sig_zscore_short"] = (sig == "SHORT").astype(float).values
+
+            # Логируем суммарную статистику один раз
+            try:
+                long_cnt = int(self.df["sig_zscore_long"].sum())
+                short_cnt = int(self.df["sig_zscore_short"].sum())
+                total = max(1, len(self.df))
+                print(
+                    f"[PRECOMPUTE][ZSCORE] long={long_cnt} short={short_cnt} "
+                    f"(rate={(long_cnt + short_cnt) / total * 100:.2f}%)"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            # Не валим env из-за precompute — просто оставляем нули
+            try:
+                print(f"⚠️ [PRECOMPUTE][ZSCORE] error: {e}")
+            except Exception:
+                pass
     
     def _prepare_data_simple(self, df: pd.DataFrame) -> pd.DataFrame:
         """Упрощенная подготовка данных"""
@@ -382,8 +526,111 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         
         return self._get_observation(), {}
     
+    def _get_strategy_signals(self) -> Dict[str, float]:
+        """Генерация сигналов от других стратегий"""
+        signals = {
+            'zscore_long': 0.0,
+            'zscore_short': 0.0,
+            'smc_long': 0.0,
+            'smc_short': 0.0,
+            'ict_long': 0.0,
+            'ict_short': 0.0,
+            'trend_long': 0.0,
+            'trend_short': 0.0,
+            'flat_long': 0.0,
+            'flat_short': 0.0,
+            'ml_long': 0.0,
+            'ml_short': 0.0,
+            'momentum_long': 0.0,
+            'momentum_short': 0.0,
+        }
+        
+        if not self.use_strategy_signals or self.current_step < 50:
+            return signals
+        
+        try:
+            # Оставляем только TREND и FLAT как внешние стратегии
+            df_current = self.df.iloc[: self.current_step + 1].copy()
+            from bot.strategy import Action
+
+            # Trend сигналы (ADX > 25)
+            if TREND_FLAT_MOMENTUM_AVAILABLE and self.strategy_params:
+                try:
+                    trend_result = generate_trend_signal(
+                        df_current,
+                        state={},
+                        sma_period=21,
+                        atr_period=14,
+                        atr_multiplier=2.0,
+                        max_pyramid=2,
+                        min_history=50,
+                        adx_threshold=25.0,
+                    )
+                    if trend_result and trend_result.get("signal"):
+                        signal_str = trend_result["signal"]
+                        if signal_str == "LONG":
+                            signals["trend_long"] = 1.0
+                        elif signal_str == "SHORT":
+                            signals["trend_short"] = 1.0
+                except Exception as e:
+                    # Логируем ошибки только первые несколько раз
+                    if not hasattr(self, "_trend_error_log_count"):
+                        self._trend_error_log_count = 0
+                    if self._trend_error_log_count < 3:
+                        print(f"[STRATEGY_ERROR] Trend signal error: {e}")
+                        self._trend_error_log_count += 1
+
+            # Flat сигналы (Mean Reversion)
+            if TREND_FLAT_MOMENTUM_AVAILABLE and self.strategy_params:
+                try:
+                    flat_result = generate_flat_signal(
+                        df_current,
+                        state={},
+                        rsi_period=14,
+                        rsi_base_low=35,
+                        rsi_base_high=65,
+                        bb_period=20,
+                        bb_mult=2.0,
+                        bb_compression_factor=0.8,
+                        min_history=50,
+                    )
+                    if flat_result and flat_result.get("signal"):
+                        signal_str = flat_result["signal"]
+                        if signal_str == "LONG":
+                            signals["flat_long"] = 1.0
+                        elif signal_str == "SHORT":
+                            signals["flat_short"] = 1.0
+                except Exception as e:
+                    # Логируем ошибки только первые несколько раз
+                    if not hasattr(self, "_flat_error_log_count"):
+                        self._flat_error_log_count = 0
+                    if self._flat_error_log_count < 3:
+                        print(f"[STRATEGY_ERROR] Flat signal error: {e}")
+                        self._flat_error_log_count += 1
+                    
+        except Exception as e:
+            pass  # Игнорируем ошибки
+        
+        # ЛЁГКОЕ ЛОГИРОВАНИЕ: показываем первые несколько срабатываний сигналов,
+        # чтобы убедиться, что стратегии действительно генерируют входы.
+        try:
+            non_zero = [name for name, val in signals.items() if val > 0.0]
+            if non_zero:
+                if not hasattr(self, "_strategy_signal_log_count"):
+                    self._strategy_signal_log_count = 0
+                if self._strategy_signal_log_count < 10:
+                    print(
+                        f"[STRATEGY_SIGNALS] step={self.current_step} "
+                        f"signals={','.join(non_zero)}"
+                    )
+                    self._strategy_signal_log_count += 1
+        except Exception:
+            pass
+        
+        return signals
+    
     def _get_observation(self) -> np.ndarray:
-        """Получение наблюдения с индикатором качества"""
+        """Получение наблюдения с индикатором качества и сигналами стратегий"""
         if len(self.df) == 0:
             return np.zeros(self.observation_space.shape[0], dtype=np.float32)
         
@@ -412,6 +659,27 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         except Exception as e:
             market_data = np.zeros(len(self.obs_cols), dtype=np.float32)
         
+        # Сигналы стратегий (14 признаков: 6 старых + 8 новых)
+        strategy_signals_dict = self._get_strategy_signals()
+        strategy_signals = np.array([
+            # Старые стратегии
+            strategy_signals_dict['zscore_long'],
+            strategy_signals_dict['zscore_short'],
+            strategy_signals_dict['smc_long'],
+            strategy_signals_dict['smc_short'],
+            strategy_signals_dict['ict_long'],
+            strategy_signals_dict['ict_short'],
+            # Новые стратегии
+            strategy_signals_dict['trend_long'],
+            strategy_signals_dict['trend_short'],
+            strategy_signals_dict['flat_long'],
+            strategy_signals_dict['flat_short'],
+            strategy_signals_dict['ml_long'],
+            strategy_signals_dict['ml_short'],
+            strategy_signals_dict['momentum_long'],
+            strategy_signals_dict['momentum_short'],
+        ], dtype=np.float32)
+        
         # Расчет индикатора качества сделки
         trade_quality = 0.0
         if len(self.recent_trades_pnl) > 0:
@@ -435,7 +703,8 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             min(2.0, max(-1.0, self.avg_profit_last_10))
         ], dtype=np.float32)
         
-        observation = np.concatenate([market_data, position_state])
+        # Объединяем все признаки: market_data + strategy_signals + position_state
+        observation = np.concatenate([market_data, strategy_signals, position_state])
         
         if np.any(np.isnan(observation)):
             observation = np.nan_to_num(observation, nan=0.0)
@@ -472,7 +741,46 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 current_atr = current_price * 0.01
         except:
             current_atr = current_price * 0.01
-        
+
+        # 0. ПРИНУДИТЕЛЬНОЕ ИСПОЛЬЗОВАНИЕ ВНЕШНИХ СИГНАЛОВ КАК ТОЧЕК ВХОДА
+        # Если есть precompute-сигналы (например, ZScore), и сейчас нет позиции,
+        # то в режиме обучения мы можем принудительно следовать этим сигналам,
+        # даже если PPO выбрал HOLD. Это создаёт реальный поток "внешних" входов.
+        forced_from_signal = False
+        if self.use_strategy_signals and self.position == 0:
+            try:
+                sig_long = 0.0
+                sig_short = 0.0
+                if "sig_zscore_long" in self.df.columns:
+                    sig_long = float(self.df.loc[self.current_step, "sig_zscore_long"])
+                if "sig_zscore_short" in self.df.columns:
+                    sig_short = float(self.df.loc[self.current_step, "sig_zscore_short"])
+
+                # Если есть только LONG-сигнал
+                if sig_long > 0.0 and sig_short <= 0.0:
+                    if action != 1:
+                        # Лёгкий лог, чтобы видеть, что мы реально следуем ZScore
+                        print(
+                            f"[ACTION_OVERRIDE] step={self.current_step} "
+                            f"PPO_action={action} -> LONG by zscore_long"
+                        )
+                    action = 1
+                    forced_from_signal = True
+
+                # Если есть только SHORT-сигнал
+                elif sig_short > 0.0 and sig_long <= 0.0:
+                    if action != 2:
+                        print(
+                            f"[ACTION_OVERRIDE] step={self.current_step} "
+                            f"PPO_action={action} -> SHORT by zscore_short"
+                        )
+                    action = 2
+                    forced_from_signal = True
+
+                # Если оба сигнала активны (редкий случай) — оставляем решение за PPO
+            except Exception:
+                pass
+
         self.current_step += 1
         self.num_timesteps += 1  # Увеличиваем счетчик шагов
         
@@ -540,19 +848,43 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                     
                     if can_enter:
                         prev_pos_before_open = self.position
-                        # Логи отключены для уменьшения спама
+                        
+                        # Проверяем, был ли проход по фильтрам инициирован внешней стратегией
+                        from_strategy = getattr(self, "_last_entry_from_strategy", False)
+                        used_strategies = getattr(self, "_last_entry_strategies", [])
                         
                         if action == 1:  # Long
                             self._open_long_with_tp_features(current_price, current_atr)
-                            print(f"🚀 [TRADE] OPEN LONG at {current_price:.2f} (Step {self.current_step}) | Balance: L={self.long_trades_count} S={self.short_trades_count}")
+                            if from_strategy and used_strategies:
+                                print(
+                                    f"🚀 [TRADE] OPEN LONG (EXTERNAL) at {current_price:.2f} "
+                                    f"(Step {self.current_step}) by {','.join(used_strategies)} | "
+                                    f"Balance: L={self.long_trades_count} S={self.short_trades_count}"
+                                )
+                            else:
+                                print(
+                                    f"🚀 [TRADE] OPEN LONG at {current_price:.2f} "
+                                    f"(Step {self.current_step}) | "
+                                    f"Balance: L={self.long_trades_count} S={self.short_trades_count}"
+                                )
                             trade_opened = True
                             self.trades_today += 1
                         elif action == 2:  # Short
                             self._open_short_with_tp_features(current_price, current_atr)
-                            print(f"🚀 [TRADE] OPEN SHORT at {current_price:.2f} (Step {self.current_step}) | Balance: L={self.long_trades_count} S={self.short_trades_count}")
+                            if from_strategy and used_strategies:
+                                print(
+                                    f"🚀 [TRADE] OPEN SHORT (EXTERNAL) at {current_price:.2f} "
+                                    f"(Step {self.current_step}) by {','.join(used_strategies)} | "
+                                    f"Balance: L={self.long_trades_count} S={self.short_trades_count}"
+                                )
+                            else:
+                                print(
+                                    f"🚀 [TRADE] OPEN SHORT at {current_price:.2f} "
+                                    f"(Step {self.current_step}) | "
+                                    f"Balance: L={self.long_trades_count} S={self.short_trades_count}"
+                                )
                             trade_opened = True
                             self.trades_today += 1
-                        # Логи отключены
 
         # 3. Обновление временных метрик и адаптивных фильтров
         if self.position == 0 and not trade_closed:
@@ -600,7 +932,7 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         if self.current_step >= len(self.df):
             return False
         
-        # ЭКСТРЕННЫЙ РЕЖИМ: если слишком долго нет сделок (>200 шагов = 2 дня), РАССЛАБЛЯЕМ пороги (не отключаем ключевые фильтры)
+        # ЭКСТРЕННЫЙ РЕЖИМ: если слишком долго нет сделок (>200 шагов = 2 дня), РАССЛАБЛЯЕМ пороги
         emergency_mode = self.steps_without_trade > 200
         if emergency_mode and not hasattr(self, '_emergency_mode_logged'):
             print(f"⚠️ [EMERGENCY MODE] steps_without_trade={self.steps_without_trade} > 200 (≈2 дня). Расслабляем пороги фильтров.")
@@ -615,29 +947,134 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             self._filter_debug_count += 1
         
         try:
+            # По умолчанию считаем, что вход НЕ от внешней стратегии
+            self._last_entry_from_strategy = False
+            self._last_entry_strategies = []
             # 1) БАЗОВЫЙ ФИЛЬТР ATR
             atr_percent = atr / price
             if atr_percent < 0.0003 or atr_percent > 0.06:
                 return False
+
+            # 1.1) ВХОД ОТ СТРАТЕГИЙ: БЕЗ ДОП. ФИЛЬТРОВ (ТОЛЬКО ATR + RR)
+            # 🔥 ПРОВЕРЯЕМ ВНЕШНИЕ СИГНАЛЫ ПЕРВЫМИ (даже в emergency режиме!)
+            # Если есть явный сигнал LONG/SHORT от наших стратегий, они используются как
+            # Точки входа. В этом случае пропускаем все остальные фильтры (vol/RSI/ADX/контекст)
+            # и проверяем только структурные ограничения RR.
+            from_strategy_signal = False
+            if self.use_strategy_signals:
+                try:
+                    strategy_signals = self._get_strategy_signals()
+                    if action == 1:  # LONG
+                        long_signals = (
+                            strategy_signals.get("trend_long", 0.0)
+                            + strategy_signals.get("flat_long", 0.0)
+                        )
+                        if long_signals > 0.0:
+                            from_strategy_signal = True
+                            self._last_entry_strategies = [
+                                name
+                                for name, val in strategy_signals.items()
+                                if val > 0.0 and name.endswith("long")
+                            ]
+                    elif action == 2:  # SHORT
+                        short_signals = (
+                            strategy_signals.get("trend_short", 0.0)
+                            + strategy_signals.get("flat_short", 0.0)
+                        )
+                        if short_signals > 0.0:
+                            from_strategy_signal = True
+                            self._last_entry_strategies = [
+                                name
+                                for name, val in strategy_signals.items()
+                                if val > 0.0 and name.endswith("short")
+                            ]
+                except Exception:
+                    from_strategy_signal = False
+
+            if from_strategy_signal:
+                # Только проверяем RR и структуру SL/TP
+                sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
+                sl_distance = min(sl_distance, price * self.max_sl_percent)
+
+                min_rr_threshold = 1.0 if emergency_mode else self.min_rr_ratio
+                min_tp_for_rr = sl_distance * min_rr_threshold
+                min_tp_distance = max(
+                    min_tp_for_rr,
+                    atr * self.tp_levels[0],
+                    price * self.min_tp_percent,
+                )
+
+                actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
+                if actual_rr < min_rr_threshold - 0.01:
+                    self.min_rr_violations += 1
+                    return False
+
+                self.rr_stats.append(actual_rr)
+                if len(self.rr_stats) > 100:
+                    self.rr_stats.pop(0)
+
+                # Помечаем, что эта попытка входа одобрена именно по внешнему сигналу
+                self._last_entry_from_strategy = True
+
+                return True
             
-            # 2) volatility_ratio (самый важный признак)
+            # 1.0) ЖЁСТКИЙ EMERGENCY-ОВЕРРАЙД (только если НЕТ внешних сигналов):
+            # если ОЧЕНЬ долго нет сделок, разрешаем входы почти без фильтров,
+            # оставляя только базовый RR-контроль. Это нужно, чтобы модель вообще
+            # начала исследовать пространство действий.
+            if not from_strategy_signal and emergency_mode and self.steps_without_trade > 800:
+                sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
+                sl_distance = min(sl_distance, price * self.max_sl_percent)
+
+                min_rr_threshold = 1.0  # В супер-экстренном режиме достаточно RR >= 1.0
+                min_tp_for_rr = sl_distance * min_rr_threshold
+                min_tp_distance = max(
+                    min_tp_for_rr,
+                    atr * self.tp_levels[0],
+                    price * self.min_tp_percent,
+                )
+
+                actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
+                if actual_rr < min_rr_threshold - 0.01:
+                    self.min_rr_violations += 1
+                    return False
+
+                self.rr_stats.append(actual_rr)
+                if len(self.rr_stats) > 100:
+                    self.rr_stats.pop(0)
+
+                if not hasattr(self, "_emergency_override_logged"):
+                    print(f"⚠️ [EMERGENCY OVERRIDE] steps_without_trade={self.steps_without_trade}, "
+                          f"RR={actual_rr:.2f} — пропускаем дополнительные фильтры.")
+                    self._emergency_override_logged = True
+
+                # В emergency override НЕ устанавливаем _last_entry_from_strategy = True
+                # потому что это не внешний сигнал, а внутренний emergency режим
+                return True
+            
+            # 2) volatility_ratio (КРИТИЧНО ВАЖНЫЙ ПРИЗНАК - разница WR 40.2%!)
+            # Анализ: Q1 (низкий): WR 8.4%, Q4 (высокий): WR 48.6%
+            # Нужно использовать только Q3-Q4 диапазон для высокого Win Rate
             if 'volatility_ratio' in self.df.columns:
                 try:
                     vol_ratio = float(self.df.loc[self.current_step, 'volatility_ratio'])
                     if action == 1:  # LONG
-                        # 🔥 В emergency_mode РАСШИРЯЕМ диапазон для возможности открытия сделок
-                        lo, hi = (0.0010, 0.0100) if emergency_mode else (0.0025, 0.0060)
+                        # 🔥 УЖЕСТОЧЕНО: используем только Q3-Q4 диапазон (WR 30.5%-48.6%)
+                        # В emergency_mode немного расширяем, но все равно строго
+                        lo, hi = (0.0025, 0.0065) if emergency_mode else (0.0030, 0.0055)
                         if vol_ratio < lo or vol_ratio > hi:
                             return False
                     elif action == 2:  # SHORT
-                        # 🔥 В emergency_mode РАСШИРЯЕМ диапазон для возможности открытия сделок
-                        lo, hi = (0.0010, 0.0120) if emergency_mode else (0.0020, 0.0075)
+                        # 🔥 УЖЕСТОЧЕНО: для SHORT тоже используем Q3-Q4 диапазон
+                        lo, hi = (0.0025, 0.0070) if emergency_mode else (0.0030, 0.0060)
                         if vol_ratio < lo or vol_ratio > hi:
                             return False
                 except Exception:
                     pass
             
-            # 3) Volume (разница WR ~50%)
+            # 3) Volume (разница WR 26.0% - критично важно!)
+            # Анализ: прибыльные сделки имеют volume_ratio выше среднего
+            # Возвращаем более мягкие пороги по отчёту: 1.3–1.4 для LONG, около 1.0 для SHORT
             if 'volume' in self.df.columns:
                 try:
                     volume = float(self.df.loc[self.current_step, 'volume'])
@@ -645,14 +1082,12 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                     if lookback > 0:
                         avg_volume = self.df.loc[max(0, self.current_step - lookback):self.current_step, 'volume'].mean()
                         volume_ratio = volume / avg_volume if avg_volume and avg_volume > 0 else 1.0
-                        if action == 1:  # LONG - УЖЕСТОЧЕНО для качества
-                            # 🔥 В emergency_mode ОСЛАБЛЯЕМ до минимума (0.9 = 90% среднего объема)
-                            thr = 0.9 if emergency_mode else 1.40  # УВЕЛИЧЕНО с 1.30 до 1.40
+                        if action == 1:  # LONG
+                            thr = 1.15 if emergency_mode else 1.30
                             if volume_ratio < thr:
                                 return False
                         elif action == 2:  # SHORT
-                            # SHORT плохо работает → не шортим на "пустом" объёме
-                            thr = 0.70 if emergency_mode else 1.00  # ОСЛАБЛЕНО в emergency_mode
+                            thr = 0.90 if emergency_mode else 1.05
                             if volume_ratio < thr:
                                 return False
                 except Exception:
@@ -665,21 +1100,20 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                     rsi_norm = float(self.df.loc[self.current_step, 'rsi_norm'])
                     rsi_norm_val = rsi_norm
                     if action == 1:
-                        # 🔥 УЖЕСТОЧЕНО: более точная зона перепроданности для LONG
-                        # Анализ показал: оптимальная зона для LONG - перепроданность, но не экстремальная
-                        # В emergency_mode РАСШИРЯЕМ окно до (-0.7, 0.3) для возможности открытия сделок
-                        lo, hi = (-0.7, 0.3) if emergency_mode else (-0.4, 0.0)  # УЖЕСТОЧЕНО: было (-0.3, 0.3)
+                        # Более мягкая зона для LONG по отчёту: около RSI 15–50
+                        lo, hi = (-0.7, 0.2) if emergency_mode else (-0.4, 0.0)
                         if rsi_norm < lo or rsi_norm > hi:
                             return False
                     elif action == 2:
-                        # SHORT: запрещаем шорт в перепроданности (главный источник плохих шортов)
-                        lo, hi = (-0.2, 1.0) if emergency_mode else (0.10, 0.90)
+                        # 🔥 УЖЕСТОЧЕНО: SHORT только в зоне перекупленности (RSI 55-85)
+                        # Запрещаем шорт в перепроданности (главный источник плохих шортов)
+                        lo, hi = (0.0, 0.95) if emergency_mode else (0.15, 0.80)  # УЖЕСТОЧЕНО: RSI 57.5-90 (было 0.10-0.90)
                         if rsi_norm < lo or rsi_norm > hi:
                             return False
                 except Exception:
                     pass
             
-            # 5) ADX + DI - УЖЕСТОЧЕНО ДЛЯ LONG
+            # 5) ADX + DI (смягчённая версия по отчёту)
             if 'adx' in self.df.columns:
                 try:
                     adx_val = float(self.df.loc[self.current_step, 'adx'])
@@ -696,8 +1130,8 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                                 # УЖЕСТОЧЕНО: +DI должен быть минимум на 10% больше -DI
                                 if plus_di <= minus_di * 1.10:  # БЫЛО: просто plus_di <= minus_di
                                     return False
-                        # 🔥 ИСПОЛЬЗУЕМ АДАПТИВНЫЙ min_adx вместо жестко заданного значения!
-                        min_adx = self.min_adx if emergency_mode else 25.0  # В emergency_mode используем адаптивный фильтр
+                        # Используем адаптивный min_adx и более мягкий базовый порог
+                        min_adx = self.min_adx if emergency_mode else self.base_min_adx
                         if adx_val < min_adx:
                             return False
                     elif action == 2:
@@ -742,30 +1176,28 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 except Exception:
                     pass
             
-            # 7.1) Anti-chasing по последней свече (быстрый фильтр) - УЖЕСТОЧЕНО ДЛЯ LONG
+            # 7.1) Anti-chasing по последней свече (быстрый фильтр) - СМЯГЧЁННО ДЛЯ LONG
             try:
                 if self.current_step > 0 and 'close' in self.df.columns:
                     prev_close = float(self.df.loc[self.current_step - 1, 'close'])
                     if prev_close > 0:
                         last_change_pct = (price - prev_close) / prev_close * 100.0
                         if action == 1:
-                            # 🔥 УЖЕСТОЧЕНО: не покупаем после роста >1.0% (было 1.5%)
-                            # В emergency_mode ОСЛАБЛЯЕМ до 3.0% для возможности открытия сделок
+                            # Смягчаем: не покупаем после очень резкого пампа >1.5% или >2x ATR
                             if 'atr' in self.df.columns:
                                 atr_val = float(self.df.loc[self.current_step, 'atr'])
                                 atr_pct = (atr_val / prev_close) * 100.0
-                                # В emergency_mode разрешаем рост до 3.0% ИЛИ до 3x ATR
-                                threshold_pct = 3.0 if emergency_mode else 1.0
-                                threshold_atr_mult = 3.0 if emergency_mode else 1.5
+                                threshold_pct = 3.0 if emergency_mode else 1.5
+                                threshold_atr_mult = 3.0 if emergency_mode else 2.0
                                 if last_change_pct > max(threshold_pct, atr_pct * threshold_atr_mult):
                                     return False
-                            elif last_change_pct > (3.0 if emergency_mode else 1.0):  # Fallback если нет ATR
+                            elif last_change_pct > (3.0 if emergency_mode else 1.5):  # более мягкий порог
                                 return False
                         if action == 2:
-                            # В emergency_mode ОСЛАБЛЯЕМ для SHORT тоже
-                            threshold = -3.0 if emergency_mode else -1.5
+                            # Смягчаем анти-chasing для SHORT: фильтруем только падения >2.5–3%
+                            threshold = -4.0 if emergency_mode else -2.5
                             if last_change_pct < threshold:
-                                return False  # не шортим после резкого падения
+                                return False  # не шортим после очень резкого падения
             except Exception:
                 pass
             
@@ -786,6 +1218,24 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             if len(self.rr_stats) > 100:
                 self.rr_stats.pop(0)
             
+            # 9) СИГНАЛЫ СТРАТЕГИЙ
+            # Раньше мы ЖЕСТКО требовали наличие хотя бы одного сигнала стратегий
+            # в сторону входа (и блокировали вход при их отсутствии).
+            # Это вместе со строгими фильтрами приводило к долгому отсутствию сделок,
+            # даже при ослабленных ADX/RSI/volatility.
+            #
+            # Теперь сигналы стратегий используются ТОЛЬКО в наблюдении и reward,
+            # а НЕ как жесткий фильтр входа. Здесь специально ничего не блокируем.
+            if self.use_strategy_signals and not emergency_mode:
+                try:
+                    _ = self._get_strategy_signals()
+                    # Дополнительно можно было бы учитывать сигнал как мягкий фильтр (например,
+                    # снижать min_rr_threshold), но на этапе восстановления активности
+                    # оставляем входы независимыми от стратегий.
+                    pass
+                except Exception:
+                    pass  # Игнорируем любые ошибки стратегий
+                        
             return True
         
         except Exception:
@@ -1245,6 +1695,23 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         if self.position == 0:
             return False
         
+        # 🔥 ПРОВЕРКА МАКСИМАЛЬНОГО УБЫТКА НА СДЕЛКУ (0.8% вместо ~1.5%)
+        max_loss_threshold = 0.008  # 0.8% максимальный убыток на сделку
+        if self.position == 1:
+            current_loss = (self.entry_price - current_price) / self.entry_price
+            if current_loss >= max_loss_threshold:
+                self.exit_type = "SL_INITIAL"  # Принудительное закрытие при превышении лимита
+                self.actual_exit_price = current_price * 0.998
+                self.sl_count += 1
+                return True
+        elif self.position == -1:
+            current_loss = (current_price - self.entry_price) / self.entry_price
+            if current_loss >= max_loss_threshold:
+                self.exit_type = "SL_INITIAL"  # Принудительное закрытие при превышении лимита
+                self.actual_exit_price = current_price * 1.002
+                self.sl_count += 1
+                return True
+        
         if self.position == 1:
             if current_price <= self.current_sl:
                 self.exit_type = "SL_TRAILING" if self.trailing_active else "SL_INITIAL"
@@ -1477,6 +1944,34 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 volatility_ratio = row.get('volatility_ratio', 1.5)
                 # ВАЖНО: rsi_norm должен быть СО ЗНАКОМ.
                 # abs(...) ломает логику (LONG никогда не попадает в отрицательный диапазон).
+                
+                # 🔥 БОНУС ЗА СОВПАДЕНИЕ С СИГНАЛАМИ СТРАТЕГИЙ
+                if self.use_strategy_signals:
+                    try:
+                        strategy_signals = self._get_strategy_signals()
+                        strategy_bonus = 0.0
+
+                        if self.position == 1:  # LONG позиция
+                            # Бонус только за TREND / FLAT LONG
+                            strategy_bonus += strategy_signals["trend_long"] * 2.0
+                            strategy_bonus += strategy_signals["flat_long"] * 1.5
+
+                            long_count = strategy_signals["trend_long"] + strategy_signals["flat_long"]
+                            if long_count >= 2:
+                                strategy_bonus += 3.0  # Консенсус двух стратегий
+
+                        elif self.position == -1:  # SHORT позиция
+                            # Бонус только за TREND / FLAT SHORT
+                            strategy_bonus += strategy_signals["trend_short"] * 2.0
+                            strategy_bonus += strategy_signals["flat_short"] * 1.5
+
+                            short_count = strategy_signals["trend_short"] + strategy_signals["flat_short"]
+                            if short_count >= 2:
+                                strategy_bonus += 3.0
+
+                        reward += strategy_bonus * self.strategy_signals_weight
+                    except Exception:
+                        pass  # Игнорируем ошибки стратегий
                 rsi_norm = float(row.get('rsi_norm', 0))
                 prev_long = self.long_trades_count
                 prev_short = self.short_trades_count
@@ -1525,8 +2020,15 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 pnl_ratio = last_close['pnl_ratio']
                 rr_ratio = last_close.get('rr_ratio', 1.5)
                 
-                # Базовая награда за достижение TP (пропорциональна уровню)
-                tp_bonus = 15.0 * (tp_level * 0.85)  # Сбалансированная награда
+                # Базовая награда за достижение TP (разные бонусы для разных уровней)
+                if tp_level == 1:
+                    tp_bonus = 20.0  # УВЕЛИЧЕНО с ~12.75 до 20.0 для TP1
+                elif tp_level == 2:
+                    tp_bonus = 25.0  # УВЕЛИЧЕНО с ~19.55 до 25.0 для TP2
+                elif tp_level == 3:
+                    tp_bonus = 30.0  # УВЕЛИЧЕНО с ~25.5 до 30.0 для TP3
+                else:
+                    tp_bonus = 15.0 * (tp_level * 0.85)  # Fallback для других уровней
                 
                 # Бонус за PnL (логарифмический для избежания экстремальных значений)
                 pnl_bonus = min(25.0, np.log1p(abs(pnl_ratio) * 100) * 5.0)  # Логарифмический бонус
@@ -1591,7 +2093,7 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             last_trade = self.trade_history[-1]
             trade_quality = last_trade.get('trade_quality', 'NORMAL')
             if trade_quality == 'VERY_BAD':
-                reward -= 5.0  # Дополнительный штраф за VERY_BAD сделки
+                reward -= 10.0  # УВЕЛИЧЕНО с 5.0 до 10.0 - двойной штраф за VERY_BAD сделки
                 # Логи отключены
         
         # УЛУЧШЕННЫЙ БОНУС ЗА ХОРОШИЙ RR В ПОСЛЕДНИХ СДЕЛКАХ

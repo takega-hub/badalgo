@@ -4375,16 +4375,28 @@ def run_live_from_api(
                         zscore_before_cvd_filter = len(zscore_generated)
                         try:
                             trades = client.get_recent_trades(symbol, limit=2000)  # Увеличено для покрытия временного окна
-                            trades_df = _parse_trades(trades)
-                            cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=current_settings.strategy.amt_of_lookback_seconds)
-                            if cvd_metrics:
-                                dv = cvd_metrics["delta_velocity"]
-                                avg_abs = cvd_metrics["avg_abs_delta"]
-                                if avg_abs and abs(dv) > avg_abs * 3:
-                                    _log(f"⚠️ Z-Score: strong directional CVD detected (dv={dv:.0f}, avg={avg_abs:.0f}), skipping mean reversion signals", symbol)
-                                    zscore_generated = []
+                            if not trades:
+                                _log(f"⚠️ Z-Score: CVD filter skipped - no trades data from API", symbol)
+                            else:
+                                trades_df = _parse_trades(trades)
+                                if trades_df.empty:
+                                    _log(f"⚠️ Z-Score: CVD filter skipped - parsed trades DataFrame is empty (raw trades: {len(trades)})", symbol)
+                                else:
+                                    _log(f"🔍 Z-Score: CVD filter - parsed {len(trades_df)} trades from {len(trades)} raw trades", symbol)
+                                    cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=current_settings.strategy.amt_of_lookback_seconds)
+                                    if cvd_metrics:
+                                        dv = cvd_metrics["delta_velocity"]
+                                        avg_abs = cvd_metrics["avg_abs_delta"]
+                                        if avg_abs and abs(dv) > avg_abs * 3:
+                                            _log(f"⚠️ Z-Score: strong directional CVD detected (dv={dv:.0f}, avg={avg_abs:.0f}), skipping mean reversion signals", symbol)
+                                            zscore_generated = []
+                                    else:
+                                        _log(f"ℹ️ Z-Score: CVD filter - no metrics computed (insufficient data or time window)", symbol)
                         except Exception as e:
+                            import traceback
+                            error_details = traceback.format_exc()
                             _log(f"⚠️ Z-Score: CVD filter failed, keeping signals unfiltered: {e}", symbol)
+                            _log(f"   Error details: {error_details[:500]}", symbol)  # Первые 500 символов для диагностики
 
                         if zscore_generated:
                             _log(f"📊 Z-Score strategy: generated {len(zscore_generated)} actionable signals (total: {len(zscore_signals)}, before CVD filter: {zscore_before_cvd_filter})", symbol)
@@ -4398,6 +4410,40 @@ def run_live_from_api(
                             # Если удалось посчитать POC, добавляем его в reason, чтобы TP/SL могли использовать TP=POC
                             if zscore_poc is not None and "_poc_" not in sig.reason:
                                 sig.reason = f"{sig.reason}_poc_{zscore_poc:.2f}"
+                            
+                            # ДИАГНОСТИКА: Логируем исходный timestamp сигнала
+                            original_ts = sig.timestamp
+                            if isinstance(original_ts, pd.Timestamp):
+                                if original_ts.tzinfo is None:
+                                    original_ts = original_ts.tz_localize('UTC')
+                                else:
+                                    original_ts = original_ts.tz_convert('UTC')
+                                original_ts_py = original_ts.to_pydatetime()
+                            else:
+                                original_ts_py = original_ts
+                            
+                            # Проверяем, соответствует ли сигнал последней свече
+                            matches_last_candle = False
+                            if not df_ready.empty:
+                                last_candle_ts = df_ready.index[-1]
+                                if isinstance(last_candle_ts, pd.Timestamp):
+                                    if last_candle_ts.tzinfo is None:
+                                        last_candle_ts = last_candle_ts.tz_localize('UTC')
+                                    else:
+                                        last_candle_ts = last_candle_ts.tz_convert('UTC')
+                                    last_candle_time = last_candle_ts.to_pydatetime()
+                                    time_diff_seconds = abs((original_ts_py - last_candle_time).total_seconds())
+                                    matches_last_candle = time_diff_seconds <= 60
+                                    
+                                    _log(
+                                        f"🔍 Z-Score signal diagnostic: {sig.action.value} @ ${sig.price:.2f} | "
+                                        f"Original TS: {original_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                                        f"Last candle TS: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                                        f"Diff: {time_diff_seconds:.0f}s | "
+                                        f"Matches last candle: {matches_last_candle}",
+                                        symbol
+                                    )
+                            
                             all_signals.append(sig)
                             # Сохраняем сигнал в историю
                             try:
@@ -4411,7 +4457,15 @@ def run_live_from_api(
                                 
                                 # ВАЖНО: Если сигнал соответствует последней свече - обновляем timestamp на текущее время
                                 # Это гарантирует, что сигнал будет считаться свежим и обработан немедленно
+                                ts_log_before = ts_log
                                 ts_log = update_signal_timestamp_if_fresh(ts_log, "Z-Score")
+                                
+                                if ts_log != ts_log_before:
+                                    _log(
+                                        f"⚡ Z-Score signal timestamp UPDATED: {ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
+                                        f"{ts_log.strftime('%Y-%m-%d %H:%M:%S UTC')} (matched last candle)",
+                                        symbol
+                                    )
                                 
                                 add_signal(
                                     action=sig.action.value,
@@ -5375,6 +5429,7 @@ def run_live_from_api(
                 
                 try:
                     signal_ts = sig.timestamp
+                    original_ts = signal_ts
                     if isinstance(signal_ts, pd.Timestamp):
                         if signal_ts.tzinfo is None:
                             signal_ts = signal_ts.tz_localize('UTC')
@@ -5402,8 +5457,24 @@ def run_live_from_api(
                                 sig.timestamp = pd.Timestamp(updated_ts).tz_convert('UTC')
                             else:
                                 sig.timestamp = pd.Timestamp(updated_ts, tz='UTC')
+                            
+                            # Логируем обновление timestamp
+                            _log(
+                                f"⚡ Signal object timestamp UPDATED: {signal_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
+                                f"{updated_ts.strftime('%Y-%m-%d %H:%M:%S UTC')} (matched last candle, diff: {time_diff_seconds:.0f}s)",
+                                symbol
+                            )
+                        else:
+                            # Логируем, почему timestamp НЕ был обновлен
+                            _log(
+                                f"⏸️ Signal object timestamp NOT updated: signal TS {signal_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} "
+                                f"differs from last candle {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} by {time_diff_seconds:.0f}s (>60s threshold)",
+                                symbol
+                            )
                 except Exception as e:
                     _log(f"⚠️ Error updating signal object timestamp: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
                 
                 return sig
             
@@ -5790,6 +5861,73 @@ def run_live_from_api(
                         elif available_signals:
                             # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
                             sig = None
+                            # Детальное логирование для диагностики проблемы со свежестью
+                            _log(f"⏳ Priority mode (no position): No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...", symbol)
+                            _log(f"📊 Signal freshness diagnostic for {symbol}:", symbol)
+                            
+                            # Логируем информацию о последней свече
+                            if not df_ready.empty:
+                                last_candle_ts = df_ready.index[-1]
+                                if isinstance(last_candle_ts, pd.Timestamp):
+                                    if last_candle_ts.tzinfo is None:
+                                        last_candle_ts = last_candle_ts.tz_localize('UTC')
+                                    else:
+                                        last_candle_ts = last_candle_ts.tz_convert('UTC')
+                                    last_candle_time = last_candle_ts.to_pydatetime()
+                                    _log(f"   • Last candle timestamp: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}", symbol)
+                                    
+                                    current_time_utc = datetime.now(timezone.utc)
+                                    _log(f"   • Current time UTC: {current_time_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}", symbol)
+                                    _log(f"   • Time diff (current - last candle): {(current_time_utc - last_candle_time).total_seconds():.0f} seconds", symbol)
+                            
+                            # Логируем детали каждого сигнала
+                            for name, s in available_signals[:5]:  # Первые 5 для диагностики
+                                try:
+                                    signal_ts = s.timestamp
+                                    if isinstance(signal_ts, pd.Timestamp):
+                                        if signal_ts.tzinfo is None:
+                                            signal_ts = signal_ts.tz_localize('UTC')
+                                        else:
+                                            signal_ts = signal_ts.tz_convert('UTC')
+                                        signal_time = signal_ts.to_pydatetime()
+                                    else:
+                                        signal_time = signal_ts
+                                    
+                                    # Проверяем свежесть
+                                    is_fresh = is_signal_fresh(s, df_ready)
+                                    
+                                    # Вычисляем возраст от текущего времени
+                                    current_time_utc = datetime.now(timezone.utc)
+                                    age_seconds = abs((current_time_utc - signal_time).total_seconds())
+                                    age_minutes = age_seconds / 60
+                                    
+                                    # Вычисляем разницу от последней свечи
+                                    if not df_ready.empty:
+                                        last_candle_ts = df_ready.index[-1]
+                                        if isinstance(last_candle_ts, pd.Timestamp):
+                                            if last_candle_ts.tzinfo is None:
+                                                last_candle_ts = last_candle_ts.tz_localize('UTC')
+                                            else:
+                                                last_candle_ts = last_candle_ts.tz_convert('UTC')
+                                            last_candle_time = last_candle_ts.to_pydatetime()
+                                            diff_from_candle = abs((signal_time - last_candle_time).total_seconds())
+                                        else:
+                                            diff_from_candle = None
+                                    else:
+                                        diff_from_candle = None
+                                    
+                                    fresh_status = "✅ FRESH" if is_fresh else "❌ NOT FRESH"
+                                    _log(
+                                        f"   • {name.upper()}: {s.action.value} @ ${s.price:.2f} | "
+                                        f"Signal TS: {signal_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                                        f"Age: {age_minutes:.1f} min | "
+                                        f"Diff from candle: {diff_from_candle:.0f}s" if diff_from_candle is not None else "N/A" + " | "
+                                        f"{fresh_status}",
+                                        symbol
+                                    )
+                                except Exception as e:
+                                    _log(f"   • {name.upper()}: Error checking freshness: {e}", symbol)
+                            
                             print(
                                 "[live] ⏳ Priority mode (no position): No fresh signals available. "
                                 "Waiting for fresh signals (max age: 15 minutes)..."

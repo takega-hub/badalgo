@@ -8,7 +8,20 @@ import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-from crypto_env_v17_optimized import CryptoTradingEnvV17_Optimized
+"""
+ВНИМАНИЕ по поводу импортов:
+- При запуске как модуль:  `python -m bot.train_v17_optimized`
+  модуль `bot` является пакетом, и нужно использовать `from bot.crypto_env_v17_optimized import ...`.
+- При запуске как скрипт из корня: `python bot/train_v17_optimized.py`
+  можно использовать простой импорт `from crypto_env_v17_optimized import ...` при наличии `bot` в PYTHONPATH.
+
+Ниже делаем двойной импорт, чтобы покрыть оба сценария.
+"""
+try:
+    from bot.crypto_env_v17_optimized import CryptoTradingEnvV17_Optimized
+except ModuleNotFoundError:
+    # fallback для запуска как скрипта из корня проекта
+    from crypto_env_v17_optimized import CryptoTradingEnvV17_Optimized
 
 
 class RRMonitoringCallback(BaseCallback):
@@ -552,7 +565,7 @@ def train_optimized_model():
     optimized_config = load_optimized_config()
     
     # Создаем среду с оптимизированными параметрами
-    log_file = os.path.abspath('./logs/v17_optimized_v2_2/train_v17_log.csv')
+    log_file = os.path.abspath('./logs/v17_optimized_v2/train_v17_log.csv')
     
     def make_train_env():
         # Базовые параметры
@@ -577,6 +590,10 @@ def train_optimized_model():
                 'atr_multiplier': optimized_config.get('atr_multiplier', 2.5),
             })
         
+        # Добавляем параметры для интеграции сигналов стратегий
+        env_params['use_strategy_signals'] = True  # Включаем сигналы стратегий
+        env_params['strategy_signals_weight'] = 0.3  # Вес сигналов стратегий в reward (30%)
+        
         env = CryptoTradingEnvV17_Optimized(**env_params)
         return env
     
@@ -586,7 +603,24 @@ def train_optimized_model():
         
         # УЛУЧШЕННАЯ КОНФИГУРАЦИЯ МОДЕЛИ
         # Более глубокая архитектура с лучшей способностью к обучению
-        n_features = len(obs_cols) + 12
+        # 🔥 ИСПРАВЛЕНО: учитываем сигналы стратегий (14 признаков)
+        n_strategy_signals = 14  # ZScore, SMC, ICT, Trend, Flat, ML, Momentum (по 2 сигнала каждый)
+        n_features = len(obs_cols) + n_strategy_signals + 12  # market_data + strategy_signals + position_state
+        
+        # Отладочный вывод для проверки размеров
+        print(f"\n📊 РАЗМЕРЫ OBSERVATION SPACE:")
+        print(f"   obs_cols: {len(obs_cols)} признаков")
+        print(f"   strategy_signals: {n_strategy_signals} признаков")
+        print(f"   position_state: 12 признаков")
+        print(f"   ИТОГО: {n_features} признаков")
+        
+        # Проверяем, что размер окружения совпадает
+        env_obs_size = train_env.observation_space.shape[0]
+        if env_obs_size != n_features:
+            print(f"⚠️ ПРЕДУПРЕЖДЕНИЕ: Размер окружения ({env_obs_size}) не совпадает с вычисленным ({n_features})")
+        else:
+            print(f"✅ Размеры совпадают: {env_obs_size}")
+        
         # Увеличиваем размер скрытых слоев для лучшей способности к обучению
         hidden_size = min(512, max(256, n_features * 3))  # УВЕЛИЧЕНО с 256 до 512
         
@@ -626,9 +660,26 @@ def train_optimized_model():
         if continue_training:
             print(f"📥 Загрузка модели из {model_path}...")
             try:
-                model = PPO.load(model_path, env=train_env)
-                print("✅ Модель успешно загружена!")
-                print(f"   Текущий шаг обучения: {model.num_timesteps:,}")
+                # Проверяем совместимость размеров observation space
+                # Получаем размер из окружения
+                env_obs_size = train_env.observation_space.shape[0]
+                
+                # Пытаемся загрузить модель без env для проверки
+                temp_model = PPO.load(model_path, env=None)
+                model_obs_size = temp_model.observation_space.shape[0]
+                
+                if env_obs_size != model_obs_size:
+                    print(f"⚠️ НЕСОВМЕСТИМОСТЬ РАЗМЕРОВ:")
+                    print(f"   Окружение ожидает: {env_obs_size} признаков")
+                    print(f"   Модель ожидает: {model_obs_size} признаков")
+                    print(f"   🔥 Старая модель несовместима с новым окружением (добавлены сигналы стратегий)")
+                    print(f"   🆕 Создаем новую модель...")
+                    continue_training = False
+                else:
+                    # Размеры совпадают, загружаем с окружением
+                    model = PPO.load(model_path, env=train_env)
+                    print("✅ Модель успешно загружена!")
+                    print(f"   Текущий шаг обучения: {model.num_timesteps:,}")
             except Exception as e:
                 print(f"⚠️ Ошибка загрузки модели: {e}")
                 print("🆕 Создаем новую модель...")
@@ -883,6 +934,8 @@ def test_model(model, test_df, obs_cols):
             commission=0.001,
             slippage=0.0005,
             log_file=test_log_file,
+            use_strategy_signals=True,  # Включаем сигналы стратегий для тестирования
+            strategy_signals_weight=0.3,  # Вес сигналов стратегий в reward (30%)
             training_mode='optimized'
         )
         return env
