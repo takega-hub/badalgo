@@ -4472,16 +4472,28 @@ def run_live_from_api(
                                     MAX_AGE_FOR_PRICE_MATCH_HOURS = 6  # Максимальный возраст для совпадения по цене
                                     age_hours = time_diff_seconds / 3600
                                     
-                                    if price_match and (not matches_last_candle or age_hours <= MAX_AGE_FOR_PRICE_MATCH_HOURS):
-                                        # Цена совпадает, но timestamp старый - это сигнал с последней свечи со старым timestamp
-                                        # Обновляем timestamp на текущее время для немедленного исполнения
+                                    # ВАЖНО: Проверяем свежесть сигнала перед тем как считать его соответствующим последней свече
+                                    # Сигнал должен быть не старше 15 минут от последней свечи, чтобы считаться свежим
+                                    MAX_FRESH_AGE_SECONDS = 900  # 15 минут
+                                    is_fresh_by_age = time_diff_seconds <= MAX_FRESH_AGE_SECONDS
+                                    
+                                    if price_match and is_fresh_by_age:
+                                        # Цена совпадает и сигнал свежий (не старше 15 минут) - это сигнал с последней свечи
+                                        # Обновим timestamp на время последней свечи (не на текущее время!)
                                         is_last_row_signal = True
                                         matches_last_candle = True
                                         _log(
-                                            f"🔍 Z-Score signal detected as LAST ROW signal (price match): {sig.action.value} @ ${sig.price:.2f} | "
+                                            f"🔍 Z-Score signal detected as FRESH LAST ROW signal (price match + fresh): {sig.action.value} @ ${sig.price:.2f} | "
                                             f"Original TS: {original_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} ({age_hours:.1f}h old) | "
                                             f"Last candle TS: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
-                                            f"Price match: {price_match} | Will update to current time",
+                                            f"Price match: {price_match} | Will update to last candle time",
+                                            symbol
+                                        )
+                                    elif price_match and not is_fresh_by_age:
+                                        # Цена совпадает, но сигнал слишком старый - не считаем его свежим
+                                        _log(
+                                            f"⏭️ Z-Score signal price matches but TOO OLD (age: {age_hours:.1f}h > 15min): {sig.action.value} @ ${sig.price:.2f} | "
+                                            f"Will NOT update timestamp - signal is stale",
                                             symbol
                                         )
                                     
@@ -4495,15 +4507,26 @@ def run_live_from_api(
                                         symbol
                                     )
                             
-                            # ВАЖНО: Добавляем только свежие сигналы или сигналы, которые соответствуют последней свече
+                            # ВАЖНО: Добавляем только свежие сигналы (не старше 15 минут от последней свечи)
                             # Это предотвращает обработку старых сигналов из исторических данных
                             MAX_SIGNAL_AGE_SECONDS = 900  # 15 минут
-                            if matches_last_candle or is_last_row_signal or time_diff_seconds <= MAX_SIGNAL_AGE_SECONDS:
+                            
+                            # Сигнал считается свежим если:
+                            # 1. Соответствует последней свече по времени (в пределах 1 минуты) ИЛИ
+                            # 2. Соответствует последней свече по цене И не старше 15 минут ИЛИ
+                            # 3. Не старше 15 минут от последней свечи
+                            is_fresh = (
+                                matches_last_candle or 
+                                (is_last_row_signal and time_diff_seconds <= MAX_SIGNAL_AGE_SECONDS) or
+                                time_diff_seconds <= MAX_SIGNAL_AGE_SECONDS
+                            )
+                            
+                            if is_fresh:
                                 all_signals.append(sig)
                             else:
                                 _log(
                                     f"⏭️ Z-Score signal skipped (too old): {sig.action.value} @ ${sig.price:.2f} | "
-                                    f"Age: {time_diff_seconds/3600:.1f}h",
+                                    f"Age: {time_diff_seconds/3600:.1f}h (max: {MAX_SIGNAL_AGE_SECONDS/60:.0f}min)",
                                     symbol
                                 )
                             # Сохраняем сигнал в историю
@@ -4516,31 +4539,53 @@ def run_live_from_api(
                                         ts_log = ts_log.tz_convert('UTC')
                                     ts_log = ts_log.to_pydatetime()
                                 
-                                # ВАЖНО: Если сигнал соответствует последней свече - обновляем timestamp на текущее время в MSK
-                                # Это гарантирует, что сигнал будет считаться свежим и обработан немедленно
+                                # ВАЖНО: Обновляем timestamp только если сигнал соответствует последней свече
+                                # Используем время последней свечи, а не текущее время
                                 ts_log_before = ts_log
                                 
-                                # Если сигнал был определен как сигнал с последней строки (даже со старым timestamp),
-                                # принудительно обновляем timestamp на текущее время в MSK
+                                # Если сигнал соответствует последней свече (по времени или по цене),
+                                # обновляем timestamp на время последней свечи
                                 if is_last_row_signal or matches_last_candle:
-                                    import pytz
-                                    msk_tz = pytz.timezone('Europe/Moscow')
-                                    # Получаем текущее время в UTC и конвертируем в MSK для сохранения в историю
-                                    current_time_utc = datetime.now(timezone.utc)
-                                    current_time_msk = current_time_utc.astimezone(msk_tz)
-                                    ts_log = current_time_msk  # Сохраняем в MSK для соответствия формату истории
-                                    
-                                    _log(
-                                        f"⚡ Z-Score signal timestamp FORCED UPDATE (last row/match): "
-                                        f"{ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
-                                        f"{current_time_utc.strftime('%Y-%m-%d %H:%M:%S UTC')} (UTC) / "
-                                        f"{current_time_msk.strftime('%Y-%m-%d %H:%M:%S MSK')} (MSK)",
-                                        symbol
-                                    )
-                                else:
-                                    ts_log = update_signal_timestamp_if_fresh(ts_log, "Z-Score")
-                                    if ts_log != ts_log_before:
-                                        # Конвертируем обновленный timestamp в MSK для сохранения
+                                    if not df_ready.empty:
+                                        # Используем время последней свечи как timestamp сигнала
+                                        last_candle_ts = df_ready.index[-1]
+                                        if isinstance(last_candle_ts, pd.Timestamp):
+                                            if last_candle_ts.tzinfo is None:
+                                                last_candle_ts = last_candle_ts.tz_localize('UTC')
+                                            else:
+                                                last_candle_ts = last_candle_ts.tz_convert('UTC')
+                                            last_candle_time = last_candle_ts.to_pydatetime()
+                                            
+                                            # Конвертируем в MSK для сохранения в историю
+                                            import pytz
+                                            msk_tz = pytz.timezone('Europe/Moscow')
+                                            ts_log = last_candle_time.astimezone(msk_tz)
+                                            
+                                            # Обновляем timestamp в объекте сигнала на время последней свечи (в UTC)
+                                            sig.timestamp = pd.Timestamp(last_candle_time).tz_localize('UTC')
+                                            
+                                            _log(
+                                                f"⚡ Z-Score signal timestamp UPDATED to last candle time: "
+                                                f"{ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
+                                                f"{last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} (UTC) / "
+                                                f"{ts_log.strftime('%Y-%m-%d %H:%M:%S MSK')} (MSK)",
+                                                symbol
+                                            )
+                                        else:
+                                            # Если не удалось получить время последней свечи, используем текущее время
+                                            import pytz
+                                            msk_tz = pytz.timezone('Europe/Moscow')
+                                            current_time_utc = datetime.now(timezone.utc)
+                                            ts_log = current_time_utc.astimezone(msk_tz)
+                                            sig.timestamp = pd.Timestamp(current_time_utc).tz_localize('UTC')
+                                            _log(
+                                                f"⚠️ Z-Score signal timestamp updated to current time (fallback): "
+                                                f"{ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
+                                                f"{current_time_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                                                symbol
+                                            )
+                                    else:
+                                        # Если DataFrame пустой, оставляем timestamp как есть
                                         import pytz
                                         msk_tz = pytz.timezone('Europe/Moscow')
                                         if isinstance(ts_log, datetime):
@@ -4548,24 +4593,15 @@ def run_live_from_api(
                                                 ts_log = ts_log.astimezone(msk_tz)
                                             elif ts_log.tzinfo != msk_tz:
                                                 ts_log = ts_log.astimezone(timezone.utc).astimezone(msk_tz)
-                                        
-                                        _log(
-                                            f"⚡ Z-Score signal timestamp UPDATED: {ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
-                                            f"{ts_log.strftime('%Y-%m-%d %H:%M:%S %Z')} (matched last candle)",
-                                            symbol
-                                        )
-                                
-                                # Также обновляем timestamp в объекте сигнала для немедленного исполнения
-                                # ВАЖНО: Для проверки свежести используем UTC время, но в историю сохраняем в MSK
-                                if is_last_row_signal or matches_last_candle:
-                                    # Получаем текущее время в UTC для объекта сигнала (для проверки свежести)
-                                    current_time_utc = datetime.now(timezone.utc)
-                                    sig.timestamp = pd.Timestamp(current_time_utc).tz_localize('UTC')
-                                    _log(
-                                        f"✅ Z-Score signal object timestamp updated to UTC for freshness check: "
-                                        f"{current_time_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-                                        symbol
-                                    )
+                                else:
+                                    # Сигнал не соответствует последней свече - конвертируем в MSK для сохранения
+                                    import pytz
+                                    msk_tz = pytz.timezone('Europe/Moscow')
+                                    if isinstance(ts_log, datetime):
+                                        if ts_log.tzinfo == timezone.utc:
+                                            ts_log = ts_log.astimezone(msk_tz)
+                                        elif ts_log.tzinfo != msk_tz:
+                                            ts_log = ts_log.astimezone(timezone.utc).astimezone(msk_tz)
                                 
                                 add_signal(
                                     action=sig.action.value,
