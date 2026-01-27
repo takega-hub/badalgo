@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def analyze_training_logs(log_file: str = '../logs/v17_optimized/train_v17_log.csv'):
+def analyze_training_logs(log_file: str = '../logs/v17_optimized_v2/train_v17_log.csv'):
     """Детальный анализ логов обучения"""
     
     if not os.path.exists(log_file):
@@ -599,9 +599,9 @@ def analyze_feature_importance(trades_df: pd.DataFrame, log_file: str, pnl_col: 
 if __name__ == "__main__":
     # Проверяем разные возможные пути
     possible_paths = [
-        '../logs/v17_optimized/train_v17_log.csv',
-        './logs/v17_optimized/train_v17_log.csv',
-        'logs/v17_optimized/train_v17_log.csv',
+        '../logs/v17_optimized_v2/train_v17_log.csv',
+        './logs/v17_optimized_v2/train_v17_log.csv',
+        'logs/v17_optimized_v2/train_v17_log.csv',
     ]
     
     log_file = None

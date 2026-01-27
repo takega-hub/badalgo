@@ -13,29 +13,29 @@
     "strategy_priority": "trend"
   },
   "ETHUSDT": {
-    "enable_trend_strategy": true,
-    "enable_flat_strategy": true,
+    "enable_trend_strategy": false,
+    "enable_flat_strategy": false,
     "enable_ml_strategy": false,
     "enable_momentum_strategy": false,
     "enable_liquidity_sweep_strategy": false,
     "enable_smc_strategy": false,
-    "enable_ict_strategy": false,
+    "enable_ict_strategy": true,
     "enable_zscore_strategy": false,
     "enable_vbo_strategy": false,
     "enable_amt_of_strategy": false,
-    "strategy_priority": "trend"
+    "strategy_priority": "ict"
   },
   "SOLUSDT": {
-    "enable_trend_strategy": true,
-    "enable_flat_strategy": true,
+    "enable_trend_strategy": false,
+    "enable_flat_strategy": false,
     "enable_ml_strategy": false,
     "enable_momentum_strategy": false,
     "enable_liquidity_sweep_strategy": false,
     "enable_smc_strategy": false,
-    "enable_ict_strategy": false,
+    "enable_ict_strategy": true,
     "enable_zscore_strategy": false,
     "enable_vbo_strategy": false,
     "enable_amt_of_strategy": false,
-    "strategy_priority": "trend"
+    "strategy_priority": "ict"
   }
 }

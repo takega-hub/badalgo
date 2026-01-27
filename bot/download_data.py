@@ -3,7 +3,7 @@ import ccxt
 import os
 import time
 
-def download_history(symbol='BTC/USDT', timeframe='15m', target_candles=100000):
+def download_history(symbol='ETH/USDT', timeframe='15m', target_candles=50000):
     exchange = ccxt.binance()
     print(f"--- Запуск глубокой загрузки истории для {symbol} ---")
     
@@ -52,7 +52,7 @@ def download_history(symbol='BTC/USDT', timeframe='15m', target_candles=100000):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
 
     os.makedirs('data', exist_ok=True)
-    file_path = 'data/btc_15m.csv'
+    file_path = 'data/eth_15m.csv'
     df.to_csv(file_path, index=False)
     
     print(f"--- Загрузка завершена! ---")
@@ -60,4 +60,4 @@ def download_history(symbol='BTC/USDT', timeframe='15m', target_candles=100000):
     print(f"Диапазон: {df['datetime'].iloc[0]} >>> {df['datetime'].iloc[-1]}")
 
 if __name__ == "__main__":
-    download_history(target_candles=100000)
+    download_history(target_candles=50000)

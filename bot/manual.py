@@ -221,7 +221,8 @@ def show_status(settings: AppSettings):
     if orders:
         print(f"\nOpen Orders ({len(orders)}):")
         for order in orders[:5]:  # показываем первые 5
-            print(f"  - {order['side']} {order['qty']:.3f} @ ${order['price']:.2f if order['price'] else 'Market'}")
+            price_str = f"${order['price']:.2f}" if order['price'] else 'Market'
+            print(f"  - {order['side']} {order['qty']:.3f} @ {price_str}")
     else:
         print("\nOpen Orders: None")
     

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import json
 from datetime import datetime
+import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
@@ -94,8 +95,8 @@ class RRMonitoringCallback(BaseCallback):
 def setup_directories():
     """Создание необходимых директорий"""
     directories = [
-        './logs/v17_optimized',
-        './models/v17_optimized',
+        './logs/v17_optimized_v2',
+        './models/v17_optimized_v2',
         './data'
     ]
     
@@ -551,7 +552,7 @@ def train_optimized_model():
     optimized_config = load_optimized_config()
     
     # Создаем среду с оптимизированными параметрами
-    log_file = os.path.abspath('./logs/v17_optimized/train_v17_log.csv')
+    log_file = os.path.abspath('./logs/v17_optimized_v2_2/train_v17_log.csv')
     
     def make_train_env():
         # Базовые параметры
@@ -562,7 +563,10 @@ def train_optimized_model():
             'commission': 0.001,
             'slippage': 0.0005,
             'log_file': log_file,
-            'training_mode': 'optimized'
+            'training_mode': 'optimized',
+            # V2: больше сделок для обучения (быстрее учится балансировать LONG/SHORT)
+            'max_daily_trades': 15,
+            'trade_cooldown_steps': 5
         }
         
         # Добавляем оптимизированные параметры если они есть
@@ -580,19 +584,26 @@ def train_optimized_model():
         # Создаем среду
         train_env = DummyVecEnv([make_train_env])
         
-        # Конфигурация модели
+        # УЛУЧШЕННАЯ КОНФИГУРАЦИЯ МОДЕЛИ
+        # Более глубокая архитектура с лучшей способностью к обучению
         n_features = len(obs_cols) + 12
-        hidden_size = min(256, max(128, n_features * 2))
+        # Увеличиваем размер скрытых слоев для лучшей способности к обучению
+        hidden_size = min(512, max(256, n_features * 3))  # УВЕЛИЧЕНО с 256 до 512
         
+        # УЛУЧШЕННАЯ АРХИТЕКТУРА: более глубокая сеть с residual-like структурами
+        # Policy network: более глубокая для лучшего принятия решений
+        # Value network: более широкая для лучшей оценки состояний
         policy_kwargs = dict(
             net_arch=[dict(
-                pi=[hidden_size, hidden_size//2, hidden_size//4],
-                vf=[hidden_size, hidden_size//2, hidden_size//4]
-            )]
+                pi=[hidden_size, hidden_size, hidden_size//2, hidden_size//4],  # 4 слоя вместо 3
+                vf=[hidden_size, hidden_size//2, hidden_size//4]  # Value network остается 3 слоя
+            )],
+            activation_fn=nn.ReLU,  # Явно указываем активацию
+            ortho_init=False  # Отключаем ортогональную инициализацию для более гибкого обучения
         )
         
         # Проверяем, есть ли существующая модель для продолжения обучения
-        model_path = "./models/v17_optimized/ppo_final"
+        model_path = "./models/v17_optimized_v2/ppo_final"
         continue_training = False
         
         # Проверяем аргументы командной строки
@@ -630,7 +641,7 @@ def train_optimized_model():
                 policy_kwargs=policy_kwargs,
                 verbose=1,
                 learning_rate=1.5e-4,  # Базовый learning rate (можно адаптировать по фазам)
-                ent_coef=0.05,  # УВЕЛИЧЕНО с 0.03 до 0.05 для большего разнообразия действий (особенно SHORT)
+                ent_coef=0.10,  # УВЕЛИЧЕНО до 0.10 для максимального exploration SHORT (по рекомендации анализа)
                 n_steps=2048,  # Размер буфера для сбора опыта
                 batch_size=128,  # Размер батча для обновления
                 n_epochs=15,  # Количество эпох обновления на каждый буфер
@@ -639,7 +650,7 @@ def train_optimized_model():
                 clip_range=0.15,
                 vf_coef=0.6,
                 max_grad_norm=0.5,
-                tensorboard_log="./logs/v17_optimized/tensorboard/"
+                tensorboard_log="./logs/v17_optimized_v2/tensorboard/"
             )
         
         # Callback для мониторинга
@@ -699,7 +710,7 @@ def train_optimized_model():
             )
             
             # Сохраняем промежуточную модель
-            phase_model_path = f"./models/v17_optimized/ppo_{phase['name']}"
+            phase_model_path = f"./models/v17_optimized_v2/ppo_{phase['name']}"
             model.save(phase_model_path)
             print(f"💾 Сохранена модель фазы {i} (шаг {model.num_timesteps:,})")
             
@@ -746,7 +757,7 @@ def train_optimized_model():
         print("\n✅ ОБУЧЕНИЕ ЗАВЕРШЕНО!")
         
         # Сохранение финальной модели
-        final_model_path = "./models/v17_optimized/ppo_final"
+        final_model_path = "./models/v17_optimized_v2/ppo_final"
         model.save(final_model_path)
         print(f"💾 Финальная модель сохранена: {final_model_path}")
         
@@ -861,7 +872,7 @@ def test_model(model, test_df, obs_cols):
     print("🧪 ТЕСТИРОВАНИЕ НА НОВЫХ ДАННЫХ")
     print("="*60)
     
-    test_log_file = os.path.abspath('./logs/v17_optimized/test_results.csv')
+    test_log_file = os.path.abspath('./logs/v17_optimized_v2/test_results.csv')
     
     def make_test_env():
         # Используем больше тестовых данных для статистически значимых результатов
@@ -950,9 +961,9 @@ def main():
     print("🎉 ОПТИМИЗИРОВАННОЕ ОБУЧЕНИЕ ЗАВЕРШЕНО!")
     print("="*60)
     print("📁 Результаты сохранены в:")
-    print("   - Модели: ./models/v17_optimized/")
-    print("   - Логи: ./logs/v17_optimized/")
-    print("   - Tensorboard логи: ./logs/v17_optimized/tensorboard/")
+    print("   - Модели: ./models/v17_optimized_v2/")
+    print("   - Логи: ./logs/v17_optimized_v2/")
+    print("   - Tensorboard логи: ./logs/v17_optimized_v2/tensorboard/")
 
 
 if __name__ == "__main__":

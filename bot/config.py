@@ -62,12 +62,25 @@ class StrategyParams:
     # Range/flat strategy parameters (Mean Reversion + Volume Filter)
     bb_length: int = 20  # период для Bollinger Bands
     bb_std: float = 2.0  # стандартное отклонение для Bollinger Bands
-    range_rsi_oversold: float = 30.0  # RSI перепроданность (сигнал на покупку)
-    range_rsi_overbought: float = 70.0  # RSI перекупленность (сигнал на продажу)
-    range_volume_mult: float = 1.3  # максимальный объем для входа (Volume < Volume_SMA * mult)
-    range_tp_aggressive: bool = False  # использовать агрессивный TP (до противоположной границы BB)
-    range_stop_loss_pct: float = 0.015  # стоп-лосс 1.5% от входа
-    range_bb_touch_tolerance_pct: float = 0.002  # допуск для касания BB (0.2%)
+    range_rsi_oversold: float = 35.0  # RSI перепроданность (улучшено с 30)
+    range_rsi_overbought: float = 65.0  # RSI перекупленность (улучшено с 70)
+    range_volume_mult: float = 1.3  # максимальный объем для входа
+    range_tp_aggressive: bool = False
+    range_stop_loss_pct: float = 0.007  # стоп-лосс 0.7% (улучшено с 1.5%)
+    range_bb_touch_tolerance_pct: float = 0.002
+    
+    # Z-Score strategy parameters (Векторизированная)
+    zscore_window: int = 20
+    zscore_long: float = -2.2    # Порог входа Long (Z-Score)
+    zscore_short: float = 2.2     # Порог входа Short (Z-Score)
+    zscore_exit: float = 0.15     # Порог выхода (Z-Score -> 0.15 для компенсации комиссий)
+    zscore_adx_threshold: float = 30.0  # Макс ADX для Mean Reversion
+    zscore_vol_factor: float = 0.8
+    zscore_rsi_enabled: bool = True
+    zscore_rsi_long: float = 35.0
+    zscore_rsi_short: float = 65.0
+    zscore_stop_loss_atr: float = 2.0
+    zscore_take_profit_atr: float = 3.0
     
     # Momentum Breakout strategy parameters (Импульсный пробой для тренда)
     ema_fast_length: int = 20  # быстрая EMA
@@ -115,26 +128,27 @@ class StrategyParams:
     ict_fvg_max_age_bars: int = 20  # Максимальный возраст FVG для входа (в свечах)
     ict_liquidity_lookback_days: int = 1  # Количество дней для поиска ликвидности
     ict_atr_multiplier_sl: float = 2.0  # Множитель ATR для стоп-лосса
-    ict_rr_ratio: float = 3.0  # Минимальное соотношение Risk/Reward (1:3) - улучшено с 2.0 для лучших результатов
+    ict_rr_ratio: float = 2.0  # V10: Оптимальное соотношение Risk/Reward (1:2)
     ict_fvg_zone_expansion_mult: float = 0.15
     ict_fvg_tolerance: float = 0.005
-    ict_mss_close_required: bool = True
+    ict_mss_close_required: bool = True # V10: Требуем закрытия тела свечи для MSS
+    ict_fvg_search_window: int = 40 # Окно поиска FVG после снятия ликвидности
     ict_max_slippage_pct: float = 0.001
     ict_max_time_drift_sec: int = 5
     ict_round_number_step: Optional[float] = None
     ict_round_number_tol: float = 0.002
     ict_pdh_pdl_tol: float = 0.002
-    ict_breakeven_rr: float = 1.0
+    ict_breakeven_rr: float = 1.0 # V10: БУ при 1.0R
     ict_partial_rr: float = 2.0
     ict_partial_pct: float = 0.5
-    ict_breakeven_buffer_pct: float = 0.0005
+    ict_breakeven_buffer_pct: float = 0.0015 # V10: Буфер 0.15% для покрытия комиссий
     ict_enable_alligator_trailing: bool = True
     ict_trailing_buffer_pct: float = 0.0005
-    ict_mtf_bias_timeframe: str = "4H"
-    ict_risk_limit_pct: float = 0.10  # 10% limit
+    ict_mtf_bias_timeframe: str = "1h" # V10: Исправлено на строчную 'h'
+    ict_risk_limit_pct: float = 0.015 # V10: Лимит риска 1.5%
     
     # AMT & Order Flow Scalper (Absorption Squeeze) - базовые параметры для order flow анализа
-    amt_of_lookback_seconds: int = 60  # окно анализа тиков (секунды)
+    amt_of_lookback_seconds: int = 300  # окно анализа тиков (5 минут)
     amt_of_min_total_volume: float = 10_000.0  # минимальный суммарный объём в окне
     amt_of_min_buy_sell_ratio: float = 2.0  # во сколько раз покупки больше продаж для bear-squeeze
     amt_of_max_price_drift_pct: float = 0.05  # максимум движения цены в % при сильном CVD
@@ -281,11 +295,11 @@ class AppSettings:
     enable_liquidity_sweep_strategy: bool = False  # Стратегия "Liquidity Sweep" (снятие ликвидности) - ОТКЛЮЧЕНА: не дает результатов
     enable_smc_strategy: bool = False  # Smart Money Concepts стратегия
     enable_ict_strategy: bool = False  # ICT Silver Bullet стратегия
-    enable_zscore_strategy: bool = False  # Z-Score стратегия
+    enable_zscore_strategy: bool = True  # Z-Score стратегия (ВКЛЮЧЕНО)
     enable_vbo_strategy: bool = False  # VBO (Volatility Breakout) стратегия
     enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
     # Приоритетная стратегия при конфликте сигналов (глобальная, используется если нет настроек для конкретной пары)
-    strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "hybrid", "confluence" (liquidity отключена)
+    strategy_priority: str = "zscore"  # ПРИОРИТЕТ: zscore (для Mean Reversion)
     # Настройки стратегий для каждой пары отдельно
     symbol_strategy_settings: Dict[str, SymbolStrategySettings] = field(default_factory=dict)  # {"BTCUSDT": SymbolStrategySettings(...), ...}
     

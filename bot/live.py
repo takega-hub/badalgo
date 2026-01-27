@@ -4351,7 +4351,7 @@ def run_live_from_api(
                         # CVD‑фильтр: если поток агрессии слишком силён, блокируем Z-Score сигналы (защита от "падающих ножей")
                         zscore_before_cvd_filter = len(zscore_generated)
                         try:
-                            trades = client.get_recent_trades(symbol, limit=400)
+                            trades = client.get_recent_trades(symbol, limit=2000)  # Увеличено для покрытия временного окна
                             trades_df = _parse_trades(trades)
                             cvd_metrics = _compute_cvd_metrics(trades_df, lookback_seconds=current_settings.strategy.amt_of_lookback_seconds)
                             if cvd_metrics:
@@ -4475,16 +4475,10 @@ def run_live_from_api(
                     # Берём текущую цену из последней свечи
                     current_price = float(df_ready["close"].iloc[-1])
 
-                    # Конфиги для orderflow и профиля
-                    symbol_settings = _resolve_symbol_settings(symbol)
-                    abs_cfg = symbol_settings.absorption
-                    vp_cfg = symbol_settings.volume_profile
-
-                    # Allow runtime overrides for select parameters while keeping per-symbol thresholds
-                    abs_cfg.lookback_seconds = current_settings.strategy.amt_of_lookback_seconds
-                    abs_cfg.min_buy_sell_ratio = current_settings.strategy.amt_of_min_buy_sell_ratio
-                    abs_cfg.max_price_drift_pct = current_settings.strategy.amt_of_max_price_drift_pct
-                    vp_cfg.value_area_pct = current_settings.strategy.amt_of_value_area_pct
+                    # Конфиги для orderflow и профиля (разрешаем интеллектуально: реестр символов + глобальные настройки)
+                    from bot.amt_orderflow_strategy import resolve_final_amt_configs
+                    current_time_utc = datetime.now(timezone.utc)
+                    vp_cfg, abs_cfg = resolve_final_amt_configs(symbol, current_settings.strategy, current_time_utc=current_time_utc, use_adaptive_volume=True)
 
                     amt_signals = generate_amt_signals(
                         client=client,

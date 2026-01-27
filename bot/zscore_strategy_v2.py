@@ -127,8 +127,10 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     data["rsi"] = rsi(close)
 
     # Volume filter: compare to rolling mean volume
+    # Исправлено: для mean reversion нужен нормальный объем, но не обязательно высокий
+    # vol_factor = 0.8 означает, что объем должен быть >= 80% от среднего (не слишком низкий)
     data["vol_mean"] = data["volume"].rolling(window=params.window, min_periods=1).mean()
-    data["vol_ok"] = data["volume"] > (data["vol_mean"] * params.vol_factor)
+    data["vol_ok"] = data["volume"] >= (data["vol_mean"] * params.vol_factor)
 
     # SMA slope filter to detect flat market
     sma_diff = data["sma"].diff().abs() / (data["sma"].shift(1).replace(0, np.nan).abs() + params.epsilon)
@@ -178,9 +180,18 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
         idx = mask & blocked & (reasons == "")
         reasons[idx] = text
     data.loc[blocked, "reason"] = reasons[blocked]
-    # Also log debug messages for blocked entries
-    for i in np.where(blocked)[0]:
-        logger.debug("Signal blocked at %s: %s", data.index[i], reasons[i])
+    # Also log debug messages for blocked entries (только для последних 5 строк для производительности)
+    blocked_indices = np.where(blocked)[0]
+    if len(blocked_indices) > 0:
+        # Логируем только последние 5 заблокированных сигналов
+        for i in blocked_indices[-5:]:
+            logger.debug("Signal blocked at %s: %s (z=%.2f, adx=%.2f, rsi=%.2f, sma_flat=%s, vol_ok=%s)", 
+                        data.index[i], reasons[i],
+                        float(data.iloc[i].get("z", 0)),
+                        float(data.iloc[i].get("adx", 0)),
+                        float(data.iloc[i].get("rsi", 0)),
+                        bool(data.iloc[i].get("sma_flat", False)),
+                        bool(data.iloc[i].get("vol_ok", False)))
 
     # Exit logic using Z crossing towards mean and ATR-based SL/TP
     # Exit LONG when z >= -z_exit OR price reaches TP/SL based on ATR
@@ -196,22 +207,36 @@ def generate_signals(df: pd.DataFrame, params: Optional[StrategyParams] = None) 
     )
 
     # Mark exits
-    data.loc[long_exit & (data["signal"] == ""), "signal"] = "EXIT_LONG"
-    data.loc[short_exit & (data["signal"] == ""), "signal"] = "EXIT_SHORT"
+    # For LONG exit when z >= -z_exit (closer to 0)
+    data.loc[(data["z"] >= -z_exit) & (data["signal"] == ""), "signal"] = "EXIT_LONG"
+    # For SHORT exit when z <= z_exit (closer to 0)
+    data.loc[(data["z"] <= z_exit) & (data["signal"] == ""), "signal"] = "EXIT_SHORT"
+    
+    # Check ATR based exits if they are closer
+    long_atr_exit = (
+        (data["close"] >= data["sma"] + params.take_profit_atr * data["atr"]) |
+        (data["close"] <= data["sma"] - params.stop_loss_atr * data["atr"])
+    )
+    short_atr_exit = (
+        (data["close"] <= data["sma"] - params.take_profit_atr * data["atr"]) |
+        (data["close"] >= data["sma"] + params.stop_loss_atr * data["atr"])
+    )
+    
+    data.loc[long_atr_exit & (data["signal"] == ""), "signal"] = "EXIT_LONG"
+    data.loc[short_atr_exit & (data["signal"] == ""), "signal"] = "EXIT_SHORT"
 
     # Provide reasons for exit types
-    data.loc[long_exit & (data["signal"] == "EXIT_LONG"), "reason"] = (
-        "exit: z>=-z_exit or TP/SL hit"
-    )
-    data.loc[short_exit & (data["signal"] == "EXIT_SHORT"), "reason"] = (
-        "exit: z<=z_exit or TP/SL hit"
-    )
+    data.loc[data["signal"] == "EXIT_LONG", "reason"] = "exit long: z target or ATR SL/TP"
+    data.loc[data["signal"] == "EXIT_SHORT", "reason"] = "exit short: z target or ATR SL/TP"
 
     # Any non-empty signal should have a reason
     data.loc[(data["signal"] != "") & (data["reason"] == ""), "reason"] = data["signal"]
 
     # Keep only relevant columns for downstream systems
-    out_cols = list(df.columns) + ["sma", "std", "z", "atr", "adx", "rsi", "signal", "reason"]
+    out_cols = list(df.columns) + [
+        "sma", "std", "z", "atr", "adx", "rsi", "signal", "reason",
+        "z_long_thr", "z_short_thr", "market_allowed", "sma_flat", "vol_ok"
+    ]
     return data[out_cols]
 
 

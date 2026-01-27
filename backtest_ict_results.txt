@@ -1,0 +1,35 @@
+Loading data from data/btcusdt_15m.csv...
+
+--- Анализ структуры ICT ---
+Candles in Silver Bullet windows: 450 / 2880
+Liquidity Sweeps: 558
+FVG after sweeps: 241
+First 5 FVGs:
+  2025-12-27 14:45:00: bullish at index 30
+  2025-12-27 19:15:00: bullish at index 48
+  2025-12-27 20:00:00: bullish at index 51
+  2025-12-27 21:15:00: bullish at index 56
+  2025-12-27 21:30:00: bullish at index 57
+
+Generating signals...
+Actionable signals: 7
+First session candle: 2025-12-27 08:00:00
+
+First 5 signals:
+  2025-12-30 08:30:00: LONG @ 87910.42 (ict_sb_long_fvg_292)
+  2026-01-02 19:45:00: SHORT @ 89897.23 (ict_sb_short_fvg_622)
+  2026-01-06 19:00:00: SHORT @ 92216.90 (ict_sb_short_fvg_1002)
+  2026-01-12 08:00:00: SHORT @ 91548.02 (ict_sb_short_fvg_1538)
+  2026-01-12 09:00:00: SHORT @ 90807.05 (ict_sb_short_fvg_1542)
+
+Starting backtest loop (Balance=$100)...
+
+==============================
+ICT SILVER BULLET BACKTEST RESULTS
+==============================
+Total PnL: -0.15$ (-0.15%)
+Final Balance: 99.85$
+Win Rate: 33.33%
+Total Trades: 6
+Longs: 2, Shorts: 4
+TP hits: 2, SL hits: 4
