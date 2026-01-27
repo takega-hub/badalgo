@@ -76,34 +76,52 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
                     if col not in df_signals.columns:
                         return default
                     val = row[col]
+                    # СНАЧАЛА проверяем, является ли это Series
+                    if isinstance(val, pd.Series):
+                        if len(val) == 0:
+                            return default
+                        val = val.iloc[0]
+                    # Теперь проверяем на NaN (val уже скаляр)
                     if pd.isna(val):
                         return default
-                    # Если это Series, берем первое значение
-                    if isinstance(val, pd.Series):
-                        val = val.iloc[0] if len(val) > 0 else default
-                    return float(val) if pd.notna(val) else default
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return default
                 
                 def safe_get_bool(row, col, default=False):
                     if col not in df_signals.columns:
                         return default
                     val = row[col]
+                    # СНАЧАЛА проверяем, является ли это Series
+                    if isinstance(val, pd.Series):
+                        if len(val) == 0:
+                            return default
+                        val = val.iloc[0]
+                    # Теперь проверяем на NaN (val уже скаляр)
                     if pd.isna(val):
                         return default
-                    # Если это Series, берем первое значение
-                    if isinstance(val, pd.Series):
-                        val = val.iloc[0] if len(val) > 0 else default
-                    return bool(val) if pd.notna(val) else default
+                    try:
+                        return bool(val)
+                    except (ValueError, TypeError):
+                        return default
                 
                 def safe_get_str(row, col, default=""):
                     if col not in df_signals.columns:
                         return default
                     val = row[col]
+                    # СНАЧАЛА проверяем, является ли это Series
+                    if isinstance(val, pd.Series):
+                        if len(val) == 0:
+                            return default
+                        val = val.iloc[0]
+                    # Теперь проверяем на NaN (val уже скаляр)
                     if pd.isna(val):
                         return default
-                    # Если это Series, берем первое значение
-                    if isinstance(val, pd.Series):
-                        val = val.iloc[0] if len(val) > 0 else default
-                    return str(val) if pd.notna(val) else default
+                    try:
+                        return str(val)
+                    except (ValueError, TypeError):
+                        return default
                 
                 last_z = safe_get_float(last_row, "z", 0)
                 last_adx = safe_get_float(last_row, "adx", 0)
