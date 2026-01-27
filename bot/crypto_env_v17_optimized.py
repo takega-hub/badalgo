@@ -9,66 +9,23 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 
 # Импорты для интеграции сигналов стратегий
-# ВАЖНО: поддерживаем ОДНОВРЕМЕННО два сценария:
+# ВАЖНО: используем ТОЛЬКО стратегии из bot/strategy.py
+# Поддерживаем ОДНОВРЕМЕННО два сценария:
 #  1) Запуск как пакет:      python -m bot.train_v17_optimized
 #  2) Запуск как скрипт:     python bot/train_v17_optimized.py
-# Поэтому сначала пробуем абсолютные импорты `bot.*`, затем относительные `.*/.ml.*`.
+# Поэтому сначала пробуем абсолютные импорты `bot.*`, затем относительные `.*`.
 try:
-    from bot.zscore_strategy_v2 import generate_signals as generate_zscore_signals
+    from bot.strategy import generate_trend_signal, generate_flat_signal, generate_momentum_signal
     from bot.config import StrategyParams
-    ZSCORE_AVAILABLE = True
+    STRATEGY_AVAILABLE = True
 except ImportError:
     try:
-        from .zscore_strategy_v2 import generate_signals as generate_zscore_signals
+        from .strategy import generate_trend_signal, generate_flat_signal, generate_momentum_signal
         from .config import StrategyParams
-        ZSCORE_AVAILABLE = True
+        STRATEGY_AVAILABLE = True
     except ImportError as e:
-        ZSCORE_AVAILABLE = False
-        print(f"⚠️ ZScore strategy not available: {e}")
-
-try:
-    from bot.smc_strategy import build_smc_signals
-    SMC_AVAILABLE = True
-except ImportError:
-    try:
-        from .smc_strategy import build_smc_signals
-        SMC_AVAILABLE = True
-    except ImportError as e:
-        SMC_AVAILABLE = False
-        print(f"⚠️ SMC strategy not available: {e}")
-
-try:
-    from bot.ict_strategy import ICTStrategy
-    ICT_AVAILABLE = True
-except ImportError:
-    try:
-        from .ict_strategy import ICTStrategy
-        ICT_AVAILABLE = True
-    except ImportError as e:
-        ICT_AVAILABLE = False
-        print(f"⚠️ ICT strategy not available: {e}")
-
-try:
-    from bot.strategy import build_signals, generate_trend_signal, generate_flat_signal, generate_momentum_signal
-    TREND_FLAT_MOMENTUM_AVAILABLE = True
-except ImportError:
-    try:
-        from .strategy import build_signals, generate_trend_signal, generate_flat_signal, generate_momentum_signal
-        TREND_FLAT_MOMENTUM_AVAILABLE = True
-    except ImportError as e:
-        TREND_FLAT_MOMENTUM_AVAILABLE = False
-        print(f"⚠️ Trend/Flat/Momentum strategies not available: {e}")
-
-try:
-    from bot.ml.strategy_ml import build_ml_signals
-    ML_AVAILABLE = True
-except ImportError:
-    try:
-        from .ml.strategy_ml import build_ml_signals
-        ML_AVAILABLE = True
-    except ImportError as e:
-        ML_AVAILABLE = False
-        print(f"⚠️ ML strategy not available: {e}")
+        STRATEGY_AVAILABLE = False
+        print(f"⚠️ Strategy module not available: {e}")
 
 
 class CryptoTradingEnvV17_Optimized(gym.Env):
@@ -121,29 +78,25 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         
         # Инициализация стратегий (если доступны)
         self.strategy_params = None
-        self.ict_strategy = None
         if use_strategy_signals:
             try:
-                from bot.config import StrategyParams
-                self.strategy_params = StrategyParams()
-                if ICT_AVAILABLE:
-                    self.ict_strategy = ICTStrategy(self.strategy_params)
+                if STRATEGY_AVAILABLE:
+                    self.strategy_params = StrategyParams()
             except Exception as e:
                 # Не меняем self.use_strategy_signals, чтобы размер observation_space оставался консистентным.
                 # В случае ошибки _get_strategy_signals() просто вернет нули.
                 print(f"⚠️ Не удалось инициализировать стратегии: {e}")
         
-        # PRECOMPUTE: ZSCORE сигналы (1 раз на весь df) — чтобы честно эмулировать внешние стратегии
-        # и не пересчитывать сигналы на каждом шаге.
-        self._precompute_strategy_signals()
-        
         # 🔥 СИСТЕМА ОТСЛЕЖИВАНИЯ ЭФФЕКТИВНОСТИ СИГНАЛОВ СТРАТЕГИЙ
         # Статистика по каждому типу сигнала для адаптивного обучения
+        # Используем ТОЛЬКО стратегии из bot/strategy.py: Trend, Flat, Momentum
         self.strategy_stats = {
             'trend_long': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
             'trend_short': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
             'flat_long': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
             'flat_short': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
+            'momentum_long': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
+            'momentum_short': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
         }
         # Минимальное количество сделок для надежной статистики
         self.min_trades_for_stats = 5
@@ -356,55 +309,6 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         
         self.reset()
 
-    def _precompute_strategy_signals(self) -> None:
-        """Предварительный расчет сигналов стратегий на всём DataFrame.
-
-        Сейчас делаем пилот только для ZScore: создаём колонки:
-        - sig_zscore_long (0/1)
-        - sig_zscore_short (0/1)
-        """
-        try:
-            # Инициализируем колонки нулями, чтобы форма наблюдений была стабильной
-            self.df["sig_zscore_long"] = 0.0
-            self.df["sig_zscore_short"] = 0.0
-
-            if not self.use_strategy_signals:
-                return
-
-            if not ZSCORE_AVAILABLE or self.strategy_params is None:
-                return
-
-            # ВАЖНО: ZScore ожидает OHLCV. Берём копию, чтобы не мутировать self.df в стратегии.
-            df_in = self.df[["open", "high", "low", "close", "volume"]].copy()
-            z_df = generate_zscore_signals(df_in, self.strategy_params)
-            if z_df is None or len(z_df) == 0 or "signal" not in z_df.columns:
-                return
-
-            # Приводим длину на всякий случай (защита от несовпадений)
-            n = min(len(self.df), len(z_df))
-            sig = z_df["signal"].astype(str).iloc[:n]
-
-            self.df.loc[: n - 1, "sig_zscore_long"] = (sig == "LONG").astype(float).values
-            self.df.loc[: n - 1, "sig_zscore_short"] = (sig == "SHORT").astype(float).values
-
-            # Логируем суммарную статистику один раз
-            try:
-                long_cnt = int(self.df["sig_zscore_long"].sum())
-                short_cnt = int(self.df["sig_zscore_short"].sum())
-                total = max(1, len(self.df))
-                print(
-                    f"[PRECOMPUTE][ZSCORE] long={long_cnt} short={short_cnt} "
-                    f"(rate={(long_cnt + short_cnt) / total * 100:.2f}%)"
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            # Не валим env из-за precompute — просто оставляем нули
-            try:
-                print(f"⚠️ [PRECOMPUTE][ZSCORE] error: {e}")
-            except Exception:
-                pass
-    
     def _prepare_data_simple(self, df: pd.DataFrame) -> pd.DataFrame:
         """Упрощенная подготовка данных"""
         if len(df) == 0:
@@ -538,7 +442,9 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         return self._get_observation(), {}
     
     def _get_strategy_signals(self) -> Dict[str, float]:
-        """Генерация сигналов от других стратегий"""
+        """Генерация сигналов от стратегий из bot/strategy.py (Trend, Flat, Momentum)"""
+        # ВАЖНО: размер signals должен оставаться 14 для совместимости с observation_space
+        # Неиспользуемые стратегии (zscore, smc, ict, ml) остаются как 0.0
         signals = {
             'zscore_long': 0.0,
             'zscore_short': 0.0,
@@ -559,65 +465,106 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         if not self.use_strategy_signals or self.current_step < 50:
             return signals
         
+        if not STRATEGY_AVAILABLE or self.strategy_params is None:
+            return signals
+        
         try:
-            # Оставляем только TREND и FLAT как внешние стратегии
             df_current = self.df.iloc[: self.current_step + 1].copy()
-            from bot.strategy import Action
 
             # Trend сигналы (ADX > 25)
-            if TREND_FLAT_MOMENTUM_AVAILABLE and self.strategy_params:
-                try:
-                    trend_result = generate_trend_signal(
-                        df_current,
-                        state={},
-                        sma_period=21,
-                        atr_period=14,
-                        atr_multiplier=2.0,
-                        max_pyramid=2,
-                        min_history=50,
-                        adx_threshold=25.0,
-                    )
-                    if trend_result and trend_result.get("signal"):
-                        signal_str = trend_result["signal"]
-                        if signal_str == "LONG":
-                            signals["trend_long"] = 1.0
-                        elif signal_str == "SHORT":
-                            signals["trend_short"] = 1.0
-                except Exception as e:
-                    # Логируем ошибки только первые несколько раз
-                    if not hasattr(self, "_trend_error_log_count"):
-                        self._trend_error_log_count = 0
-                    if self._trend_error_log_count < 3:
-                        print(f"[STRATEGY_ERROR] Trend signal error: {e}")
-                        self._trend_error_log_count += 1
+            try:
+                trend_result = generate_trend_signal(
+                    df_current,
+                    state={'backtest_mode': True},  # Отключаем DEBUG логи
+                    sma_period=21,
+                    atr_period=14,
+                    atr_multiplier=2.0,
+                    max_pyramid=2,
+                    min_history=50,
+                    adx_threshold=25.0,
+                )
+                if trend_result and trend_result.get("signal"):
+                    signal_str = trend_result["signal"]
+                    if signal_str == "LONG":
+                        signals["trend_long"] = 1.0
+                    elif signal_str == "SHORT":
+                        signals["trend_short"] = 1.0
+            except Exception as e:
+                # Логируем ошибки только первые несколько раз
+                if not hasattr(self, "_trend_error_log_count"):
+                    self._trend_error_log_count = 0
+                if self._trend_error_log_count < 3:
+                    print(f"[STRATEGY_ERROR] Trend signal error: {e}")
+                    self._trend_error_log_count += 1
 
             # Flat сигналы (Mean Reversion)
-            if TREND_FLAT_MOMENTUM_AVAILABLE and self.strategy_params:
-                try:
-                    flat_result = generate_flat_signal(
-                        df_current,
-                        state={},
-                        rsi_period=14,
-                        rsi_base_low=35,
-                        rsi_base_high=65,
-                        bb_period=20,
-                        bb_mult=2.0,
-                        bb_compression_factor=0.8,
-                        min_history=50,
-                    )
-                    if flat_result and flat_result.get("signal"):
-                        signal_str = flat_result["signal"]
-                        if signal_str == "LONG":
-                            signals["flat_long"] = 1.0
-                        elif signal_str == "SHORT":
-                            signals["flat_short"] = 1.0
-                except Exception as e:
-                    # Логируем ошибки только первые несколько раз
-                    if not hasattr(self, "_flat_error_log_count"):
-                        self._flat_error_log_count = 0
-                    if self._flat_error_log_count < 3:
-                        print(f"[STRATEGY_ERROR] Flat signal error: {e}")
-                        self._flat_error_log_count += 1
+            try:
+                flat_result = generate_flat_signal(
+                    df_current,
+                    state={'backtest_mode': True},  # Отключаем DEBUG логи
+                    rsi_period=14,
+                    rsi_base_low=35,
+                    rsi_base_high=65,
+                    bb_period=20,
+                    bb_mult=2.0,
+                    bb_compression_factor=0.8,
+                    min_history=50,
+                )
+                if flat_result and flat_result.get("signal"):
+                    signal_str = flat_result["signal"]
+                    if signal_str == "LONG":
+                        signals["flat_long"] = 1.0
+                    elif signal_str == "SHORT":
+                        signals["flat_short"] = 1.0
+            except Exception as e:
+                # Логируем ошибки только первые несколько раз
+                if not hasattr(self, "_flat_error_log_count"):
+                    self._flat_error_log_count = 0
+                if self._flat_error_log_count < 3:
+                    print(f"[STRATEGY_ERROR] Flat signal error: {e}")
+                    self._flat_error_log_count += 1
+
+            # Momentum сигналы
+            try:
+                # Ослабляем параметры для увеличения частоты сигналов:
+                # - vol_top_pct: 0.50 вместо 0.60 (50-й перцентиль вместо 60-го)
+                # - vol_lookback: 50 вместо 100 (меньше истории для перцентиля)
+                momentum_result = generate_momentum_signal(
+                    df_current,
+                    min_history=50,
+                    vol_lookback=50,  # Уменьшаем lookback для объема
+                    vol_top_pct=0.50,  # Ослабляем до 50-го перцентиля
+                )
+                if momentum_result and momentum_result.get("signal"):
+                    signal_str = momentum_result["signal"]
+                    reason = momentum_result.get("reason", "unknown")
+                    if signal_str == "LONG":
+                        signals["momentum_long"] = 1.0
+                    elif signal_str == "SHORT":
+                        signals["momentum_short"] = 1.0
+                else:
+                    # Логируем почему momentum сигнал не генерируется (периодически)
+                    if not hasattr(self, "_momentum_no_signal_log_count"):
+                        self._momentum_no_signal_log_count = 0
+                    if self._momentum_no_signal_log_count < 5 and self.current_step % 2000 == 0:  # Уменьшено логирование
+                        reason = momentum_result.get("reason", "unknown") if momentum_result else "no_result"
+                        print(f"[MOMENTUM_DEBUG] step={self.current_step} No momentum signal - reason: {reason}")
+                        if momentum_result:
+                            indicators = momentum_result.get("indicators_info", {})
+                            print(f"   EMA20={indicators.get('ema20', 'N/A'):.2f}, EMA50={indicators.get('ema50', 'N/A'):.2f}")
+                            print(f"   RSI={indicators.get('rsi', 'N/A'):.2f}, Vol={indicators.get('vol_current', 'N/A'):.2f}")
+                            print(f"   Vol threshold={indicators.get('vol_threshold_pct', 'N/A')}, Vol avg5={indicators.get('vol_avg5', 'N/A'):.2f}")
+                            print(f"   EMA cross_up={indicators.get('ema_cross_up', False)}, EMA cross_down={indicators.get('ema_cross_down', False)}")
+                        self._momentum_no_signal_log_count += 1
+            except Exception as e:
+                # Логируем ошибки только первые несколько раз
+                if not hasattr(self, "_momentum_error_log_count"):
+                    self._momentum_error_log_count = 0
+                if self._momentum_error_log_count < 3:
+                    print(f"[STRATEGY_ERROR] Momentum signal error: {e}")
+                    import traceback
+                    print(f"[STRATEGY_ERROR] Traceback: {traceback.format_exc()}")
+                    self._momentum_error_log_count += 1
                     
         except Exception as e:
             pass  # Игнорируем ошибки
@@ -629,12 +576,57 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             if non_zero:
                 if not hasattr(self, "_strategy_signal_log_count"):
                     self._strategy_signal_log_count = 0
-                if self._strategy_signal_log_count < 10:
+                if self._strategy_signal_log_count < 5:  # Уменьшено для ускорения
                     print(
                         f"[STRATEGY_SIGNALS] step={self.current_step} "
                         f"signals={','.join(non_zero)}"
                     )
                     self._strategy_signal_log_count += 1
+            
+            # Периодическая статистика сигналов (каждые 1000 шагов)
+            if not hasattr(self, "_strategy_signal_stats"):
+                self._strategy_signal_stats = {
+                    'trend_long': 0, 'trend_short': 0,
+                    'flat_long': 0, 'flat_short': 0,
+                    'momentum_long': 0, 'momentum_short': 0,
+                    'total_steps': 0
+                }
+            
+            self._strategy_signal_stats['total_steps'] += 1
+            if signals.get('trend_long', 0) > 0:
+                self._strategy_signal_stats['trend_long'] += 1
+            if signals.get('trend_short', 0) > 0:
+                self._strategy_signal_stats['trend_short'] += 1
+            if signals.get('flat_long', 0) > 0:
+                self._strategy_signal_stats['flat_long'] += 1
+            if signals.get('flat_short', 0) > 0:
+                self._strategy_signal_stats['flat_short'] += 1
+            if signals.get('momentum_long', 0) > 0:
+                self._strategy_signal_stats['momentum_long'] += 1
+            if signals.get('momentum_short', 0) > 0:
+                self._strategy_signal_stats['momentum_short'] += 1
+            
+            # Выводим статистику каждые 5000 шагов (уменьшено для ускорения)
+            if self._strategy_signal_stats['total_steps'] % 5000 == 0:
+                total = self._strategy_signal_stats['total_steps']
+                total_signals = (
+                    self._strategy_signal_stats['trend_long'] + 
+                    self._strategy_signal_stats['trend_short'] + 
+                    self._strategy_signal_stats['flat_long'] + 
+                    self._strategy_signal_stats['flat_short'] +
+                    self._strategy_signal_stats['momentum_long'] +
+                    self._strategy_signal_stats['momentum_short']
+                )
+                print(
+                    f"[STRATEGY_STATS] step={self.current_step} "
+                    f"trend_long={self._strategy_signal_stats['trend_long']} "
+                    f"trend_short={self._strategy_signal_stats['trend_short']} "
+                    f"flat_long={self._strategy_signal_stats['flat_long']} "
+                    f"flat_short={self._strategy_signal_stats['flat_short']} "
+                    f"momentum_long={self._strategy_signal_stats['momentum_long']} "
+                    f"momentum_short={self._strategy_signal_stats['momentum_short']} "
+                    f"(rate: {(total_signals / total * 100):.2f}%)"
+                )
         except Exception:
             pass
         
@@ -754,42 +746,85 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             current_atr = current_price * 0.01
 
         # 0. ПРИНУДИТЕЛЬНОЕ ИСПОЛЬЗОВАНИЕ ВНЕШНИХ СИГНАЛОВ КАК ТОЧЕК ВХОДА
-        # Если есть precompute-сигналы (например, ZScore), и сейчас нет позиции,
-        # то в режиме обучения мы можем принудительно следовать этим сигналам,
+        # Используем ТОЛЬКО стратегии из bot/strategy.py: Trend, Flat, Momentum
+        # Если есть активные сигналы и сейчас нет позиции, принудительно следуем этим сигналам,
         # даже если PPO выбрал HOLD. Это создаёт реальный поток "внешних" входов.
         forced_from_signal = False
-        if self.use_strategy_signals and self.position == 0:
+        if self.use_strategy_signals and self.position == 0 and self.current_step >= 50:
             try:
                 sig_long = 0.0
                 sig_short = 0.0
-                if "sig_zscore_long" in self.df.columns:
-                    sig_long = float(self.df.loc[self.current_step, "sig_zscore_long"])
-                if "sig_zscore_short" in self.df.columns:
-                    sig_short = float(self.df.loc[self.current_step, "sig_zscore_short"])
+                strategy_names_long = []
+                strategy_names_short = []
+                
+                # Получаем сигналы от стратегий из bot/strategy.py
+                strategy_signals = self._get_strategy_signals()
+                
+                # Trend сигналы
+                trend_long = strategy_signals.get("trend_long", 0.0)
+                trend_short = strategy_signals.get("trend_short", 0.0)
+                if trend_long > 0.0:
+                    sig_long += trend_long
+                    strategy_names_long.append("trend")
+                if trend_short > 0.0:
+                    sig_short += trend_short
+                    strategy_names_short.append("trend")
+                
+                # Flat сигналы
+                flat_long = strategy_signals.get("flat_long", 0.0)
+                flat_short = strategy_signals.get("flat_short", 0.0)
+                if flat_long > 0.0:
+                    sig_long += flat_long
+                    strategy_names_long.append("flat")
+                if flat_short > 0.0:
+                    sig_short += flat_short
+                    strategy_names_short.append("flat")
+                
+                # Momentum сигналы
+                momentum_long = strategy_signals.get("momentum_long", 0.0)
+                momentum_short = strategy_signals.get("momentum_short", 0.0)
+                if momentum_long > 0.0:
+                    sig_long += momentum_long
+                    strategy_names_long.append("momentum")
+                if momentum_short > 0.0:
+                    sig_short += momentum_short
+                    strategy_names_short.append("momentum")
 
                 # Если есть только LONG-сигнал
                 if sig_long > 0.0 and sig_short <= 0.0:
                     if action != 1:
-                        # Лёгкий лог, чтобы видеть, что мы реально следуем ZScore
-                        print(
-                            f"[ACTION_OVERRIDE] step={self.current_step} "
-                            f"PPO_action={action} -> LONG by zscore_long"
-                        )
+                        # Логируем только первые несколько раз для ускорения
+                        if not hasattr(self, "_action_override_log_count"):
+                            self._action_override_log_count = 0
+                        if self._action_override_log_count < 10:
+                            strategies_str = "+".join(strategy_names_long) if strategy_names_long else "unknown"
+                            print(
+                                f"[ACTION_OVERRIDE] step={self.current_step} "
+                                f"PPO_action={action} -> LONG by {strategies_str}"
+                            )
+                            self._action_override_log_count += 1
                     action = 1
                     forced_from_signal = True
 
                 # Если есть только SHORT-сигнал
                 elif sig_short > 0.0 and sig_long <= 0.0:
                     if action != 2:
-                        print(
-                            f"[ACTION_OVERRIDE] step={self.current_step} "
-                            f"PPO_action={action} -> SHORT by zscore_short"
-                        )
+                        # Логируем только первые несколько раз для ускорения
+                        if not hasattr(self, "_action_override_log_count"):
+                            self._action_override_log_count = 0
+                        if self._action_override_log_count < 10:
+                            strategies_str = "+".join(strategy_names_short) if strategy_names_short else "unknown"
+                            print(
+                                f"[ACTION_OVERRIDE] step={self.current_step} "
+                                f"PPO_action={action} -> SHORT by {strategies_str}"
+                            )
+                            self._action_override_log_count += 1
                     action = 2
                     forced_from_signal = True
 
                 # Если оба сигнала активны (редкий случай) — оставляем решение за PPO
-            except Exception:
+            except Exception as e:
+                # Игнорируем ошибки в ACTION_OVERRIDE
                 pass
 
         self.current_step += 1
@@ -974,6 +1009,7 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
 
             # 1.1) ВХОД ОТ СТРАТЕГИЙ: БЕЗ ДОП. ФИЛЬТРОВ (ТОЛЬКО ATR + RR)
             # 🔥 ПРОВЕРЯЕМ ВНЕШНИЕ СИГНАЛЫ ПЕРВЫМИ (даже в emergency режиме!)
+            # Используем ТОЛЬКО стратегии из bot/strategy.py: Trend, Flat, Momentum
             # Если есть явный сигнал LONG/SHORT от наших стратегий, они используются как
             # Точки входа. В этом случае пропускаем все остальные фильтры (vol/RSI/ADX/контекст)
             # и проверяем только структурные ограничения RR.
@@ -985,18 +1021,21 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                         long_signals = (
                             strategy_signals.get("trend_long", 0.0)
                             + strategy_signals.get("flat_long", 0.0)
+                            + strategy_signals.get("momentum_long", 0.0)
                         )
                         if long_signals > 0.0:
                             from_strategy_signal = True
                             self._last_entry_strategies = [
                                 name
                                 for name, val in strategy_signals.items()
-                                if val > 0.0 and name.endswith("long")
+                                if val > 0.0 and name.endswith("long") 
+                                and name in ["trend_long", "flat_long", "momentum_long"]
                             ]
                     elif action == 2:  # SHORT
                         short_signals = (
                             strategy_signals.get("trend_short", 0.0)
                             + strategy_signals.get("flat_short", 0.0)
+                            + strategy_signals.get("momentum_short", 0.0)
                         )
                         if short_signals > 0.0:
                             from_strategy_signal = True
@@ -1004,6 +1043,7 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                                 name
                                 for name, val in strategy_signals.items()
                                 if val > 0.0 and name.endswith("short")
+                                and name in ["trend_short", "flat_short", "momentum_short"]
                             ]
                 except Exception:
                     from_strategy_signal = False
@@ -1989,32 +2029,48 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                         strategy_bonus = 0.0
 
                         if self.position == 1:  # LONG позиция
-                            # Адаптивные веса на основе Win Rate
+                            # Адаптивные веса на основе Win Rate (Trend, Flat, Momentum)
                             trend_weight = self._get_adaptive_strategy_weight('trend_long')
                             flat_weight = self._get_adaptive_strategy_weight('flat_long')
+                            momentum_weight = self._get_adaptive_strategy_weight('momentum_long')
                             
                             strategy_bonus += strategy_signals["trend_long"] * trend_weight
                             strategy_bonus += strategy_signals["flat_long"] * flat_weight
+                            strategy_bonus += strategy_signals["momentum_long"] * momentum_weight
 
-                            long_count = strategy_signals["trend_long"] + strategy_signals["flat_long"]
+                            long_count = (
+                                strategy_signals["trend_long"] + 
+                                strategy_signals["flat_long"] + 
+                                strategy_signals["momentum_long"]
+                            )
                             if long_count >= 2:
                                 # Консенсус: бонус зависит от среднего Win Rate
-                                avg_wr = (trend_weight + flat_weight) / 2.0
+                                active_weights = [w for w in [trend_weight, flat_weight, momentum_weight] 
+                                                 if w > 0]
+                                avg_wr = sum(active_weights) / len(active_weights) if active_weights else 0.5
                                 consensus_bonus = 3.0 * (0.5 + avg_wr)  # От 1.5 до 4.5 в зависимости от WR
                                 strategy_bonus += consensus_bonus
 
                         elif self.position == -1:  # SHORT позиция
-                            # Адаптивные веса на основе Win Rate
+                            # Адаптивные веса на основе Win Rate (Trend, Flat, Momentum)
                             trend_weight = self._get_adaptive_strategy_weight('trend_short')
                             flat_weight = self._get_adaptive_strategy_weight('flat_short')
+                            momentum_weight = self._get_adaptive_strategy_weight('momentum_short')
                             
                             strategy_bonus += strategy_signals["trend_short"] * trend_weight
                             strategy_bonus += strategy_signals["flat_short"] * flat_weight
+                            strategy_bonus += strategy_signals["momentum_short"] * momentum_weight
 
-                            short_count = strategy_signals["trend_short"] + strategy_signals["flat_short"]
+                            short_count = (
+                                strategy_signals["trend_short"] + 
+                                strategy_signals["flat_short"] + 
+                                strategy_signals["momentum_short"]
+                            )
                             if short_count >= 2:
                                 # Консенсус: бонус зависит от среднего Win Rate
-                                avg_wr = (trend_weight + flat_weight) / 2.0
+                                active_weights = [w for w in [trend_weight, flat_weight, momentum_weight] 
+                                                 if w > 0]
+                                avg_wr = sum(active_weights) / len(active_weights) if active_weights else 0.5
                                 consensus_bonus = 3.0 * (0.5 + avg_wr)  # От 1.5 до 4.5 в зависимости от WR
                                 strategy_bonus += consensus_bonus
 

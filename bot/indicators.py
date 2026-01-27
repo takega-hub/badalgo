@@ -46,26 +46,46 @@ def add_time_index(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def compute_4h_context(df_15m: pd.DataFrame, adx_length: int = 14) -> pd.DataFrame:
+def compute_4h_context(
+    df_15m: pd.DataFrame, 
+    adx_length: int = 14,
+    df_4h: Optional[pd.DataFrame] = None
+) -> pd.DataFrame:
     """
-    Ресемплит 15m свечи в 4H и вычисляет ADX (только фильтр тренда).
+    Вычисляет ADX на 4H таймфрейме (только фильтр тренда).
+    Использует готовые данные 4H если доступны, иначе ресемплит из 15m.
     Форвард-филлит обратно на 15m индекс.
     
     Args:
         df_15m: DataFrame с 15m данными
         adx_length: Период ADX
+        df_4h: Опционально готовый DataFrame с 4H данными (если есть реальные свечи)
     
     Returns:
         DataFrame с добавленным ADX
     """
-    ohlcv = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
-    df_4h = df_15m.resample("4h").agg(ohlcv).dropna()
+    # Используем готовые данные если доступны, иначе ресемплим
+    if df_4h is not None and not df_4h.empty:
+        # Используем готовые данные 4H (более точные)
+        df_4h = df_4h.copy()
+        # Убеждаемся что индекс - DatetimeIndex
+        if not isinstance(df_4h.index, pd.DatetimeIndex):
+            if 'timestamp' in df_4h.columns:
+                df_4h['timestamp'] = pd.to_datetime(df_4h['timestamp'], unit='ms', errors='coerce')
+                df_4h = df_4h.set_index('timestamp')
+            elif 'datetime' in df_4h.columns:
+                df_4h['datetime'] = pd.to_datetime(df_4h['datetime'], errors='coerce')
+                df_4h = df_4h.set_index('datetime')
+    else:
+        # Ресемплим из 15m (fallback)
+        ohlcv = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        df_4h = df_15m.resample("4h").agg(ohlcv).dropna()
     
     # Вычисляем ADX с проверкой на достаточное количество данных
     # Для расчета ADX нужно минимум adx_length + несколько дополнительных свечей
@@ -127,29 +147,49 @@ def compute_4h_context(df_15m: pd.DataFrame, adx_length: int = 14) -> pd.DataFra
     return df_15m
 
 
-def compute_atr_higher_timeframes(df_15m: pd.DataFrame, atr_length: int = 14) -> pd.DataFrame:
+def compute_atr_higher_timeframes(
+    df_15m: pd.DataFrame, 
+    atr_length: int = 14,
+    df_1h: Optional[pd.DataFrame] = None,
+    df_4h: Optional[pd.DataFrame] = None
+) -> pd.DataFrame:
     """
     Вычисляет ATR на 1H и 4H таймфреймах для анализа среднесрочной волатильности.
+    Использует готовые данные если доступны, иначе ресемплит из 15m.
     Используется вместо 15-минутного ATR для фильтрации точек входа.
     
     Args:
         df_15m: DataFrame с 15m данными
         atr_length: Период ATR
+        df_1h: Опционально готовый DataFrame с 1H данными
+        df_4h: Опционально готовый DataFrame с 4H данными
     
     Returns:
         DataFrame с добавленными ATR на разных таймфреймах
     """
     df_15m = df_15m.copy()
     
-    # Resample на 1H и вычисляем ATR
-    ohlcv_1h = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
-    df_1h = df_15m.resample("1h").agg(ohlcv_1h).dropna()
+    # Используем готовые данные 1H если доступны, иначе ресемплим
+    if df_1h is not None and not df_1h.empty:
+        df_1h = df_1h.copy()
+        # Убеждаемся что индекс - DatetimeIndex
+        if not isinstance(df_1h.index, pd.DatetimeIndex):
+            if 'timestamp' in df_1h.columns:
+                df_1h['timestamp'] = pd.to_datetime(df_1h['timestamp'], unit='ms', errors='coerce')
+                df_1h = df_1h.set_index('timestamp')
+            elif 'datetime' in df_1h.columns:
+                df_1h['datetime'] = pd.to_datetime(df_1h['datetime'], errors='coerce')
+                df_1h = df_1h.set_index('datetime')
+    else:
+        # Resample на 1H и вычисляем ATR
+        ohlcv_1h = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        df_1h = df_15m.resample("1h").agg(ohlcv_1h).dropna()
     
     if len(df_1h) >= atr_length:
         atr_1h = ta.atr(high=df_1h["high"], low=df_1h["low"], close=df_1h["close"], length=atr_length)
@@ -170,15 +210,27 @@ def compute_atr_higher_timeframes(df_15m: pd.DataFrame, atr_length: int = 14) ->
     else:
         df_1h["atr_1h"] = pd.Series(index=df_1h.index, dtype=float)
     
-    # Resample на 4H и вычисляем ATR
-    ohlcv_4h = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
-    df_4h = df_15m.resample("4h").agg(ohlcv_4h).dropna()
+    # Используем готовые данные 4H если доступны, иначе ресемплим
+    if df_4h is not None and not df_4h.empty:
+        df_4h = df_4h.copy()
+        # Убеждаемся что индекс - DatetimeIndex
+        if not isinstance(df_4h.index, pd.DatetimeIndex):
+            if 'timestamp' in df_4h.columns:
+                df_4h['timestamp'] = pd.to_datetime(df_4h['timestamp'], unit='ms', errors='coerce')
+                df_4h = df_4h.set_index('timestamp')
+            elif 'datetime' in df_4h.columns:
+                df_4h['datetime'] = pd.to_datetime(df_4h['datetime'], errors='coerce')
+                df_4h = df_4h.set_index('datetime')
+    else:
+        # Resample на 4H и вычисляем ATR
+        ohlcv_4h = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        df_4h = df_15m.resample("4h").agg(ohlcv_4h).dropna()
     
     if len(df_4h) >= atr_length:
         atr_4h = ta.atr(high=df_4h["high"], low=df_4h["low"], close=df_4h["close"], length=atr_length)
@@ -216,26 +268,46 @@ def compute_atr_higher_timeframes(df_15m: pd.DataFrame, atr_length: int = 14) ->
     return df_15m
 
 
-def compute_1h_context(df_15m: pd.DataFrame, di_length: int = 14) -> pd.DataFrame:
+def compute_1h_context(
+    df_15m: pd.DataFrame, 
+    di_length: int = 14,
+    df_1h: Optional[pd.DataFrame] = None
+) -> pd.DataFrame:
     """
-    Ресемплит 15m свечи в 1H и вычисляет PlusDI/MinusDI (направление).
+    Вычисляет PlusDI/MinusDI на 1H таймфрейме (направление).
+    Использует готовые данные 1H если доступны, иначе ресемплит из 15m.
     Форвард-филлит обратно на 15m индекс.
     
     Args:
         df_15m: DataFrame с 15m данными
         di_length: Период DI
+        df_1h: Опционально готовый DataFrame с 1H данными (если есть реальные свечи)
     
     Returns:
         DataFrame с добавленными PlusDI и MinusDI
     """
-    ohlcv = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
-    df_1h = df_15m.resample("1h").agg(ohlcv).dropna()
+    # Используем готовые данные если доступны, иначе ресемплим
+    if df_1h is not None and not df_1h.empty:
+        # Используем готовые данные 1H (более точные)
+        df_1h = df_1h.copy()
+        # Убеждаемся что индекс - DatetimeIndex
+        if not isinstance(df_1h.index, pd.DatetimeIndex):
+            if 'timestamp' in df_1h.columns:
+                df_1h['timestamp'] = pd.to_datetime(df_1h['timestamp'], unit='ms', errors='coerce')
+                df_1h = df_1h.set_index('timestamp')
+            elif 'datetime' in df_1h.columns:
+                df_1h['datetime'] = pd.to_datetime(df_1h['datetime'], errors='coerce')
+                df_1h = df_1h.set_index('datetime')
+    else:
+        # Ресемплим из 15m (fallback)
+        ohlcv = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        df_1h = df_15m.resample("1h").agg(ohlcv).dropna()
     
     # Вычисляем ADX (включая DI) с проверкой на достаточное количество данных
     # Для расчета DI нужно минимум di_length + несколько дополнительных свечей
@@ -596,9 +668,11 @@ def compute_higher_timeframe_ema(
     timeframe: str = "1h",
     ema_fast_length: int = 20,
     ema_slow_length: int = 50,
+    df_htf: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Вычисляет EMA на более высоком таймфрейме (1h или 4h) для стратегии импульсного пробоя.
+    Использует готовые данные если доступны, иначе ресемплит из 15m.
     Затем маппит значения обратно на 15m индекс.
     
     Args:
@@ -606,21 +680,35 @@ def compute_higher_timeframe_ema(
         timeframe: Таймфрейм для вычисления EMA ("1h" или "4h")
         ema_fast_length: Период быстрой EMA
         ema_slow_length: Период медленной EMA
+        df_htf: Опционально готовый DataFrame с данными высшего таймфрейма
     
     Returns:
         DataFrame с добавленными колонками ema_fast_htf и ema_slow_htf (higher timeframe)
     """
     df_15m = df_15m.copy()
     
-    # Resample на более высокий таймфрейм
-    ohlcv = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
-    df_htf = df_15m.resample(timeframe).agg(ohlcv).dropna()
+    # Используем готовые данные если доступны, иначе ресемплим
+    if df_htf is not None and not df_htf.empty:
+        # Используем готовые данные (более точные)
+        df_htf = df_htf.copy()
+        # Убеждаемся что индекс - DatetimeIndex
+        if not isinstance(df_htf.index, pd.DatetimeIndex):
+            if 'timestamp' in df_htf.columns:
+                df_htf['timestamp'] = pd.to_datetime(df_htf['timestamp'], unit='ms', errors='coerce')
+                df_htf = df_htf.set_index('timestamp')
+            elif 'datetime' in df_htf.columns:
+                df_htf['datetime'] = pd.to_datetime(df_htf['datetime'], errors='coerce')
+                df_htf = df_htf.set_index('datetime')
+    else:
+        # Resample на более высокий таймфрейм (fallback)
+        ohlcv = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+        df_htf = df_15m.resample(timeframe).agg(ohlcv).dropna()
     
     # Вычисляем EMA на высоком таймфрейме
     try:
@@ -701,12 +789,22 @@ def prepare_with_indicators(
     ema_timeframe: str = "1h",
     ema_short: int = 9,
     ema_long: int = 21,
+    df_1h: Optional[pd.DataFrame] = None,
+    df_4h: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Основная функция для подготовки данных со всеми индикаторами.
+    Поддерживает мультитаймфреймовый анализ с использованием готовых данных высших таймфреймов.
+    
+    Преимущества использования готовых данных (df_1h, df_4h):
+    - Более точные индикаторы (используются реальные свечи с биржи вместо ресемплинга)
+    - Лучшая синхронизация с данными биржи
+    - Более надежный анализ тренда на высших таймфреймах
+    
+    Если готовые данные не переданы, используется ресемплинг из 15m (обратная совместимость).
     
     Args:
-        df_raw: Исходный DataFrame с сырыми данными
+        df_raw: Исходный DataFrame с сырыми данными (15m)
         adx_length: Период ADX на 4H
         di_length: Период DI на 1H
         sma_length: Период SMA на 15m
@@ -720,6 +818,10 @@ def prepare_with_indicators(
         ema_timeframe: Таймфрейм для EMA высокого уровня
         ema_short: Период короткой EMA на 15m
         ema_long: Период длинной EMA на 15m
+        df_1h: Опционально готовый DataFrame с 1H данными (для более точного анализа).
+               Должен иметь DatetimeIndex или колонки 'timestamp'/'datetime'.
+        df_4h: Опционально готовый DataFrame с 4H данными (для более точного анализа).
+               Должен иметь DatetimeIndex или колонки 'timestamp'/'datetime'.
     
     Returns:
         DataFrame со всеми вычисленными индикаторами
@@ -728,8 +830,9 @@ def prepare_with_indicators(
     df = add_time_index(df_raw)
     
     # Контекстные индикаторы на высоких таймфреймах
-    df = compute_4h_context(df, adx_length=adx_length)  # ADX на 4H для фильтра тренда
-    df = compute_1h_context(df, di_length=di_length)    # DI на 1H для направления
+    # Используем готовые данные если доступны (более точные), иначе ресемплим
+    df = compute_4h_context(df, adx_length=adx_length, df_4h=df_4h)  # ADX на 4H для фильтра тренда
+    df = compute_1h_context(df, di_length=di_length, df_1h=df_1h)    # DI на 1H для направления
     
     # 15-минутные индикаторы
     df = compute_15m_features(
@@ -745,14 +848,18 @@ def prepare_with_indicators(
     )
     
     # ATR на высоких таймфреймах
-    df = compute_atr_higher_timeframes(df, atr_length=atr_length)
+    # Используем готовые данные если доступны
+    df = compute_atr_higher_timeframes(df, atr_length=atr_length, df_1h=df_1h, df_4h=df_4h)
     
     # EMA на высоком таймфрейме
+    # Выбираем соответствующий DataFrame для высшего таймфрейма
+    df_htf_for_ema = df_1h if ema_timeframe == "1h" else (df_4h if ema_timeframe == "4h" else None)
     df = compute_higher_timeframe_ema(
         df, 
         timeframe=ema_timeframe, 
         ema_fast_length=ema_fast_length, 
-        ema_slow_length=ema_slow_length
+        ema_slow_length=ema_slow_length,
+        df_htf=df_htf_for_ema
     )
     
     # Дополнительные индикаторы

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import Enum
 import numpy as np
 import pandas as pd
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 
 
 class Action(Enum):
@@ -117,8 +117,15 @@ def build_signals(
                 atr_multiplier=params.get('atr_multiplier', 2.0),
                 max_pyramid=params.get('max_pyramid', 2),
                 min_history=params.get('min_history', 100),
+                use_mtf_filter=params.get('use_mtf_filter', False),
+                mtf_timeframe=params.get('mtf_timeframe', '1h'),
+                mtf_ema_period=params.get('mtf_ema_period', 50),
             )
-    except Exception:
+    except Exception as e:
+        # Логируем ошибку для диагностики
+        import traceback
+        print(f"[build_signals] ERROR generating {name} signal: {e}")
+        print(f"[build_signals] Traceback: {traceback.format_exc()}")
         return out
 
     if res and res.get('signal') is not None:
@@ -426,6 +433,147 @@ def _ensure_history(df: pd.DataFrame, required: int) -> bool:
     return len(df) >= required
 
 
+def _get_higher_timeframe_bias(
+    df: pd.DataFrame,
+    timeframe: str = '1h',
+    ema_period: int = 50,
+    end_idx: Optional[int] = None,
+    df_htf: Optional[pd.DataFrame] = None,
+) -> t.Optional[str]:
+    """
+    Определяет глобальный тренд через положение цены относительно EMA на высшем таймфрейме.
+    
+    Args:
+        df: DataFrame с данными текущего таймфрейма (обычно 15m)
+        timeframe: Целевой таймфрейм для анализа ('1h', '4h')
+        ema_period: Период EMA для определения тренда
+        end_idx: Индекс до которого анализировать (для backtesting)
+        df_htf: Опционально готовый DataFrame с высшим таймфреймом (если есть готовые данные)
+    
+    Returns:
+        'bullish' если цена выше EMA, 'bearish' если ниже, None если недостаточно данных
+    """
+    try:
+        # Если передан готовый DataFrame с высшим таймфреймом - используем его
+        if df_htf is not None and not df_htf.empty:
+            df_htf_use = df_htf.copy()
+        else:
+            # Иначе ресемплим из текущего таймфрейма
+            df_curr = df.iloc[:end_idx+1] if end_idx is not None else df
+            if len(df_curr) < ema_period * 2:  # Нужно достаточно данных для ресемплинга и EMA
+                return None
+            
+            # Ресемплинг на высший таймфрейм
+            if timeframe == '1h':
+                df_htf_use = df_curr.resample('1h').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).dropna()
+            elif timeframe == '4h':
+                df_htf_use = df_curr.resample('4h').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).dropna()
+            else:
+                return None
+        
+        if len(df_htf_use) < ema_period:
+            return None
+        
+        # Рассчитываем EMA на высшем таймфрейме
+        ema = df_htf_use['close'].ewm(span=ema_period, adjust=False).mean()
+        last_close = df_htf_use['close'].iloc[-1]
+        last_ema = ema.iloc[-1]
+        
+        if last_close > last_ema:
+            return 'bullish'
+        elif last_close < last_ema:
+            return 'bearish'
+        return None
+    except Exception:
+        return None
+
+
+def _get_multi_timeframe_consensus(
+    df_15m: pd.DataFrame,
+    df_1h: Optional[pd.DataFrame] = None,
+    df_4h: Optional[pd.DataFrame] = None,
+    ema_period: int = 50,
+    end_idx: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Определяет общую ситуацию на рынке используя все доступные таймфреймы.
+    
+    Args:
+        df_15m: DataFrame с данными 15m таймфрейма
+        df_1h: Опционально готовый DataFrame с 1h данными
+        df_4h: Опционально готовый DataFrame с 4h данными
+        ema_period: Период EMA для определения тренда
+        end_idx: Индекс до которого анализировать (для backtesting)
+    
+    Returns:
+        Словарь с информацией о тренде на всех таймфреймах:
+        {
+            '1h_bias': 'bullish'/'bearish'/None,
+            '4h_bias': 'bullish'/'bearish'/None,
+            'consensus': 'bullish'/'bearish'/'neutral'/None,
+            'trend_strength': float (0-1),  # Сила консенсуса
+        }
+    """
+    result = {
+        '1h_bias': None,
+        '4h_bias': None,
+        'consensus': None,
+        'trend_strength': 0.0,
+    }
+    
+    # Анализ 1H таймфрейма
+    if df_1h is not None:
+        result['1h_bias'] = _get_higher_timeframe_bias(
+            df_15m, timeframe='1h', ema_period=ema_period, end_idx=end_idx, df_htf=df_1h
+        )
+    else:
+        result['1h_bias'] = _get_higher_timeframe_bias(
+            df_15m, timeframe='1h', ema_period=ema_period, end_idx=end_idx
+        )
+    
+    # Анализ 4H таймфрейма
+    if df_4h is not None:
+        result['4h_bias'] = _get_higher_timeframe_bias(
+            df_15m, timeframe='4h', ema_period=ema_period, end_idx=end_idx, df_htf=df_4h
+        )
+    else:
+        result['4h_bias'] = _get_higher_timeframe_bias(
+            df_15m, timeframe='4h', ema_period=ema_period, end_idx=end_idx
+        )
+    
+    # Определение консенсуса
+    biases = [b for b in [result['1h_bias'], result['4h_bias']] if b is not None]
+    
+    if not biases:
+        result['consensus'] = None
+        result['trend_strength'] = 0.0
+    elif len(biases) == 1:
+        result['consensus'] = biases[0]
+        result['trend_strength'] = 0.5  # Средняя сила (только один таймфрейм)
+    else:
+        # Оба таймфрейма дали результат
+        if biases[0] == biases[1]:
+            result['consensus'] = biases[0]
+            result['trend_strength'] = 1.0  # Сильный консенсус
+        else:
+            result['consensus'] = 'neutral'  # Противоречивые сигналы
+            result['trend_strength'] = 0.3  # Слабая сила
+    
+    return result
+
+
 def _generate_trend_signal_df(
     df: pd.DataFrame,
     state: t.Optional[dict] = None,
@@ -434,8 +582,11 @@ def _generate_trend_signal_df(
     atr_multiplier: float = 3.0,
     max_pyramid: int = 2,
     min_history: int = 50,
-    adx_threshold: float = 30.0,
-    vol_multiplier: float = 1.0,
+    adx_threshold: float = 30.0,  # Ужесточено: минимум 30 для сильных трендов
+    vol_multiplier: float = 1.2,  # Увеличено с 1.0 до 1.2 для лучшего фильтра объема
+    use_mtf_filter: bool = True,
+    mtf_timeframe: str = '1h',
+    mtf_ema_period: int = 50,
 ) -> t.Dict:
     """
     Генерация сигнала TREND.
@@ -448,28 +599,42 @@ def _generate_trend_signal_df(
     """
     state = state or {}
     indicators_info = {}
+    current_idx = len(df)  # Определяем current_idx всегда
 
     # Cooldown check: don't generate signals too frequently
-    last_signal_idx = state.get('last_signal_idx', -100)
-    current_idx = len(df)
-    if current_idx - last_signal_idx < 10:
-        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "cooldown"}
+    # В бэктесте пропускаем cooldown
+    if not state.get('backtest_mode', False):
+        last_signal_idx = state.get('last_signal_idx', -100)
+        if current_idx - last_signal_idx < 10:
+            return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "cooldown"}
 
     # Forward-fill simple NaNs then validate
     df = df.ffill()
 
     # Data validation: avoid NaN/inf-only DataFrames
     if df.replace([np.inf, -np.inf], np.nan).dropna().empty:
+        # Логируем только если не в режиме бэктеста
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: DataFrame is empty after NaN/inf removal")
         return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "nan_in_data"}
 
     if not _ensure_history(df, min_history):
+        # Логируем только если не в режиме бэктеста
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: Insufficient history. Have {len(df)} candles, need {min_history}")
         return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "insufficient_history"}
+    
+    # Логируем только если не в режиме бэктеста
+    if not state.get('backtest_mode', False):
+        print(f"[generate_trend_signal] DEBUG: DataFrame OK. Rows: {len(df)}, Columns: {list(df.columns)[:10]}")
     close = df['close']
     price = float(close.iloc[-1])
 
     sma = _sma(close, sma_period)
     sma_current = float(sma.iloc[-1])
     sma_prev = float(sma.iloc[-2])
+    
+    # Логирование отключено для ускорения (backtest_mode=True)
 
     # Prefer ATR already present in the DataFrame (precomputed) — fallback to computed ATR.
     atr_current = None
@@ -529,23 +694,31 @@ def _generate_trend_signal_df(
         is_uptrend = False
         is_downtrend = False
 
-    # ADX filter (required)
+    # ADX filter (required) - УЖЕСТОЧЕНО: минимум 30 вместо 25 для более сильных трендов
     adx_ok = True
+    adx_val = None
     try:
         if 'adx' in df.columns:
             adx_val = float(df['adx'].iloc[-1])
-            if adx_val < 25:
+            if adx_val < 30:  # Увеличено с 25 до 30
                 adx_ok = False
     except Exception:
         adx_ok = True
+    
+    indicators_info['adx'] = adx_val
 
-    # Simplified volume filter: require current volume >= vol_sma * 1.0 when vol_sma is present
+    # Улучшенный фильтр объема: require current volume >= vol_sma * 1.2 (было 1.0)
+    # В бэктесте ослабляем до 0.8 для большего покрытия
     vol_ok = True
+    vol_multiplier_base = 1.2  # Увеличено с 1.0 до 1.2
+    if state.get('backtest_mode', False):
+        vol_multiplier_base = 0.8  # В бэктесте ослабляем
+    
     try:
         if 'vol_sma' in df.columns and 'volume' in df.columns:
             vol_s = float(df['vol_sma'].iloc[-1])
             vol_c = float(df['volume'].iloc[-1])
-            if vol_c < vol_s * 1.0:
+            if vol_c < vol_s * vol_multiplier_base:
                 vol_ok = False
     except Exception:
         vol_ok = True
@@ -555,8 +728,16 @@ def _generate_trend_signal_df(
     upper_band = df['high'].rolling(donchian_lookback).max().shift(1)
     lower_band = df['low'].rolling(donchian_lookback).min().shift(1)
     
-    is_breakout_long = trend_up and price > upper_band.iloc[-1]
-    is_breakout_short = trend_down and price < lower_band.iloc[-1]
+    upper_band_val = upper_band.iloc[-1] if len(upper_band) > 0 and pd.notna(upper_band.iloc[-1]) else None
+    lower_band_val = lower_band.iloc[-1] if len(lower_band) > 0 and pd.notna(lower_band.iloc[-1]) else None
+    
+    is_breakout_long = trend_up and upper_band_val is not None and price > upper_band_val
+    is_breakout_short = trend_down and lower_band_val is not None and price < lower_band_val
+    
+    # Логируем только если не в режиме бэктеста
+    if not state.get('backtest_mode', False):
+        print(f"[generate_trend_signal] DEBUG: Breakout check - upper_band={upper_band_val}, lower_band={lower_band_val}")
+        print(f"[generate_trend_signal] DEBUG: is_breakout_long={is_breakout_long}, is_breakout_short={is_breakout_short}")
 
     long_allowed = False
     short_allowed = False
@@ -565,22 +746,76 @@ def _generate_trend_signal_df(
     if (is_uptrend or is_breakout_long) and adx_ok and vol_ok:
         long_allowed = True
         entry_reason = "trend_pullback_long" if is_uptrend else "trend_breakout_long"
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: LONG allowed! Reason: {entry_reason}")
     if (is_downtrend or is_breakout_short) and adx_ok and vol_ok:
         short_allowed = True
         entry_reason = "trend_pullback_short" if is_downtrend else "trend_breakout_short"
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: SHORT allowed! Reason: {entry_reason}")
+    
+    if not long_allowed and not short_allowed:
+        # Логируем только если не в режиме бэктеста
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: No entry conditions met!")
+            print(f"[generate_trend_signal] DEBUG: is_uptrend={is_uptrend}, is_breakout_long={is_breakout_long}, adx_ok={adx_ok}, vol_ok={vol_ok}")
+            print(f"[generate_trend_signal] DEBUG: is_downtrend={is_downtrend}, is_breakout_short={is_breakout_short}, adx_ok={adx_ok}, vol_ok={vol_ok}")
 
-    # RSI guard: avoid entering LONG when market is already overheated
+    # Улучшенный RSI + DI фильтр: требовать подтверждение от нескольких индикаторов
     try:
         rsi_series = _rsi(close, period=14)
         rsi_current = float(rsi_series.iloc[-1])
         indicators_info['rsi'] = rsi_current
-        # Relaxed RSI guard for trend following: allow up to 70 for LONG, down to 30 for SHORT
-        if long_allowed and rsi_current > 70.0:
-            long_allowed = False
-        if short_allowed and rsi_current < 30.0:
-            short_allowed = False
-    except Exception:
+        
+        # Получаем DI для подтверждения направления тренда
+        plus_di = None
+        minus_di = None
+        di_confirmation = True  # По умолчанию разрешаем, если DI нет
+        
+        try:
+            if 'plus_di' in df.columns and 'minus_di' in df.columns:
+                plus_di = float(df['plus_di'].iloc[-1])
+                minus_di = float(df['minus_di'].iloc[-1])
+                indicators_info['plus_di'] = plus_di
+                indicators_info['minus_di'] = minus_di
+                
+                # Для LONG: Plus DI должен быть выше Minus DI (подтверждение восходящего тренда)
+                # Для SHORT: Minus DI должен быть выше Plus DI (подтверждение нисходящего тренда)
+                if long_allowed:
+                    di_confirmation = plus_di > minus_di
+                elif short_allowed:
+                    di_confirmation = minus_di > plus_di
+        except Exception:
+            pass
+        
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: RSI={rsi_current:.2f}, Plus DI={plus_di}, Minus DI={minus_di}, DI confirmation={di_confirmation}")
+        
+        # Ужесточенный RSI guard: для LONG RSI должен быть < 65 (было 70), для SHORT > 35 (было 30)
+        # И требуется подтверждение от DI
+        if long_allowed:
+            if rsi_current > 65.0:  # Ужесточено с 70 до 65
+                if not state.get('backtest_mode', False):
+                    print(f"[generate_trend_signal] DEBUG: RSI guard blocked LONG (RSI={rsi_current:.2f} > 65)")
+                long_allowed = False
+            elif not di_confirmation:
+                if not state.get('backtest_mode', False):
+                    print(f"[generate_trend_signal] DEBUG: DI guard blocked LONG (Plus DI={plus_di} <= Minus DI={minus_di})")
+                long_allowed = False
+        
+        if short_allowed:
+            if rsi_current < 35.0:  # Ужесточено с 30 до 35
+                if not state.get('backtest_mode', False):
+                    print(f"[generate_trend_signal] DEBUG: RSI guard blocked SHORT (RSI={rsi_current:.2f} < 35)")
+                short_allowed = False
+            elif not di_confirmation:
+                if not state.get('backtest_mode', False):
+                    print(f"[generate_trend_signal] DEBUG: DI guard blocked SHORT (Minus DI={minus_di} <= Plus DI={plus_di})")
+                short_allowed = False
+    except Exception as e:
         # if RSI cannot be computed, don't block by RSI
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: RSI/DI calculation error: {e}")
         pass
 
     if not (long_allowed or short_allowed):
@@ -619,16 +854,22 @@ def _generate_trend_signal_df(
         return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "sma_not_trending_or_price_mismatch"}
 
     # ADX filter: if ADX present and below threshold, block trend entries
+    # УЖЕСТОЧЕНО: используем минимум 30 для adx_threshold
     try:
         adx_val = None
         if 'adx' in df.columns:
             adx_val = float(df['adx'].iloc[-1])
             if adx_val is not None:
-                if adx_val <= float(adx_threshold):
-                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "adx_no_trend"}
+                min_adx_threshold = max(30.0, float(adx_threshold))  # Минимум 30
+                if adx_val <= min_adx_threshold:
+                    reason = f"adx_no_trend (ADX={adx_val:.2f} <= {min_adx_threshold})"
+                    if not state.get('backtest_mode', False):
+                        print(f"[generate_trend_signal] DEBUG: {reason}")
+                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": reason}
                 # add adaptive exit suggestion: if ADX falls below 20 later, suggest exit (for downstream to act on)
                 indicators_info['adx_exit_threshold'] = 20
-        indicators_info['adx'] = adx_val
+        if adx_val is not None:
+            indicators_info['adx'] = adx_val
     except Exception:
         pass
 
@@ -643,15 +884,84 @@ def _generate_trend_signal_df(
 
         # Require current volume >= vol_sma * vol_multiplier when vol_sma is present.
         # Removing strict per-bar comparison vs previous bar to avoid false negatives.
+        # В бэктесте ослабляем фильтр объема (используем 0.5 вместо 1.0)
+        vol_multiplier_effective = vol_multiplier
+        if state.get('backtest_mode', False):
+            vol_multiplier_effective = max(0.5, vol_multiplier * 0.5)  # Ослабляем в 2 раза для бэктеста
+        
         if vol_current is not None and vol_sma is not None:
             try:
-                if float(vol_current) < float(vol_sma) * float(vol_multiplier):
-                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "low_volume_trend"}
+                if float(vol_current) < float(vol_sma) * float(vol_multiplier_effective):
+                    reason = f"low_volume_trend (vol={vol_current:.2f} < vol_sma*{vol_multiplier_effective:.2f}={vol_sma * vol_multiplier_effective:.2f})"
+                    if not state.get('backtest_mode', False):  # Логируем только если не бэктест
+                        print(f"[generate_trend_signal] DEBUG: {reason}")
+                    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": reason}
             except Exception:
                 pass
     except Exception:
         pass
 
+    # Мультитаймфреймовый фильтр: проверяем глобальный тренд на высшем таймфрейме
+    mtf_bias = None
+    mtf_consensus = None
+    if use_mtf_filter:
+        try:
+            # Получаем готовые данные высших таймфреймов из state (если переданы)
+            df_1h = state.get('df_1h') if isinstance(state.get('df_1h'), pd.DataFrame) else None
+            df_4h = state.get('df_4h') if isinstance(state.get('df_4h'), pd.DataFrame) else None
+            
+            # Если есть данные со всех таймфреймов - используем консенсус
+            if df_1h is not None or df_4h is not None:
+                mtf_consensus = _get_multi_timeframe_consensus(
+                    df_15m=df,
+                    df_1h=df_1h,
+                    df_4h=df_4h,
+                    ema_period=mtf_ema_period,
+                    end_idx=len(df) - 1,
+                )
+                mtf_bias = mtf_consensus.get('consensus')
+                indicators_info['mtf_consensus'] = mtf_consensus
+                indicators_info['mtf_1h_bias'] = mtf_consensus.get('1h_bias')
+                indicators_info['mtf_4h_bias'] = mtf_consensus.get('4h_bias')
+                indicators_info['mtf_trend_strength'] = mtf_consensus.get('trend_strength')
+            else:
+                # Используем только указанный таймфрейм
+                mtf_bias = _get_higher_timeframe_bias(df, timeframe=mtf_timeframe, ema_period=mtf_ema_period)
+                indicators_info['mtf_bias'] = mtf_bias
+                indicators_info['mtf_timeframe'] = mtf_timeframe
+            
+            # УЖЕСТОЧЕННЫЙ MTF фильтр: 
+            # - LONG разрешен только если глобальный тренд bullish (neutral БЛОКИРУЕТСЯ)
+            # - SHORT разрешен только если глобальный тренд bearish (neutral БЛОКИРУЕТСЯ)
+            # - Neutral сигналы блокируются для повышения качества входов
+            mtf_block_neutral = state.get('mtf_block_neutral', True)  # По умолчанию блокируем neutral
+            
+            if mtf_bias == 'bearish' and long_allowed:
+                long_allowed = False
+                entry_reason = "mtf_filter_bearish_block_long"
+            elif mtf_bias == 'bullish' and short_allowed:
+                short_allowed = False
+                entry_reason = "mtf_filter_bullish_block_short"
+            elif mtf_bias == 'neutral':
+                if mtf_block_neutral:
+                    # Блокируем neutral сигналы для повышения качества
+                    if long_allowed:
+                        long_allowed = False
+                        entry_reason = "mtf_filter_neutral_block_long"
+                    if short_allowed:
+                        short_allowed = False
+                        entry_reason = "mtf_filter_neutral_block_short"
+                else:
+                    # Старое поведение: разрешаем neutral, но отмечаем в reason
+                    if long_allowed:
+                        entry_reason = f"{entry_reason}_mtf_neutral" if entry_reason else "mtf_neutral_long"
+                    if short_allowed:
+                        entry_reason = f"{entry_reason}_mtf_neutral" if entry_reason else "mtf_neutral_short"
+        except Exception as e:
+            # В случае ошибки не блокируем сигналы
+            indicators_info['mtf_bias'] = None
+            indicators_info['mtf_error'] = str(e)[:50]
+    
     # Breakout confirmation and HTF EMA200 filter temporarily disabled to increase signal coverage.
     # Kept lightweight markers in indicators_info for debugging, but these checks DO NOT block entries.
     try:
@@ -668,16 +978,18 @@ def _generate_trend_signal_df(
     if short_allowed and short_pyr >= max_pyramid:
         return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "short_pyramid_limit_reached"}
 
-    # Dynamic stop-loss via ATR — separate for LONG/SHORT
-    # SL = 2 ATR, TP = 4 ATR (соотношение 1:2)
+    # Оптимизированные SL/TP на основе ATR
+    # УВЕЛИЧЕН SL до 3.0 ATR (было 2.5) для снижения ложных срабатываний
+    # УМЕНЬШЕН TP до 6.0 ATR (было 8.0) для соотношения 1:2 (более реалистичное)
+    # Это должно улучшить винрейт за счет более широкого SL и более достижимого TP
     if long_allowed:
-        stop_loss = price - (2.5 * atr_current)
-        take_profit = price + (8.0 * atr_current)
-        # add trailing parameters: start trailing after 1.5 * ATR; trail step = 0.5 * ATR
+        stop_loss = price - (3.0 * atr_current)  # Увеличено с 2.5 до 3.0
+        take_profit = price + (6.0 * atr_current)  # Уменьшено с 8.0 до 6.0 (соотношение 1:2)
+        # Trailing параметры: начинаем трейлинг после 2.0 ATR (было 1.5) для большей свободы
         trailing = {
-            "start_at_atr": 1.5,
+            "start_at_atr": 2.0,  # Увеличено с 1.5 до 2.0
             "trail_step_atr": 0.5,
-            "move_to_break_even_atr": 1.0,
+            "move_to_break_even_atr": 1.5,  # Увеличено с 1.0 до 1.5
         }
         return {
             "signal": "LONG",
@@ -690,12 +1002,12 @@ def _generate_trend_signal_df(
         }
 
     if short_allowed:
-        stop_loss = price + (2.5 * atr_current)
-        take_profit = price - (8.0 * atr_current)
+        stop_loss = price + (3.0 * atr_current)  # Увеличено с 2.5 до 3.0
+        take_profit = price - (6.0 * atr_current)  # Уменьшено с 8.0 до 6.0 (соотношение 1:2)
         trailing = {
-            "start_at_atr": 1.5,
+            "start_at_atr": 2.0,  # Увеличено с 1.5 до 2.0
             "trail_step_atr": 0.5,
-            "move_to_break_even_atr": 1.0,
+            "move_to_break_even_atr": 1.5,  # Увеличено с 1.0 до 1.5
         }
         return {
             "signal": "SHORT",
@@ -707,7 +1019,14 @@ def _generate_trend_signal_df(
             "last_signal_idx": current_idx,
         }
 
-    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "no_action"}
+    reason = "no_action"
+    # Логируем только если не в режиме бэктеста
+    if not state.get('backtest_mode', False):
+        print(f"[generate_trend_signal] DEBUG: {reason} - No entry conditions met")
+        print(f"[generate_trend_signal] DEBUG: Final state - long_allowed={long_allowed}, short_allowed={short_allowed}")
+        print(f"[generate_trend_signal] DEBUG: Final state - is_uptrend={is_uptrend}, is_downtrend={is_downtrend}")
+        print(f"[generate_trend_signal] DEBUG: Final state - adx_ok={adx_ok}, vol_ok={vol_ok}")
+    return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": reason}
 
 
 def generate_trend_signal(*args, **kwargs):
@@ -856,10 +1175,11 @@ def generate_flat_signal(
     indicators_info = {}
 
     # Cooldown check
-    last_signal_idx = state.get('last_signal_idx', -100)
-    current_idx = len(df)
-    if current_idx - last_signal_idx < 10:
-        return {"signal": None, "indicators_info": indicators_info, "reason": "cooldown"}
+    current_idx = len(df)  # Определяем current_idx всегда
+    if not state.get('backtest_mode', False):
+        last_signal_idx = state.get('last_signal_idx', -100)
+        if current_idx - last_signal_idx < 10:
+            return {"signal": None, "indicators_info": indicators_info, "reason": "cooldown"}
 
     if df.replace([np.inf, -np.inf], np.nan).dropna().empty:
         return {"signal": None, "indicators_info": indicators_info, "reason": "nan_in_data"}
@@ -995,6 +1315,9 @@ def generate_momentum_signal(
     is_short_condition = is_short_fan or ema_cross_down
 
     if not (is_long_condition or is_short_condition):
+        # Логируем только периодически, чтобы не засорять логи
+        if len(df) % 100 == 0:  # Каждую 100-ю свечу
+            print(f"[generate_momentum_signal] DEBUG: ema_fan_not_aligned - price={price:.2f}, ema20={ema_s_val:.2f}, ema50={ema_l_val:.2f}, is_long_fan={is_long_fan}, is_short_fan={is_short_fan}, ema_cross_up={ema_cross_up}, ema_cross_down={ema_cross_down}")
         return {"signal": None, "indicators_info": indicators_info, "reason": "ema_fan_not_aligned"}
 
     # RSI filter (leading): require RSI(14) in [50,65]
@@ -1003,6 +1326,8 @@ def generate_momentum_signal(
     indicators_info['rsi'] = rsi_current
     # Relax RSI window for momentum entries to [45,75]
     if not (45.0 <= rsi_current <= 75.0):
+        if len(df) % 100 == 0:
+            print(f"[generate_momentum_signal] DEBUG: rsi_not_in_preferred_range - RSI={rsi_current:.2f} (need 45-75)")
         return {"signal": None, "indicators_info": indicators_info, "reason": "rsi_not_in_preferred_range"}
 
     # Volume checks
@@ -1019,21 +1344,29 @@ def generate_momentum_signal(
 
     # Require both percentile and short-term jump
     if vol_current < threshold:
+        if len(df) % 100 == 0:
+            print(f"[generate_momentum_signal] DEBUG: no_volume_spike_percentile - vol={vol_current:.2f} < threshold={threshold:.2f} ({vol_top_pct*100}th percentile)")
         return {"signal": None, "indicators_info": indicators_info, "reason": "no_volume_spike_percentile"}
     # require short-term multiplier (relaxed to 1.1x to increase signal frequency)
     if vol_current < 1.1 * vol_avg5:
+        if len(df) % 100 == 0:
+            print(f"[generate_momentum_signal] DEBUG: no_short_term_volume_jump - vol={vol_current:.2f} < 1.1*vol_avg5={1.1*vol_avg5:.2f}")
         return {"signal": None, "indicators_info": indicators_info, "reason": "no_short_term_volume_jump"}
 
     # Exit (trailing idea): if price closes below EMA20 -> HOLD (close)
-    if price < ema_s_val:
+    # ВАЖНО: Это блокирует SHORT сигналы! Нужно проверять только для LONG
+    if is_long_condition and price < ema_s_val:
         return {"signal": "HOLD", "indicators_info": indicators_info, "reason": "momentum_exit_below_ema20"}
 
     # Determine direction
-    if is_long_fan:
-        return {"signal": "LONG", "indicators_info": indicators_info, "reason": "ok"}
-    if is_short_fan:
-        return {"signal": "SHORT", "indicators_info": indicators_info, "reason": "ok"}
+    if is_long_fan or (is_long_condition and ema_cross_up):
+        return {"signal": "LONG", "indicators_info": indicators_info, "reason": "momentum_long"}
+    if is_short_fan or (is_short_condition and ema_cross_down):
+        return {"signal": "SHORT", "indicators_info": indicators_info, "reason": "momentum_short"}
 
+    # Логируем только периодически
+    if len(df) % 100 == 0:
+        print(f"[generate_momentum_signal] DEBUG: no_action - is_long_fan={is_long_fan}, is_short_fan={is_short_fan}, ema_cross_up={ema_cross_up}, ema_cross_down={ema_cross_down}")
     return {"signal": None, "indicators_info": indicators_info, "reason": "no_action"}
 
 

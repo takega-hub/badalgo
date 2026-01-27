@@ -2830,22 +2830,38 @@ def _determine_strategy_with_fallback(
                     continue
                 
                 try:
+                    import pytz
+                    msk_tz = pytz.timezone('Europe/Moscow')
+                    # ВАЖНО: Timestamp в истории хранится в MSK, парсим соответственно
                     if isinstance(hist_time_str, str):
                         if 'T' in hist_time_str:
                             hist_time = datetime.fromisoformat(hist_time_str.replace('Z', '+00:00'))
+                            # Если время в UTC, конвертируем в MSK для сравнения
+                            if hist_time.tzinfo == timezone.utc or hist_time.tzinfo is None:
+                                if hist_time.tzinfo is None:
+                                    hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                hist_time = hist_time.astimezone(msk_tz)
+                            elif hist_time.tzinfo != msk_tz:
+                                # Если другая таймзона, конвертируем через UTC в MSK
+                                hist_time = hist_time.astimezone(timezone.utc).astimezone(msk_tz)
                         else:
                             try:
+                                # Другой формат: считаем что это MSK время
                                 hist_time = datetime.strptime(hist_time_str, '%Y-%m-%d %H:%M:%S')
-                                hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                hist_time = msk_tz.localize(hist_time)
                             except ValueError:
                                 hist_time = datetime.fromisoformat(hist_time_str.replace('Z', '+00:00'))
+                                if hist_time.tzinfo is None:
+                                    hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                hist_time = hist_time.astimezone(msk_tz)
                     else:
                         hist_time = datetime.fromisoformat(str(hist_time_str).replace('Z', '+00:00'))
+                        if hist_time.tzinfo is None:
+                            hist_time = hist_time.replace(tzinfo=timezone.utc)
+                        hist_time = hist_time.astimezone(msk_tz)
                     
-                    if hist_time.tzinfo is None:
-                        hist_time = hist_time.replace(tzinfo=timezone.utc)
-                    else:
-                        hist_time = hist_time.astimezone(timezone.utc)
+                    # Конвертируем MSK время в UTC для сравнения с entry_time (который в UTC)
+                    hist_time = hist_time.astimezone(timezone.utc)
                     
                     signals_with_time.append((hist_time, hist_signal))
                 except Exception:
@@ -3074,19 +3090,28 @@ def _sync_closed_positions_from_bybit(
                                 continue
                             
                             try:
+                                import pytz
+                                msk_tz = pytz.timezone('Europe/Moscow')
+                                # ВАЖНО: Timestamp в истории хранится в MSK, парсим соответственно
                                 if isinstance(hist_time_str, str):
                                     if 'T' in hist_time_str:
                                         hist_time = datetime.fromisoformat(hist_time_str.replace('Z', '+00:00'))
+                                        # Если время в UTC, конвертируем в MSK для сравнения
+                                        if hist_time.tzinfo == timezone.utc or hist_time.tzinfo is None:
+                                            if hist_time.tzinfo is None:
+                                                hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                            hist_time = hist_time.astimezone(msk_tz)
+                                        elif hist_time.tzinfo != msk_tz:
+                                            hist_time = hist_time.astimezone(timezone.utc).astimezone(msk_tz)
                                     else:
+                                        # Другой формат: считаем что это MSK время
                                         hist_time = datetime.strptime(hist_time_str, '%Y-%m-%d %H:%M:%S')
-                                        hist_time = hist_time.replace(tzinfo=timezone.utc)
+                                        hist_time = msk_tz.localize(hist_time)
                                 else:
                                     continue
                                 
-                                if hist_time.tzinfo is None:
-                                    hist_time = hist_time.replace(tzinfo=timezone.utc)
-                                else:
-                                    hist_time = hist_time.astimezone(timezone.utc)
+                                # Конвертируем MSK время в UTC для сравнения
+                                hist_time = hist_time.astimezone(timezone.utc)
                                 
                                 # Проверяем, попадает ли сигнал во временное окно открытия позиции
                                 time_diff = abs((entry_time - hist_time).total_seconds())
@@ -5622,7 +5647,7 @@ def run_live_from_api(
                         except Exception:
                             pass
             
-            # ДОПОЛНИТЕЛЬНО: Проверяем свежесть сигналов из истории (с обновленными timestamp)
+            # ДОПОЛНИТЕЛЬНО: Проверяем свежесть сигналов из истории и обновляем timestamp в available_signals
             # Это гарантирует, что сигналы, только что сохраненные в историю, будут обнаружены немедленно
             if not fresh_signals_available:
                 try:
@@ -5638,7 +5663,9 @@ def run_live_from_api(
                             if not hist_timestamp_str:
                                 continue
                             
-                            # Парсим timestamp
+                            # Парсим timestamp (ВАЖНО: в истории хранится MSK время)
+                            import pytz
+                            msk_tz = pytz.timezone('Europe/Moscow')
                             if isinstance(hist_timestamp_str, str):
                                 # Пробуем разные форматы
                                 try:
@@ -5648,23 +5675,51 @@ def run_live_from_api(
                             else:
                                 hist_ts = pd.Timestamp(hist_timestamp_str)
                             
-                            # Нормализуем timezone
+                            # Нормализуем timezone: если время в MSK, конвертируем в UTC для сравнения
                             if hist_ts.tzinfo is None:
-                                hist_ts = hist_ts.tz_localize('UTC')
+                                # Если нет таймзоны, пытаемся определить по строке
+                                if '+03:00' in str(hist_timestamp_str) or 'Europe/Moscow' in str(hist_timestamp_str):
+                                    hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
+                                else:
+                                    hist_ts = hist_ts.tz_localize('UTC')
+                            elif str(hist_ts.tz) == 'Europe/Moscow' or '+03:00' in str(hist_ts.tz):
+                                # Если время в MSK, конвертируем в UTC
+                                hist_ts = hist_ts.tz_convert('UTC')
                             else:
                                 hist_ts = hist_ts.tz_convert('UTC')
                             
                             hist_ts_py = hist_ts.to_pydatetime()
                             
                             # Проверяем возраст сигнала (должен быть не старше 15 минут)
+                            # Учитываем, что сигнал мог быть создан в MSK, поэтому добавляем буфер
                             age_from_now_minutes = abs((current_time_utc - hist_ts_py).total_seconds()) / 60
                             
                             if age_from_now_minutes <= 15:
                                 # Сигнал свежий - проверяем, что он actionable (не HOLD)
                                 hist_action = hist_signal.get("action", "").upper()
                                 if hist_action in ("LONG", "SHORT"):
+                                    hist_price = hist_signal.get("price", 0)
+                                    hist_reason = hist_signal.get("reason", "")
+                                    
+                                    # Ищем соответствующий сигнал в available_signals и обновляем его timestamp
+                                    # Сравниваем по цене (в пределах 0.1%) и reason
+                                    for name, sig in available_signals:
+                                        price_match = abs(sig.price - hist_price) / hist_price <= 0.001 if hist_price > 0 else False
+                                        reason_match = sig.reason == hist_reason
+                                        
+                                        if price_match and reason_match:
+                                            # Проверяем, соответствует ли сигнал последней свече
+                                            if not df_ready.empty:
+                                                last_candle_close = float(df_ready['close'].iloc[-1])
+                                                price_match_candle = abs(sig.price - last_candle_close) / last_candle_close <= 0.001 if last_candle_close > 0 else False
+                                                
+                                                if price_match_candle:
+                                                    # Обновляем timestamp на текущее время
+                                                    sig.timestamp = pd.Timestamp(current_time_utc)
+                                                    _log(f"⚡ Updated signal timestamp from history: {name} {hist_action} @ ${hist_price:.2f} - timestamp updated to current time", symbol)
+                                    
                                     fresh_signals_available = True
-                                    _log(f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_signal.get('price', 0):.2f} ({hist_signal.get('reason', '')}) - age: {age_from_now_minutes:.1f} min", symbol)
+                                    _log(f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_price:.2f} ({hist_reason}) - age: {age_from_now_minutes:.1f} min", symbol)
                                     break
                         except Exception as e:
                             # Пропускаем сигналы с ошибками парсинга

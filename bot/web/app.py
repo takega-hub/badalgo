@@ -3396,7 +3396,8 @@ def api_chart_data():
                     continue
                 
                 try:
-                    # Парсим время сигнала
+                    # Парсим время сигнала (ВАЖНО: в истории хранится MSK время)
+                    msk_tz = pytz.timezone('Europe/Moscow')
                     if isinstance(sig_time_str, str):
                         if 'T' in sig_time_str:
                             sig_time = pd.to_datetime(sig_time_str.replace('Z', '+00:00'))
@@ -3405,8 +3406,16 @@ def api_chart_data():
                     else:
                         sig_time = pd.to_datetime(sig_time_str)
                     
+                    # Если время в MSK, конвертируем в UTC для работы с графиком
                     if sig_time.tzinfo is None:
-                        sig_time = utc_tz.localize(sig_time)
+                        # Пытаемся определить по строке
+                        if '+03:00' in str(sig_time_str) or 'Europe/Moscow' in str(sig_time_str):
+                            sig_time = sig_time.tz_localize(msk_tz).tz_convert(utc_tz)
+                        else:
+                            sig_time = utc_tz.localize(sig_time)
+                    elif str(sig_time.tz) == 'Europe/Moscow' or '+03:00' in str(sig_time.tz):
+                        # Если время в MSK, конвертируем в UTC
+                        sig_time = sig_time.tz_convert(utc_tz)
                     else:
                         sig_time = sig_time.astimezone(utc_tz)
                     

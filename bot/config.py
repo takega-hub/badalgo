@@ -6,6 +6,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Флаг для управления выводом логов конфигурации
+CONFIG_VERBOSE = os.getenv("CONFIG_VERBOSE", "false").lower() == "true"
+
+def _config_log(msg: str):
+    """Выводит лог конфигурации только если CONFIG_VERBOSE=True"""
+    if CONFIG_VERBOSE:
+        print(msg)
+
 
 @dataclass
 class ApiSettings:
@@ -488,16 +496,16 @@ def load_settings() -> AppSettings:
                     line_stripped = line.strip()
                     if line_stripped.startswith('TRADING_SYMBOL='):
                         trading_symbol_raw = line_stripped.split('=', 1)[1].strip()
-                        print(f"[config] Found TRADING_SYMBOL by reading .env file directly: '{trading_symbol_raw}'")
+                        _config_log(f"[config] Found TRADING_SYMBOL by reading .env file directly: '{trading_symbol_raw}'")
                         break
         except Exception as e:
-            print(f"[config] Error reading .env file directly: {e}")
+            _config_log(f"[config] Error reading .env file directly: {e}")
     
     trading_symbol = trading_symbol_raw.strip() if trading_symbol_raw else ""
     
-    print(f"[config] TRADING_SYMBOL from os.getenv: '{os.getenv('TRADING_SYMBOL', 'NOT_FOUND')}'")
-    print(f"[config] TRADING_SYMBOL from cleaned_env_values: '{cleaned_env_values.get('TRADING_SYMBOL', 'NOT_FOUND')}'")
-    print(f"[config] Final trading_symbol: '{trading_symbol}'")
+    _config_log(f"[config] TRADING_SYMBOL from os.getenv: '{os.getenv('TRADING_SYMBOL', 'NOT_FOUND')}'")
+    _config_log(f"[config] TRADING_SYMBOL from cleaned_env_values: '{cleaned_env_values.get('TRADING_SYMBOL', 'NOT_FOUND')}'")
+    _config_log(f"[config] Final trading_symbol: '{trading_symbol}'")
     
     # Загружаем активные символы из .env (многопарная торговля)
     available_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -512,13 +520,13 @@ def load_settings() -> AppSettings:
         active_symbols_list = [s for s in active_symbols_list if s in available_symbols]
         if active_symbols_list:
             settings.active_symbols = active_symbols_list
-            print(f"[config] ACTIVE_SYMBOLS loaded from .env: {settings.active_symbols}")
+            _config_log(f"[config] ACTIVE_SYMBOLS loaded from .env: {settings.active_symbols}")
     elif trading_symbol and trading_symbol in available_symbols:
         # Обратная совместимость: если ACTIVE_SYMBOLS не задан, используем TRADING_SYMBOL
         settings.active_symbols = [trading_symbol]
-        print(f"[config] ACTIVE_SYMBOLS not found, using TRADING_SYMBOL for backward compatibility: {settings.active_symbols}")
+        _config_log(f"[config] ACTIVE_SYMBOLS not found, using TRADING_SYMBOL for backward compatibility: {settings.active_symbols}")
     else:
-        print(f"[config] No ACTIVE_SYMBOLS or TRADING_SYMBOL, using default: {settings.active_symbols}")
+        _config_log(f"[config] No ACTIVE_SYMBOLS or TRADING_SYMBOL, using default: {settings.active_symbols}")
     
     # Загружаем основной символ для UI
     primary_symbol_raw = os.getenv("PRIMARY_SYMBOL", "")
@@ -527,15 +535,15 @@ def load_settings() -> AppSettings:
     
     if primary_symbol_raw and primary_symbol_raw.strip().upper() in available_symbols:
         settings.primary_symbol = primary_symbol_raw.strip().upper()
-        print(f"[config] PRIMARY_SYMBOL loaded from .env: {settings.primary_symbol}")
+        _config_log(f"[config] PRIMARY_SYMBOL loaded from .env: {settings.primary_symbol}")
     elif settings.active_symbols:
         # Если PRIMARY_SYMBOL не задан, используем первый активный
         settings.primary_symbol = settings.active_symbols[0]
-        print(f"[config] PRIMARY_SYMBOL not found, using first active symbol: {settings.primary_symbol}")
+        _config_log(f"[config] PRIMARY_SYMBOL not found, using first active symbol: {settings.primary_symbol}")
     elif trading_symbol and trading_symbol in available_symbols:
         # Обратная совместимость: используем TRADING_SYMBOL
         settings.primary_symbol = trading_symbol
-        print(f"[config] PRIMARY_SYMBOL not found, using TRADING_SYMBOL for backward compatibility: {settings.primary_symbol}")
+        _config_log(f"[config] PRIMARY_SYMBOL not found, using TRADING_SYMBOL for backward compatibility: {settings.primary_symbol}")
     
     # Синхронизируем symbol с primary_symbol для обратной совместимости
     settings.symbol = settings.primary_symbol
@@ -548,9 +556,9 @@ def load_settings() -> AppSettings:
     if follow_primary_symbol_raw:
         follow_primary_symbol_value = follow_primary_symbol_raw.strip().lower()
         settings.follow_primary_symbol = follow_primary_symbol_value in ("true", "1", "yes")
-        print(f"[config] FOLLOW_PRIMARY_SYMBOL loaded from .env: {settings.follow_primary_symbol}")
+        _config_log(f"[config] FOLLOW_PRIMARY_SYMBOL loaded from .env: {settings.follow_primary_symbol}")
     else:
-        print(f"[config] FOLLOW_PRIMARY_SYMBOL not found, using default: {settings.follow_primary_symbol}")
+        _config_log(f"[config] FOLLOW_PRIMARY_SYMBOL not found, using default: {settings.follow_primary_symbol}")
     
     # Применяем настройки стратегий (если заданы в .env, переопределяем значения по умолчанию)
     # Проверяем, что переменная присутствует в .env (используем cleaned_env_values для надежности)
@@ -578,7 +586,7 @@ def load_settings() -> AppSettings:
         settings.enable_vbo_strategy = enable_vbo in ("true", "1", "yes")
     
     # Логируем загруженные настройки для отладки
-    print(f"[config] Loaded strategy settings from .env:")
+    _config_log(f"[config] Loaded strategy settings from .env:")
     print(f"  TRADING_SYMBOL='{trading_symbol_raw}' -> {settings.symbol}")
     print(f"  ENABLE_TREND_STRATEGY='{enable_trend_raw}' -> {settings.enable_trend_strategy}")
     print(f"  ENABLE_FLAT_STRATEGY='{enable_flat_raw}' -> {settings.enable_flat_strategy}")
@@ -598,9 +606,9 @@ def load_settings() -> AppSettings:
     allowed_priorities = ("trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "hybrid", "confluence")  # liquidity и liquidation_hunter убраны - стратегии отключены
     if strategy_priority in allowed_priorities:
         settings.strategy_priority = strategy_priority
-        print(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")
+        _config_log(f"[config] STRATEGY_PRIORITY loaded from .env: {settings.strategy_priority}")
     else:
-        print(f"[config] No STRATEGY_PRIORITY in .env or invalid value '{strategy_priority}', using default: {settings.strategy_priority}")
+        _config_log(f"[config] No STRATEGY_PRIORITY in .env or invalid value '{strategy_priority}', using default: {settings.strategy_priority}")
     
     # Автоматически ищем модель для выбранного символа
     # Проверяем, соответствует ли текущая модель выбранному символу
@@ -614,7 +622,7 @@ def load_settings() -> AppSettings:
                 model_path_obj = pathlib.Path(settings.ml_model_path)
                 if model_path_obj.exists() and f"_{settings.symbol}_" in model_path_obj.name:
                     current_model_matches = True
-                    print(f"[config] Current ML model matches symbol {settings.symbol}: {settings.ml_model_path}")
+                    _config_log(f"[config] Current ML model matches symbol {settings.symbol}: {settings.ml_model_path}")
             
             # Если модель не соответствует символу или не задана, ищем новую
             if not current_model_matches:
@@ -643,12 +651,12 @@ def load_settings() -> AppSettings:
                     old_model = settings.ml_model_path
                     settings.ml_model_path = found_model
                     if old_model:
-                        print(f"[config] ML model changed for {settings.symbol}: {old_model} -> {found_model}")
+                        _config_log(f"[config] ML model changed for {settings.symbol}: {old_model} -> {found_model}")
                     else:
-                        print(f"[config] Auto-found ML model for {settings.symbol}: {found_model}")
+                        _config_log(f"[config] Auto-found ML model for {settings.symbol}: {found_model}")
                 else:
                     if settings.ml_model_path:
-                        print(f"[config] No ML model found for {settings.symbol}, clearing model path (was: {settings.ml_model_path})")
+                        _config_log(f"[config] No ML model found for {settings.symbol}, clearing model path (was: {settings.ml_model_path})")
                     settings.ml_model_path = None
     
     # Настройки ML-стратегии (можно переопределить через переменные окружения)
@@ -667,23 +675,23 @@ def load_settings() -> AppSettings:
         settings.ml_model_path = ml_model_path
     if ml_model_type_for_all and ml_model_type_for_all.lower() in ("rf", "xgb", "ensemble"):
         settings.ml_model_type_for_all = ml_model_type_for_all.lower()
-        print(f"[config] ML_MODEL_TYPE_FOR_ALL loaded from .env: {settings.ml_model_type_for_all}")
+        _config_log(f"[config] ML_MODEL_TYPE_FOR_ALL loaded from .env: {settings.ml_model_type_for_all}")
     if ml_confidence:
         try:
             settings.ml_confidence_threshold = float(ml_confidence)
-            print(f"[config] ML_CONFIDENCE_THRESHOLD loaded from .env: {settings.ml_confidence_threshold}")
+            _config_log(f"[config] ML_CONFIDENCE_THRESHOLD loaded from .env: {settings.ml_confidence_threshold}")
         except ValueError:
-            print(f"[config] Warning: Invalid ML_CONFIDENCE_THRESHOLD value: {ml_confidence}")
+            _config_log(f"[config] Warning: Invalid ML_CONFIDENCE_THRESHOLD value: {ml_confidence}")
     
     if ml_min_strength:
         valid_strengths = ["слабое", "умеренное", "среднее", "сильное", "очень_сильное"]
         if ml_min_strength.lower() in valid_strengths:
             settings.ml_min_signal_strength = ml_min_strength.lower()
-            print(f"[config] ML_MIN_SIGNAL_STRENGTH loaded from .env: {settings.ml_min_signal_strength}")
+            _config_log(f"[config] ML_MIN_SIGNAL_STRENGTH loaded from .env: {settings.ml_min_signal_strength}")
     
     if ml_stability:
         settings.ml_stability_filter = ml_stability.lower() in ("true", "1", "yes", "on")
-        print(f"[config] ML_STABILITY_FILTER loaded from .env: {settings.ml_stability_filter}")
+        _config_log(f"[config] ML_STABILITY_FILTER loaded from .env: {settings.ml_stability_filter}")
     
     # Если модель не задана через env и не найдена автоматически выше, проверяем наличие модели и используем её
     # НО НЕ перезаписываем настройки, если они уже заданы в .env или найдены автоматически
@@ -812,7 +820,7 @@ def load_settings() -> AppSettings:
     if trend_atr_multiplier:
         try:
             settings.strategy.trend_atr_multiplier = float(trend_atr_multiplier)
-            print(f"[config] TREND_ATR_MULTIPLIER loaded from .env: {settings.strategy.trend_atr_multiplier}")
+            _config_log(f"[config] TREND_ATR_MULTIPLIER loaded from .env: {settings.strategy.trend_atr_multiplier}")
         except ValueError:
             pass
 
@@ -821,7 +829,7 @@ def load_settings() -> AppSettings:
     if trend_max_pyramid:
         try:
             settings.strategy.trend_max_pyramid = int(trend_max_pyramid)
-            print(f"[config] TREND_MAX_PYRAMID loaded from .env: {settings.strategy.trend_max_pyramid}")
+            _config_log(f"[config] TREND_MAX_PYRAMID loaded from .env: {settings.strategy.trend_max_pyramid}")
         except ValueError:
             pass
 
@@ -829,20 +837,20 @@ def load_settings() -> AppSettings:
     if trend_atr_multiplier_alt:
         try:
             settings.strategy.trend_atr_multiplier_alt = float(trend_atr_multiplier_alt)
-            print(f"[config] TREND_ATR_MULTIPLIER_ALT loaded from .env: {settings.strategy.trend_atr_multiplier_alt}")
+            _config_log(f"[config] TREND_ATR_MULTIPLIER_ALT loaded from .env: {settings.strategy.trend_atr_multiplier_alt}")
         except ValueError:
             pass
 
     trend_double_ema_enabled = os.getenv("TREND_DOUBLE_EMA_ENABLED", "").strip().lower()
     if trend_double_ema_enabled:
         settings.strategy.trend_double_ema_enabled = trend_double_ema_enabled in ("true", "1", "yes", "on")
-        print(f"[config] TREND_DOUBLE_EMA_ENABLED loaded from .env: {settings.strategy.trend_double_ema_enabled}")
+        _config_log(f"[config] TREND_DOUBLE_EMA_ENABLED loaded from .env: {settings.strategy.trend_double_ema_enabled}")
 
     trend_ema_short = os.getenv("TREND_EMA_SHORT", "").strip()
     if trend_ema_short:
         try:
             settings.strategy.trend_ema_short = int(trend_ema_short)
-            print(f"[config] TREND_EMA_SHORT loaded from .env: {settings.strategy.trend_ema_short}")
+            _config_log(f"[config] TREND_EMA_SHORT loaded from .env: {settings.strategy.trend_ema_short}")
         except ValueError:
             pass
 
@@ -850,7 +858,7 @@ def load_settings() -> AppSettings:
     if trend_ema_long:
         try:
             settings.strategy.trend_ema_long = int(trend_ema_long)
-            print(f"[config] TREND_EMA_LONG loaded from .env: {settings.strategy.trend_ema_long}")
+            _config_log(f"[config] TREND_EMA_LONG loaded from .env: {settings.strategy.trend_ema_long}")
         except ValueError:
             pass
     
@@ -952,10 +960,10 @@ def load_settings() -> AppSettings:
             # Если значение < 1, считаем что это уже доли (например, 0.015 = 1.5%)
             if rsl_value >= 1.0:
                 rsl_value = rsl_value / 100.0  # Преобразуем проценты в доли (1.5 -> 0.015 = 1.5%)
-                print(f"[config] ⚠️ RANGE_STOP_LOSS_PCT={range_stop_loss_pct} interpreted as percentage, converted to {rsl_value:.4f} (fraction, divided by 100)")
+                _config_log(f"[config] ⚠️ RANGE_STOP_LOSS_PCT={range_stop_loss_pct} interpreted as percentage, converted to {rsl_value:.4f} (fraction, divided by 100)")
             # Валидация: Range SL должен быть от 0.1% до 50%
             if rsl_value < 0.001 or rsl_value > 0.5:
-                print(f"[config] ⚠️ WARNING: RANGE_STOP_LOSS_PCT={rsl_value:.4f} ({rsl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.015 (1.5%)")
+                _config_log(f"[config] ⚠️ WARNING: RANGE_STOP_LOSS_PCT={rsl_value:.4f} ({rsl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.015 (1.5%)")
                 rsl_value = 0.015
             settings.strategy.range_stop_loss_pct = rsl_value
         except ValueError:
@@ -999,10 +1007,10 @@ def load_settings() -> AppSettings:
             # Если значение < 1, считаем что это уже доли (например, 0.01 = 1%)
             if sl_value >= 1.0:
                 sl_value = sl_value / 100.0  # Преобразуем проценты в доли (7 -> 0.07 = 7%)
-                print(f"[config] ⚠️ STOP_LOSS_PCT={stop_loss_pct} interpreted as percentage, converted to {sl_value:.4f} (fraction, divided by 100)")
+                _config_log(f"[config] ⚠️ STOP_LOSS_PCT={stop_loss_pct} interpreted as percentage, converted to {sl_value:.4f} (fraction, divided by 100)")
             # Валидация: SL должен быть от 0.1% до 50%
             if sl_value < 0.001 or sl_value > 0.5:
-                print(f"[config] ⚠️ WARNING: STOP_LOSS_PCT={sl_value:.4f} ({sl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.01 (1%)")
+                _config_log(f"[config] ⚠️ WARNING: STOP_LOSS_PCT={sl_value:.4f} ({sl_value*100:.2f}%) is out of reasonable range (0.1%-50%), using default 0.01 (1%)")
                 sl_value = 0.01
             settings.risk.stop_loss_pct = sl_value
         except ValueError:
@@ -1017,10 +1025,10 @@ def load_settings() -> AppSettings:
             # Если значение < 1, считаем что это уже доли (например, 0.02 = 2%)
             if tp_value >= 1.0:
                 tp_value = tp_value / 100.0  # Преобразуем проценты в доли (21 -> 0.21 = 21%)
-                print(f"[config] ⚠️ TAKE_PROFIT_PCT={take_profit_pct} interpreted as percentage, converted to {tp_value:.4f} (fraction, divided by 100)")
+                _config_log(f"[config] ⚠️ TAKE_PROFIT_PCT={take_profit_pct} interpreted as percentage, converted to {tp_value:.4f} (fraction, divided by 100)")
             # Валидация: TP должен быть от 0.5% до 100%
             if tp_value < 0.005 or tp_value > 1.0:
-                print(f"[config] ⚠️ WARNING: TAKE_PROFIT_PCT={tp_value:.4f} ({tp_value*100:.2f}%) is out of reasonable range (0.5%-100%), using default 0.02 (2%)")
+                _config_log(f"[config] ⚠️ WARNING: TAKE_PROFIT_PCT={tp_value:.4f} ({tp_value*100:.2f}%) is out of reasonable range (0.5%-100%), using default 0.02 (2%)")
                 tp_value = 0.02
             settings.risk.take_profit_pct = tp_value
         except ValueError:
@@ -1083,7 +1091,7 @@ def load_settings() -> AppSettings:
     if kline_limit:
         try:
             settings.kline_limit = int(kline_limit)
-            print(f"[config] KLINE_LIMIT loaded from .env: {settings.kline_limit}")
+            _config_log(f"[config] KLINE_LIMIT loaded from .env: {settings.kline_limit}")
         except ValueError:
             pass
     
@@ -1114,9 +1122,9 @@ def _load_symbol_strategy_settings(settings: AppSettings) -> None:
             if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                 symbol_settings = SymbolStrategySettings.from_dict(symbol_data)
                 settings.symbol_strategy_settings[symbol] = symbol_settings
-                print(f"[config] Loaded strategy settings for {symbol}")
+                _config_log(f"[config] Loaded strategy settings for {symbol}")
     except Exception as e:
-        print(f"[config] ⚠️ Error loading symbol strategy settings: {e}")
+        _config_log(f"[config] ⚠️ Error loading symbol strategy settings: {e}")
 
 
 def save_symbol_strategy_settings(settings: AppSettings) -> None:
@@ -1130,6 +1138,6 @@ def save_symbol_strategy_settings(settings: AppSettings) -> None:
         with open(settings_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
-        print(f"[config] Saved strategy settings for {len(data)} symbol(s)")
+        _config_log(f"[config] Saved strategy settings for {len(data)} symbol(s)")
     except Exception as e:
-        print(f"[config] ⚠️ Error saving symbol strategy settings: {e}")
+        _config_log(f"[config] ⚠️ Error saving symbol strategy settings: {e}")

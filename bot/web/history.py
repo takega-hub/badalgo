@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import pytz
 
 
 HISTORY_FILE = Path(__file__).parent.parent.parent / "bot_history.json"
@@ -346,7 +347,10 @@ def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) 
 
 
 def _clean_old_signals(history: Dict[str, List]) -> int:
-    """Удаляет сигналы старше MAX_SIGNAL_AGE_DAYS дней. Возвращает количество удаленных сигналов."""
+    """Удаляет сигналы старше MAX_SIGNAL_AGE_DAYS дней. Возвращает количество удаленных сигналов.
+    
+    ВАЖНО: Timestamp в истории хранится в MSK, поэтому парсим и сравниваем в MSK.
+    """
     if "signals" not in history:
         return 0
     
@@ -354,8 +358,9 @@ def _clean_old_signals(history: Dict[str, List]) -> int:
     if not signals:
         return 0
     
-    now = datetime.now(timezone.utc)
-    cutoff_time = now - timedelta(days=MAX_SIGNAL_AGE_DAYS)
+    msk_tz = pytz.timezone('Europe/Moscow')
+    now_msk = datetime.now(msk_tz)
+    cutoff_time = now_msk - timedelta(days=MAX_SIGNAL_AGE_DAYS)
     
     removed_count = 0
     filtered_signals = []
@@ -368,25 +373,35 @@ def _clean_old_signals(history: Dict[str, List]) -> int:
                 filtered_signals.append(signal)
                 continue
             
-            # Парсим timestamp в разных форматах
+            # Парсим timestamp в разных форматах (ожидаем MSK время)
             signal_time = None
             if isinstance(ts_str, str):
                 if 'T' in ts_str:
-                    # ISO формат: 2026-01-27T11:30:00.000000+00:00 или 2026-01-27T11:30:00Z
+                    # ISO формат: может быть в MSK (+03:00) или UTC (+00:00)
                     try:
                         signal_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                        # Если время в UTC, конвертируем в MSK для сравнения
+                        if signal_time.tzinfo == timezone.utc or signal_time.tzinfo is None:
+                            if signal_time.tzinfo is None:
+                                signal_time = signal_time.replace(tzinfo=timezone.utc)
+                            signal_time = signal_time.astimezone(msk_tz)
+                        elif signal_time.tzinfo != msk_tz:
+                            # Если другая таймзона, конвертируем через UTC в MSK
+                            signal_time = signal_time.astimezone(timezone.utc).astimezone(msk_tz)
                     except ValueError:
                         # Пробуем другой формат
                         try:
                             signal_time = datetime.strptime(ts_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
-                            signal_time = signal_time.replace(tzinfo=timezone.utc)
+                            # Считаем что это MSK время (для обратной совместимости со старыми данными)
+                            signal_time = msk_tz.localize(signal_time)
                         except ValueError:
                             pass
                 else:
                     # Другой формат: 2026-01-27 11:30:00
                     try:
                         signal_time = datetime.strptime(ts_str[:19], '%Y-%m-%d %H:%M:%S')
-                        signal_time = signal_time.replace(tzinfo=timezone.utc)
+                        # Считаем что это MSK время (для обратной совместимости со старыми данными)
+                        signal_time = msk_tz.localize(signal_time)
                     except ValueError:
                         pass
             
@@ -395,13 +410,13 @@ def _clean_old_signals(history: Dict[str, List]) -> int:
                 filtered_signals.append(signal)
                 continue
             
-            # Убеждаемся, что время в UTC
+            # Убеждаемся, что время в MSK
             if signal_time.tzinfo is None:
-                signal_time = signal_time.replace(tzinfo=timezone.utc)
-            else:
-                signal_time = signal_time.astimezone(timezone.utc)
+                signal_time = msk_tz.localize(signal_time)
+            elif signal_time.tzinfo != msk_tz:
+                signal_time = signal_time.astimezone(msk_tz)
             
-            # Проверяем возраст сигнала
+            # Проверяем возраст сигнала (сравниваем MSK время с MSK временем)
             if signal_time >= cutoff_time:
                 filtered_signals.append(signal)
             else:
@@ -555,40 +570,71 @@ def _save_history(history: Dict[str, List], skip_cleanup: bool = False):
 
 
 def add_signal(action: str, reason: str, price: float, timestamp: Any = None, symbol: str = "", strategy_type: str = "unknown", signal_id: Optional[str] = None):
-    """Добавить сигнал в историю с дедупликацией."""
+    """Добавить сигнал в историю с дедупликацией.
+    
+    ВАЖНО: Timestamp сохраняется в MSK (Europe/Moscow) для соответствия отображению в веб-интерфейсе.
+    Это устраняет проблему, когда сигналы считаются старыми из-за разницы в часовых поясах.
+    """
     history = _load_history()
     
-    # Нормализуем timestamp в UTC
+    # Получаем таймзону MSK
+    msk_tz = pytz.timezone('Europe/Moscow')
+    
+    # Нормализуем timestamp в MSK (для соответствия отображению в веб-интерфейсе)
     if timestamp is None:
-        ts_str = datetime.now(timezone.utc).isoformat()
+        # Если timestamp не передан, используем текущее время в MSK
+        ts_msk = datetime.now(msk_tz)
+        ts_str = ts_msk.isoformat()
     elif hasattr(timestamp, 'isoformat'):
         # Если это pandas Timestamp или datetime
         try:
             import pandas as pd
             if isinstance(timestamp, pd.Timestamp):
-                # pandas Timestamp - конвертируем в UTC
+                # pandas Timestamp - сначала конвертируем в UTC, затем в MSK
                 if timestamp.tz is None:
-                    ts_str = timestamp.tz_localize('UTC').isoformat()
+                    ts_utc = timestamp.tz_localize('UTC').to_pydatetime()
                 else:
-                    ts_str = timestamp.tz_convert('UTC').isoformat()
+                    ts_utc = timestamp.tz_convert('UTC').to_pydatetime()
+                # Конвертируем UTC в MSK
+                ts_msk = ts_utc.replace(tzinfo=timezone.utc).astimezone(msk_tz)
+                ts_str = ts_msk.isoformat()
             else:
-                # datetime
+                # datetime - конвертируем в MSK
                 if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo is None:
-                    ts_str = timestamp.replace(tzinfo=timezone.utc).isoformat()
+                    # Если нет таймзоны, считаем что это UTC
+                    ts_utc = timestamp.replace(tzinfo=timezone.utc)
                 elif hasattr(timestamp, 'astimezone'):
-                    ts_str = timestamp.astimezone(timezone.utc).isoformat()
+                    # Конвертируем в UTC сначала
+                    ts_utc = timestamp.astimezone(timezone.utc)
                 else:
-                    ts_str = timestamp.isoformat()
+                    ts_utc = timestamp.replace(tzinfo=timezone.utc)
+                # Конвертируем UTC в MSK
+                ts_msk = ts_utc.astimezone(msk_tz)
+                ts_str = ts_msk.isoformat()
         except ImportError:
             # Если pandas не доступен, используем стандартный метод
             if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo is None:
-                ts_str = timestamp.replace(tzinfo=timezone.utc).isoformat()
+                ts_utc = timestamp.replace(tzinfo=timezone.utc)
             elif hasattr(timestamp, 'astimezone'):
-                ts_str = timestamp.astimezone(timezone.utc).isoformat()
+                ts_utc = timestamp.astimezone(timezone.utc)
             else:
-                ts_str = timestamp.isoformat()
+                ts_utc = timestamp.replace(tzinfo=timezone.utc)
+            # Конвертируем UTC в MSK
+            ts_msk = ts_utc.astimezone(msk_tz)
+            ts_str = ts_msk.isoformat()
     else:
-        ts_str = str(timestamp)
+        # Если это строка, пытаемся распарсить и конвертировать в MSK
+        try:
+            ts_parsed = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+            if ts_parsed.tzinfo is None:
+                ts_parsed = ts_parsed.replace(tzinfo=timezone.utc)
+            else:
+                ts_parsed = ts_parsed.astimezone(timezone.utc)
+            ts_msk = ts_parsed.astimezone(msk_tz)
+            ts_str = ts_msk.isoformat()
+        except Exception:
+            # Если не удалось распарсить, используем как есть
+            ts_str = str(timestamp)
     
     # Нормализуем price для сравнения (округление до 2 знаков)
     price_normalized = round(float(price), 2)
@@ -952,32 +998,37 @@ def get_signals(limit: int = 100, symbol_filter: Optional[str] = None, include_s
         signals = [s for s in signals if s.get("symbol", "").upper() == symbol_filter.upper()]
     
     # Сортируем сигналы по timestamp (от новых к старым)
+    # ВАЖНО: Timestamp в истории хранится в MSK, парсим соответственно
+    msk_tz = pytz.timezone('Europe/Moscow')
     def get_timestamp(signal):
-        """Извлекает timestamp для сортировки."""
+        """Извлекает timestamp для сортировки (ожидаем MSK время)."""
         ts_str = signal.get("timestamp", "")
         if not ts_str:
-            return datetime.min.replace(tzinfo=timezone.utc)
+            return datetime.min.replace(tzinfo=msk_tz)
         
         try:
             if isinstance(ts_str, str):
                 if 'T' in ts_str:
-                    # ISO формат
+                    # ISO формат: может быть в MSK (+03:00) или UTC (+00:00)
                     dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    # Если время в UTC, конвертируем в MSK для сравнения
+                    if dt.tzinfo == timezone.utc or dt.tzinfo is None:
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.astimezone(msk_tz)
+                    elif dt.tzinfo != msk_tz:
+                        # Если другая таймзона, конвертируем через UTC в MSK
+                        dt = dt.astimezone(timezone.utc).astimezone(msk_tz)
                 else:
-                    # Другой формат
+                    # Другой формат: 2026-01-27 11:30:00 (считаем MSK)
                     dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
-                    dt = dt.replace(tzinfo=timezone.utc)
-                
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                else:
-                    dt = dt.astimezone(timezone.utc)
+                    dt = msk_tz.localize(dt)
                 
                 return dt
         except Exception:
-            return datetime.min.replace(tzinfo=timezone.utc)
+            return datetime.min.replace(tzinfo=msk_tz)
         
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=msk_tz)
     
     # Удаляем дубликаты по timestamp + symbol + action
     seen = set()

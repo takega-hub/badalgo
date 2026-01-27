@@ -693,9 +693,9 @@ def train_optimized_model():
                 verbose=1,
                 learning_rate=1.5e-4,  # Базовый learning rate (можно адаптировать по фазам)
                 ent_coef=0.10,  # УВЕЛИЧЕНО до 0.10 для максимального exploration SHORT (по рекомендации анализа)
-                n_steps=2048,  # Размер буфера для сбора опыта
-                batch_size=128,  # Размер батча для обновления
-                n_epochs=15,  # Количество эпох обновления на каждый буфер
+                n_steps=1024,  # Размер буфера для сбора опыта (уменьшено для ускорения)
+                batch_size=64,  # Размер батча для обновления (уменьшено для ускорения)
+                n_epochs=10,  # Количество эпох обновления на каждый буфер (уменьшено для ускорения)
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_range=0.15,
@@ -754,7 +754,7 @@ def train_optimized_model():
             model.learn(
                 total_timesteps=phase['steps'],
                 callback=rr_callback,
-                log_interval=20000,  # Логирование каждые 20000 шагов
+                log_interval=50000,  # Логирование каждые 50000 шагов (уменьшено для ускорения)
                 progress_bar=True,
                 tb_log_name=phase['name'],
                 reset_num_timesteps=False  # НЕ сбрасываем счетчик шагов при продолжении обучения
