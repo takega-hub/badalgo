@@ -137,6 +137,17 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         # и не пересчитывать сигналы на каждом шаге.
         self._precompute_strategy_signals()
         
+        # 🔥 СИСТЕМА ОТСЛЕЖИВАНИЯ ЭФФЕКТИВНОСТИ СИГНАЛОВ СТРАТЕГИЙ
+        # Статистика по каждому типу сигнала для адаптивного обучения
+        self.strategy_stats = {
+            'trend_long': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
+            'trend_short': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
+            'flat_long': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
+            'flat_short': {'trades': 0, 'wins': 0, 'total_pnl': 0.0, 'win_rate': 0.5},
+        }
+        # Минимальное количество сделок для надежной статистики
+        self.min_trades_for_stats = 5
+        
         # ОПТИМИЗИРОВАННЫЕ ПАРАМЕТРЫ
         self.base_rr_ratio = rr_ratio
         self.atr_multiplier = atr_multiplier
@@ -855,13 +866,16 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                         
                         if action == 1:  # Long
                             self._open_long_with_tp_features(current_price, current_atr)
+                            # Сохраняем сигналы стратегий для текущей сделки
                             if from_strategy and used_strategies:
+                                self.current_trade_strategies = used_strategies.copy()
                                 print(
                                     f"🚀 [TRADE] OPEN LONG (EXTERNAL) at {current_price:.2f} "
                                     f"(Step {self.current_step}) by {','.join(used_strategies)} | "
                                     f"Balance: L={self.long_trades_count} S={self.short_trades_count}"
                                 )
                             else:
+                                self.current_trade_strategies = []
                                 print(
                                     f"🚀 [TRADE] OPEN LONG at {current_price:.2f} "
                                     f"(Step {self.current_step}) | "
@@ -871,13 +885,16 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                             self.trades_today += 1
                         elif action == 2:  # Short
                             self._open_short_with_tp_features(current_price, current_atr)
+                            # Сохраняем сигналы стратегий для текущей сделки
                             if from_strategy and used_strategies:
+                                self.current_trade_strategies = used_strategies.copy()
                                 print(
                                     f"🚀 [TRADE] OPEN SHORT (EXTERNAL) at {current_price:.2f} "
                                     f"(Step {self.current_step}) by {','.join(used_strategies)} | "
                                     f"Balance: L={self.long_trades_count} S={self.short_trades_count}"
                                 )
                             else:
+                                self.current_trade_strategies = []
                                 print(
                                     f"🚀 [TRADE] OPEN SHORT at {current_price:.2f} "
                                     f"(Step {self.current_step}) | "
@@ -1799,6 +1816,19 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         pnl_percent = total_pnl * 100
         self._log_trade(final_price, pnl_percent, trade_type, trade_quality, rr_ratio)
         
+        # 🔥 ОБНОВЛЕНИЕ СТАТИСТИКИ СИГНАЛОВ СТРАТЕГИЙ
+        if self.current_trade_strategies:
+            is_win = total_pnl > 0
+            for strategy_name in self.current_trade_strategies:
+                if strategy_name in self.strategy_stats:
+                    stats = self.strategy_stats[strategy_name]
+                    stats['trades'] += 1
+                    stats['total_pnl'] += total_pnl
+                    if is_win:
+                        stats['wins'] += 1
+                    # Обновляем Win Rate
+                    stats['win_rate'] = stats['wins'] / stats['trades'] if stats['trades'] > 0 else 0.5
+        
         # Обновление статистики
         self.total_trades += 1
         self.total_pnl += total_pnl
@@ -1815,6 +1845,9 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             self.losing_trades += 1
             self.consecutive_losses += 1
             self.consecutive_wins = 0
+        
+        # Сбрасываем список стратегий для следующей сделки
+        self.current_trade_strategies = []
         
         trade_info = {
             'step': self.current_step,
@@ -1945,29 +1978,41 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 # ВАЖНО: rsi_norm должен быть СО ЗНАКОМ.
                 # abs(...) ломает логику (LONG никогда не попадает в отрицательный диапазон).
                 
-                # 🔥 БОНУС ЗА СОВПАДЕНИЕ С СИГНАЛАМИ СТРАТЕГИЙ
+                # 🔥 АДАПТИВНЫЙ БОНУС ЗА СИГНАЛЫ СТРАТЕГИЙ (на основе исторической эффективности)
                 if self.use_strategy_signals:
                     try:
                         strategy_signals = self._get_strategy_signals()
                         strategy_bonus = 0.0
 
                         if self.position == 1:  # LONG позиция
-                            # Бонус только за TREND / FLAT LONG
-                            strategy_bonus += strategy_signals["trend_long"] * 2.0
-                            strategy_bonus += strategy_signals["flat_long"] * 1.5
+                            # Адаптивные веса на основе Win Rate
+                            trend_weight = self._get_adaptive_strategy_weight('trend_long')
+                            flat_weight = self._get_adaptive_strategy_weight('flat_long')
+                            
+                            strategy_bonus += strategy_signals["trend_long"] * trend_weight
+                            strategy_bonus += strategy_signals["flat_long"] * flat_weight
 
                             long_count = strategy_signals["trend_long"] + strategy_signals["flat_long"]
                             if long_count >= 2:
-                                strategy_bonus += 3.0  # Консенсус двух стратегий
+                                # Консенсус: бонус зависит от среднего Win Rate
+                                avg_wr = (trend_weight + flat_weight) / 2.0
+                                consensus_bonus = 3.0 * (0.5 + avg_wr)  # От 1.5 до 4.5 в зависимости от WR
+                                strategy_bonus += consensus_bonus
 
                         elif self.position == -1:  # SHORT позиция
-                            # Бонус только за TREND / FLAT SHORT
-                            strategy_bonus += strategy_signals["trend_short"] * 2.0
-                            strategy_bonus += strategy_signals["flat_short"] * 1.5
+                            # Адаптивные веса на основе Win Rate
+                            trend_weight = self._get_adaptive_strategy_weight('trend_short')
+                            flat_weight = self._get_adaptive_strategy_weight('flat_short')
+                            
+                            strategy_bonus += strategy_signals["trend_short"] * trend_weight
+                            strategy_bonus += strategy_signals["flat_short"] * flat_weight
 
                             short_count = strategy_signals["trend_short"] + strategy_signals["flat_short"]
                             if short_count >= 2:
-                                strategy_bonus += 3.0
+                                # Консенсус: бонус зависит от среднего Win Rate
+                                avg_wr = (trend_weight + flat_weight) / 2.0
+                                consensus_bonus = 3.0 * (0.5 + avg_wr)  # От 1.5 до 4.5 в зависимости от WR
+                                strategy_bonus += consensus_bonus
 
                         reward += strategy_bonus * self.strategy_signals_weight
                     except Exception:
@@ -2094,6 +2139,12 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             trade_quality = last_trade.get('trade_quality', 'NORMAL')
             if trade_quality == 'VERY_BAD':
                 reward -= 10.0  # УВЕЛИЧЕНО с 5.0 до 10.0 - двойной штраф за VERY_BAD сделки
+                
+                # 🔥 ДОПОЛНИТЕЛЬНЫЙ ШТРАФ ЕСЛИ VERY_BAD СДЕЛКА ОТ ВНЕШНЕЙ СТРАТЕГИИ
+                # Это учит модель избегать сигналы, которые приводят к плохим результатам
+                # Используем сохраненные стратегии из trade_history, так как current_trade_strategies уже сброшен
+                if hasattr(self, 'current_trade_strategies') and self.current_trade_strategies:
+                    reward -= 5.0  # Дополнительный штраф за плохой сигнал стратегии
                 # Логи отключены
         
         # УЛУЧШЕННЫЙ БОНУС ЗА ХОРОШИЙ RR В ПОСЛЕДНИХ СДЕЛКАХ
@@ -2155,6 +2206,47 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 # Логи отключены: бонус за разнообразие сделок
         
         return np.clip(reward, -15.0, 35.0)  # Расширен диапазон для больших наград/штрафов
+    
+    def _get_adaptive_strategy_weight(self, strategy_name: str) -> float:
+        """Вычисление адаптивного веса стратегии на основе исторической эффективности
+        
+        Args:
+            strategy_name: Имя стратегии (например, 'trend_long', 'flat_short')
+            
+        Returns:
+            Адаптивный вес от 0.5 до 3.0:
+            - 0.5-1.0: низкий Win Rate (<40%)
+            - 1.0-2.0: средний Win Rate (40-60%)
+            - 2.0-3.0: высокий Win Rate (>60%)
+        """
+        if strategy_name not in self.strategy_stats:
+            return 2.0  # Базовый вес по умолчанию
+        
+        stats = self.strategy_stats[strategy_name]
+        
+        # Если недостаточно данных, используем базовый вес
+        if stats['trades'] < self.min_trades_for_stats:
+            return 2.0
+        
+        win_rate = stats['win_rate']
+        avg_pnl = stats['total_pnl'] / stats['trades'] if stats['trades'] > 0 else 0.0
+        
+        # Вычисляем адаптивный вес на основе Win Rate и среднего PnL
+        # Базовый вес 2.0, корректируем в зависимости от эффективности
+        if win_rate < 0.40:  # Низкий Win Rate
+            weight = 0.5 + (win_rate / 0.40) * 0.5  # От 0.5 до 1.0
+        elif win_rate < 0.60:  # Средний Win Rate
+            weight = 1.0 + ((win_rate - 0.40) / 0.20) * 1.0  # От 1.0 до 2.0
+        else:  # Высокий Win Rate
+            weight = 2.0 + min(1.0, (win_rate - 0.60) / 0.40) * 1.0  # От 2.0 до 3.0
+        
+        # Дополнительная корректировка на основе среднего PnL
+        if avg_pnl > 0.005:  # Хороший средний PnL (>0.5%)
+            weight *= 1.2
+        elif avg_pnl < -0.003:  # Плохой средний PnL (<-0.3%)
+            weight *= 0.8
+        
+        return max(0.5, min(3.0, weight))  # Ограничиваем диапазон
     
     def _update_quality_stats(self, reward: float, trade_closed: bool, partial_close: bool):
         """Обновление статистики качества"""

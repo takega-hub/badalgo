@@ -463,9 +463,9 @@ def _parse_trades(raw: List[Dict[str, Any]]) -> pd.DataFrame:
         except: continue
     # Создаем DataFrame с явно указанными колонками, даже если rows пустой
     if rows:
-    df = pd.DataFrame(rows)
-    df["time"] = pd.to_datetime(df["time"], utc=True)
-    return df.sort_values("time")
+        df = pd.DataFrame(rows)
+        df["time"] = pd.to_datetime(df["time"], utc=True)
+        return df.sort_values("time")
     else:
         # Возвращаем пустой DataFrame с правильными колонками
         return pd.DataFrame(columns=["time", "price", "qty", "side"])
