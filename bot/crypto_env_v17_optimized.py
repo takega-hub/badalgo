@@ -52,17 +52,16 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         self.atr_multiplier = atr_multiplier
         self.min_rr_ratio = 1.5  # ГАРАНТИРОВАННЫЙ МИНИМУМ RR 1.5:1
         
-        # TP уровни: снижены для большего количества достижений TP (ПО РЕКОМЕНДАЦИЯМ АНАЛИЗА)
-        # Анализ показал: только 9.3% сделок закрываются по TP_LEVEL_1, нужно больше TP закрытий
-        self.tp_levels = [1.8, 2.5, 3.5]  # РЕКОМЕНДАЦИЯ: снизить с [2.0, 3.0, 4.0] для большего % TP закрытий
-        self.tp_close_percentages = [0.25, 0.35, 0.40]  # Больше на последних уровнях
+        # TP уровни: делаем более достижимыми (по итогам анализа)
+        self.tp_levels = [1.5, 2.2, 3.0]
+        # Больше закрытий на первых уровнях (фиксируем часть прибыли раньше)
+        self.tp_close_percentages = [0.30, 0.40, 0.30]
         
-        # Трейлинг-стоп: основной источник потерь по отчёту (много SL_TRAILING с отрицательным PnL).
-        # Поэтому делаем трейлинг "ПОЗЖЕ и ДАЛЬШЕ": активируем примерно после движения ~1 ATR,
-        # и держим дистанцию шире, чтобы не выбивало шумом.
-        self.trailing_activation_atr = 1.00   # БЫЛО 0.30: слишком рано активировался (≈0.3 ATR)
-        self.trailing_distance_atr = 0.60     # БЫЛО 0.40: расширяем, чтобы снизить ложные SL_TRAILING
-        self.protective_trailing_atr = 0.80   # БЫЛО 0.5: защитный стоп делаем менее агрессивным
+        # Трейлинг-стоп: менее агрессивный (по отчёту много SL_TRAILING)
+        # Базовая дистанция (дальше динамически расширяем при росте прибыли)
+        self.trailing_activation_atr = 0.35   # базовая для LONG (для SHORT задаём отдельно в _update_trailing_stop)
+        self.trailing_distance_atr = 0.40
+        self.protective_trailing_atr = 0.60
         # Время удержания
         self.max_hold_steps = 60
         self.min_hold_steps = 8
@@ -597,14 +596,14 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         return self._get_observation(), float(reward), terminated, truncated, info
     
     def _check_entry_filters_strict(self, price: float, atr: float, action: int = None) -> bool:
-        """ВОССТАНОВЛЕННЫЕ СТРОГИЕ ФИЛЬТРЫ для высокого качества позиций"""
+        """УСИЛЕННЫЕ ФИЛЬТРЫ НА ОСНОВЕ АНАЛИЗА ВАЖНОСТИ ПРИЗНАКОВ"""
         if self.current_step >= len(self.df):
             return False
         
-        # ЭКСТРЕННЫЙ РЕЖИМ: если слишком долго нет сделок (>200 шагов = 2 дня), отключаем строгие фильтры
+        # ЭКСТРЕННЫЙ РЕЖИМ: если слишком долго нет сделок (>200 шагов = 2 дня), РАССЛАБЛЯЕМ пороги (не отключаем ключевые фильтры)
         emergency_mode = self.steps_without_trade > 200
         if emergency_mode and not hasattr(self, '_emergency_mode_logged'):
-            print(f"⚠️ [EMERGENCY MODE] steps_without_trade={self.steps_without_trade} > 200 (≈2 дня). Отключаем RR и Volatility фильтры!")
+            print(f"⚠️ [EMERGENCY MODE] steps_without_trade={self.steps_without_trade} > 200 (≈2 дня). Расслабляем пороги фильтров.")
             self._emergency_mode_logged = True
         
         # Отладочная информация (только первые несколько раз)
@@ -616,168 +615,156 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             self._filter_debug_count += 1
         
         try:
-            # 1. БАЗОВЫЙ ФИЛЬТР ATR
+            # 1) БАЗОВЫЙ ФИЛЬТР ATR
             atr_percent = atr / price
             if atr_percent < 0.0003 or atr_percent > 0.06:
-                if debug_filter:
-                    print(f"[FILTER DEBUG] Блокировка по ATR: {atr_percent:.6f}")
                 return False
             
-            # 2. ADX ФИЛЬТР (сила тренда) - ОСЛАБЛЕНО ДЛЯ SHORT
-            if 'adx' in self.df.columns:
+            # 2) volatility_ratio (самый важный признак)
+            if 'volatility_ratio' in self.df.columns:
                 try:
-                    adx_val = float(self.df.loc[self.current_step, 'adx'])
-                    if action == 1:  # LONG - строгий ADX
-                        if adx_val < self.min_adx:
-                            if debug_filter:
-                                print(f"[FILTER DEBUG] LONG блокировка по ADX: {adx_val:.1f} < {self.min_adx}")
+                    vol_ratio = float(self.df.loc[self.current_step, 'volatility_ratio'])
+                    if action == 1:  # LONG
+                        lo, hi = (0.0020, 0.0075) if emergency_mode else (0.0025, 0.0060)
+                        if vol_ratio < lo or vol_ratio > hi:
                             return False
-                    elif action == 2:  # SHORT - ОСЛАБЛЕНО: снижаем порог ADX
-                        min_adx_short = max(8.0, self.min_adx * 0.5)  # Еще больше ослаблено: минимум 8.0
-                        if adx_val < min_adx_short:
-                            if debug_filter:
-                                print(f"[FILTER DEBUG] SHORT блокировка по ADX: {adx_val:.1f} < {min_adx_short}")
+                    elif action == 2:  # SHORT
+                        # SHORT сейчас показывает плохой WR → делаем диапазон более “качественным”, но с послаблением в emergency
+                        lo, hi = (0.0015, 0.0090) if emergency_mode else (0.0020, 0.0075)
+                        if vol_ratio < lo or vol_ratio > hi:
                             return False
-                except:
-                    if action == 1:
-                        return False
-                    pass  # Для SHORT пропускаем ошибку
-            
-            # 2.1 TREND_STRENGTH ФИЛЬТР (используем существующую адаптивную переменную min_trend_strength)
-            # Важно: раньше min_trend_strength настраивался/адаптировался, но практически не влиял на вход.
-            try:
-                trend_strength_val = None
-                if 'trend_strength' in self.df.columns:
-                    trend_strength_val = float(self.df.loc[self.current_step, 'trend_strength'])
-                elif 'plus_di' in self.df.columns and 'minus_di' in self.df.columns:
-                    plus_di_tmp = float(self.df.loc[self.current_step, 'plus_di'])
-                    minus_di_tmp = float(self.df.loc[self.current_step, 'minus_di'])
-                    denom = abs(plus_di_tmp) + abs(minus_di_tmp)
-                    if denom > 1e-9:
-                        trend_strength_val = abs(plus_di_tmp - minus_di_tmp) / denom
-                
-                if trend_strength_val is not None and not emergency_mode:
-                    if trend_strength_val < self.min_trend_strength:
-                        if debug_filter:
-                            print(f"[FILTER DEBUG] Блокировка по trend_strength: {trend_strength_val:.3f} < {self.min_trend_strength:.2f}")
-                        return False
-            except Exception:
-                # Если не смогли посчитать — не блокируем, чтобы не убивать торговлю
-                pass
-            
-            # 3. TREND STRENGTH (DI+ vs DI-) - ОСЛАБЛЕНО ДЛЯ SHORT
-            if 'plus_di' in self.df.columns and 'minus_di' in self.df.columns:
-                try:
-                    plus_di = float(self.df.loc[self.current_step, 'plus_di'])
-                    minus_di = float(self.df.loc[self.current_step, 'minus_di'])
-                    
-                    if action == 1:  # LONG - +DI должен быть больше -DI
-                        if plus_di <= minus_di * (1.0 - self.di_direction_margin / 100):
-                            return False  # Нисходящий тренд, не открываем LONG
-                    elif action == 2:  # SHORT - ОСЛАБЛЕНО: почти не проверяем DI
-                        # Для SHORT убираем строгую проверку DI - пусть балансировщик работает
-                        pass  # Не блокируем SHORT по DI
-                except:
+                except Exception:
                     pass
             
-            # 4. RSI ФИЛЬТР (раздельно для LONG/SHORT) - ОСЛАБЛЕНО ДЛЯ SHORT
+            # 3) Volume (разница WR ~50%)
+            if 'volume' in self.df.columns:
+                try:
+                    volume = float(self.df.loc[self.current_step, 'volume'])
+                    lookback = min(20, self.current_step)
+                    if lookback > 0:
+                        avg_volume = self.df.loc[max(0, self.current_step - lookback):self.current_step, 'volume'].mean()
+                        volume_ratio = volume / avg_volume if avg_volume and avg_volume > 0 else 1.0
+                        if action == 1:  # LONG - УЖЕСТОЧЕНО для качества
+                            # 🔥 В emergency_mode ОСЛАБЛЯЕМ до минимума (0.9 = 90% среднего объема)
+                            thr = 0.9 if emergency_mode else 1.40  # УВЕЛИЧЕНО с 1.30 до 1.40
+                            if volume_ratio < thr:
+                                return False
+                        elif action == 2:  # SHORT
+                            # SHORT плохо работает → не шортим на "пустом" объёме
+                            thr = 0.70 if emergency_mode else 1.00  # ОСЛАБЛЕНО в emergency_mode
+                            if volume_ratio < thr:
+                                return False
+                except Exception:
+                    pass
+            
+            # 4) RSI (особенно важен для LONG) - УЖЕСТОЧЕНО ДЛЯ LONG
+            rsi_norm_val = None
             if 'rsi_norm' in self.df.columns:
                 try:
                     rsi_norm = float(self.df.loc[self.current_step, 'rsi_norm'])
-                    
-                    if action == 1:  # LONG позиция - перепроданность
-                        if rsi_norm < self.long_config['min_rsi_norm'] or rsi_norm > self.long_config['max_rsi_norm']:
+                    rsi_norm_val = rsi_norm
+                    if action == 1:
+                        # 🔥 УЖЕСТОЧЕНО: более точная зона перепроданности для LONG
+                        # Анализ показал: оптимальная зона для LONG - перепроданность, но не экстремальная
+                        # В emergency_mode РАСШИРЯЕМ окно до (-0.7, 0.3) для возможности открытия сделок
+                        lo, hi = (-0.7, 0.3) if emergency_mode else (-0.4, 0.0)  # УЖЕСТОЧЕНО: было (-0.3, 0.3)
+                        if rsi_norm < lo or rsi_norm > hi:
                             return False
-                    elif action == 2:  # SHORT позиция - УБРАНО: не проверяем RSI для SHORT
-                        # Для SHORT убираем RSI фильтр - пусть балансировщик работает
-                        pass  # Не блокируем SHORT по RSI
-                except:
+                    elif action == 2:
+                        # SHORT: запрещаем шорт в перепроданности (главный источник плохих шортов)
+                        lo, hi = (-0.2, 1.0) if emergency_mode else (0.10, 0.90)
+                        if rsi_norm < lo or rsi_norm > hi:
+                            return False
+                except Exception:
                     pass
             
-            # 5. VOLUME ФИЛЬТР - ОСЛАБЛЕНО ДЛЯ SHORT
-            if 'volume_ratio' in self.df.columns:
+            # 5) ADX + DI - УЖЕСТОЧЕНО ДЛЯ LONG
+            if 'adx' in self.df.columns:
                 try:
-                    volume_ratio = float(self.df.loc[self.current_step, 'volume_ratio'])
-                    
-                    if action == 1:  # LONG
-                        if volume_ratio < self.long_config['min_volume_ratio']:
-                            if debug_filter:
-                                print(f"[FILTER DEBUG] LONG блокировка по Volume: {volume_ratio:.2f} < {self.long_config['min_volume_ratio']}")
-                            return False
-                    elif action == 2:  # SHORT - ОСЛАБЛЕНО: почти не проверяем объем
-                        # Для SHORT используем очень мягкий фильтр объема
-                        if volume_ratio < self.short_config['min_volume_ratio']:
-                            if debug_filter:
-                                print(f"[FILTER DEBUG] SHORT блокировка по Volume: {volume_ratio:.2f} < {self.short_config['min_volume_ratio']}")
-                            return False
-                except:
-                    # Для SHORT не возвращаем False при ошибке - даем шанс
+                    adx_val = float(self.df.loc[self.current_step, 'adx'])
                     if action == 1:
-                        return False
-                    pass  # Для SHORT пропускаем ошибку
+                        # 🔥 LONG: требовать СИЛЬНОЕ преимущество +DI над -DI
+                        if 'plus_di' in self.df.columns and 'minus_di' in self.df.columns:
+                            plus_di = float(self.df.loc[self.current_step, 'plus_di'])
+                            minus_di = float(self.df.loc[self.current_step, 'minus_di'])
+                            # В emergency_mode ОСЛАБЛЯЕМ: просто plus_di >= minus_di (без требования 10% преимущества)
+                            if emergency_mode:
+                                if plus_di < minus_di * 0.95:  # В emergency_mode разрешаем даже если +DI немного меньше
+                                    return False
+                            else:
+                                # УЖЕСТОЧЕНО: +DI должен быть минимум на 10% больше -DI
+                                if plus_di <= minus_di * 1.10:  # БЫЛО: просто plus_di <= minus_di
+                                    return False
+                        # 🔥 ИСПОЛЬЗУЕМ АДАПТИВНЫЙ min_adx вместо жестко заданного значения!
+                        min_adx = self.min_adx if emergency_mode else 25.0  # В emergency_mode используем адаптивный фильтр
+                        if adx_val < min_adx:
+                            return False
+                    elif action == 2:
+                        min_adx = 12.0 if emergency_mode else 15.0
+                        if adx_val < min_adx:
+                            return False
+                        # SHORT: по умолчанию требуем нисходящее направление (minus_di > plus_di)
+                        if 'plus_di' in self.df.columns and 'minus_di' in self.df.columns:
+                            plus_di = float(self.df.loc[self.current_step, 'plus_di'])
+                            minus_di = float(self.df.loc[self.current_step, 'minus_di'])
+                            if minus_di <= plus_di:
+                                # Разрешаем контр-тренд шорт ТОЛЬКО если явная перекупленность
+                                if rsi_norm_val is None or rsi_norm_val < (0.40 if not emergency_mode else 0.20):
+                                    return False
+                except Exception:
+                    pass
             
-            # 6. VOLATILITY RATIO ФИЛЬТР - ОТКЛЮЧЕН В ЭКСТРЕННОМ РЕЖИМЕ
-            if not emergency_mode and 'volatility_ratio' in self.df.columns:
+            # 6) trend_bias_1h (отрицательная корреляция — используем как фильтр “от противного”)
+            if 'trend_bias_1h' in self.df.columns:
                 try:
-                    volatility_ratio = float(self.df.loc[self.current_step, 'volatility_ratio'])
-                    if action == 1:  # LONG - строгий фильтр
-                        if volatility_ratio < self.min_volatility_ratio:
-                            return False
-                        if volatility_ratio > self.max_volatility_ratio:
-                            return False
-                    elif action == 2:  # SHORT - ОСЛАБЛЕНО: почти не проверяем
-                        # Для SHORT ослабляем volatility фильтр
-                        if volatility_ratio < self.min_volatility_ratio * 0.5:  # В 2 раза мягче
-                            return False
-                        if volatility_ratio > self.max_volatility_ratio * 2.0:  # В 2 раза мягче
-                            return False
-                except:
-                    if action == 1:
+                    trend_bias = float(self.df.loc[self.current_step, 'trend_bias_1h'])
+                    if action == 1 and trend_bias < -0.3:
                         return False
-                    pass  # Для SHORT пропускаем ошибку
+                    # SHORT: также не шортим при сильном бычьем уклоне
+                    if action == 2 and trend_bias > (0.35 if emergency_mode else 0.25):
+                        return False
+                except Exception:
+                    pass
             
-            # 7. ГАРАНТИЯ MIN RR RATIO 1.5 - ОТКЛЮЧЕН В ЭКСТРЕННОМ РЕЖИМЕ
+            # 7) Контекст цены (доп. фильтр)
             if not emergency_mode:
-                sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
-                sl_distance = min(sl_distance, price * self.max_sl_percent)
-                
-                min_tp_for_rr = sl_distance * self.min_rr_ratio
-                
-                min_tp_distance = max(
-                    min_tp_for_rr,
-                    atr * self.tp_levels[0],
-                    price * self.min_tp_percent
-                )
-                
-                actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
-                
-                # Исправлено: используем <= с небольшим запасом для точности float
-                if actual_rr < self.min_rr_ratio - 0.01:  # Запас 0.01 для точности float
-                    self.min_rr_violations += 1
-                    if debug_filter or self.min_rr_violations % 20 == 0:
-                        print(f"[FILTER] RR violation {self.min_rr_violations}: {actual_rr:.3f} < {self.min_rr_ratio} (action={action})")
-                    return False
-                
-                # 8. Проверка: TP должен быть достижим - ОСЛАБЛЕНО
-                tp_percent_needed = min_tp_distance / price
-                if tp_percent_needed > 0.03:  # УВЕЛИЧЕНО с 2% до 3% для большего количества сделок
-                    if debug_filter:
-                        print(f"[FILTER DEBUG] Блокировка по TP%: {tp_percent_needed*100:.2f}% > 3%")
-                    return False
-            else:
-                # В экстренном режиме используем минимальные требования для RR
-                sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
-                sl_distance = min(sl_distance, price * self.max_sl_percent)
-                min_tp_distance = max(atr * self.tp_levels[0], price * self.min_tp_percent)
-                actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
-                
-                # В экстренном режиме требуем только RR >= 1.0 (вместо 1.5)
-                if actual_rr < 1.0:
-                    return False
+                try:
+                    if not self._check_price_context(price, action):
+                        return False
+                except Exception:
+                    pass
             
-            # Успешно прошли все фильтры
-            if debug_filter:
-                print(f"[FILTER DEBUG] ✅ Фильтры пройдены для action={action} (LONG=1, SHORT=2)")
+            # 7.1) Anti-chasing по последней свече (быстрый фильтр) - УЖЕСТОЧЕНО ДЛЯ LONG
+            try:
+                if self.current_step > 0 and 'close' in self.df.columns:
+                    prev_close = float(self.df.loc[self.current_step - 1, 'close'])
+                    if prev_close > 0:
+                        last_change_pct = (price - prev_close) / prev_close * 100.0
+                        if action == 1:
+                            # 🔥 УЖЕСТОЧЕНО: не покупаем после роста >1.0% (было 1.5%)
+                            # Также используем ATR для определения "значимого" движения
+                            if 'atr' in self.df.columns:
+                                atr_val = float(self.df.loc[self.current_step, 'atr'])
+                                atr_pct = (atr_val / prev_close) * 100.0
+                                # Не покупаем если рост больше 1.5x ATR
+                                if last_change_pct > max(1.0, atr_pct * 1.5):
+                                    return False
+                            elif last_change_pct > 1.0:  # Fallback если нет ATR
+                                return False
+                        if action == 2 and last_change_pct < -1.5:
+                            return False  # не шортим после резкого падения
+            except Exception:
+                pass
+            
+            # 8) ГАРАНТИЯ MIN RR RATIO 1.5 (критично важно!)
+            sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
+            sl_distance = min(sl_distance, price * self.max_sl_percent)
+            min_tp_for_rr = sl_distance * self.min_rr_ratio
+            min_tp_distance = max(min_tp_for_rr, atr * self.tp_levels[0], price * self.min_tp_percent)
+            actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
+            if actual_rr < self.min_rr_ratio - 0.01:
+                self.min_rr_violations += 1
+                return False
             
             # Сохраняем RR статистику
             self.rr_stats.append(actual_rr)
@@ -785,10 +772,70 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 self.rr_stats.pop(0)
             
             return True
-            
-        except Exception as e:
-            print(f"⚠️ Ошибка в фильтрах входа: {e}")
+        
+        except Exception:
             return False
+
+    def _check_price_context(self, current_price: float, action: int) -> bool:
+        """Проверка контекста цены для фильтрации входов (разница цены прибыльные/убыточные ~7.9%)"""
+        if self.current_step < 20:
+            return True
+        try:
+            lookback = 20
+            start_idx = max(0, self.current_step - lookback)
+            prev_data = self.df.loc[start_idx:self.current_step - 1]
+            if len(prev_data) < 10:
+                return True
+            
+            closes = prev_data['close'].values
+            price_change = (closes[-1] - closes[0]) / closes[0] * 100
+            
+            highs = prev_data['high'].values if 'high' in prev_data.columns else None
+            lows = prev_data['low'].values if 'low' in prev_data.columns else None
+            if highs is not None and lows is not None and len(highs) > 0:
+                avg_range = np.mean(highs - lows) / closes[0] * 100
+            else:
+                avg_range = 0.0
+            
+            sma_10 = np.mean(closes[-10:]) if len(closes) >= 10 else closes[-1]
+            
+            if action == 1:  # LONG - УЖЕСТОЧЕНО для качества
+                # 🔥 Не покупаем в сильном нисходящем тренде
+                if price_change < -2.5:  # УЖЕСТОЧЕНО: было -3.0
+                    return False
+                # 🔥 Не покупаем при слишком высокой волатильности (шум)
+                if avg_range > 2.0:  # УЖЕСТОЧЕНО: было 2.5
+                    return False
+                # 🔥 Проверка расстояния от SMA с использованием ATR
+                if 'atr' in self.df.columns:
+                    try:
+                        atr_val = float(self.df.loc[self.current_step, 'atr'])
+                        atr_pct = (atr_val / sma_10) * 100.0
+                        # Не покупаем если цена ниже SMA более чем на 2 ATR
+                        price_deviation = (current_price - sma_10) / sma_10 * 100.0
+                        if price_deviation < -2.0 * atr_pct:
+                            return False
+                    except:
+                        # Fallback: не покупаем если цена ниже SMA на 1.5%
+                        if current_price < sma_10 * 0.985:  # УЖЕСТОЧЕНО: было 0.98
+                            return False
+                else:
+                    if current_price < sma_10 * 0.985:  # УЖЕСТОЧЕНО: было 0.98
+                        return False
+            elif action == 2:  # SHORT
+                if price_change > 3.0:
+                    return False
+                # Не шортим после сильного падения (анти-chasing)
+                if price_change < -3.0:
+                    return False
+                if avg_range < 0.8:
+                    return False
+                if current_price > sma_10 * 1.02:
+                    return False
+            
+            return True
+        except Exception:
+            return True
     
     def _update_adaptive_filters(self):
         """Обновление адаптивных фильтров: ослабление при отсутствии сделок"""
@@ -862,6 +909,32 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         self.partial_closes = []
         
         self._setup_trade_enhanced(position=1)
+
+        # ЛОГИРУЕМ КАЧЕСТВО ВХОДА (без спама)
+        try:
+            row = self.df.iloc[self.current_step]
+            entry_quality_score = 0
+            if 'volatility_ratio' in row:
+                vr = float(row['volatility_ratio'])
+                if 0.003 < vr < 0.006:
+                    entry_quality_score += 2
+            if 'volume_ratio' in row:
+                vrr = float(row['volume_ratio'])
+                if vrr > 1.3:
+                    entry_quality_score += 1
+            if 'rsi_norm' in row:
+                rsi_v = float(row['rsi_norm'])
+                if -0.4 < rsi_v < 0.2:
+                    entry_quality_score += 1
+            if 'adx' in row:
+                adx_v = float(row['adx'])
+                if adx_v > 25:
+                    entry_quality_score += 1
+            if entry_quality_score >= 3:
+                quality_level = "HIGH" if entry_quality_score >= 4 else "MEDIUM"
+                print(f"[ENTRY_QUALITY] LONG {quality_level} ({entry_quality_score}/5)")
+        except Exception:
+            pass
     
     def _open_short_with_tp_features(self, price: float, atr: float):
         """Открытие шорт позиции с гарантированным RR"""
@@ -902,6 +975,32 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
         self.partial_closes = []
         
         self._setup_trade_enhanced(position=-1)
+
+        # ЛОГИРУЕМ КАЧЕСТВО ВХОДА (без спама)
+        try:
+            row = self.df.iloc[self.current_step]
+            entry_quality_score = 0
+            if 'volatility_ratio' in row:
+                vr = float(row['volatility_ratio'])
+                if 0.002 < vr < 0.008:
+                    entry_quality_score += 2
+            if 'volume_ratio' in row:
+                vrr = float(row['volume_ratio'])
+                if vrr > 1.0:
+                    entry_quality_score += 1
+            if 'adx' in row:
+                adx_v = float(row['adx'])
+                if adx_v > 15:
+                    entry_quality_score += 1
+            if 'trend_bias_1h' in row:
+                tb = float(row['trend_bias_1h'])
+                if tb < 0.3:
+                    entry_quality_score += 1
+            if entry_quality_score >= 3:
+                quality_level = "HIGH" if entry_quality_score >= 4 else "MEDIUM"
+                print(f"[ENTRY_QUALITY] SHORT {quality_level} ({entry_quality_score}/5)")
+        except Exception:
+            pass
     
     def _setup_trade_enhanced(self, position: int):
         """Настройка сделки с управлением рисками"""
@@ -1077,61 +1176,54 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             self.consecutive_profitable_trades = 0
     
     def _update_trailing_stop(self, current_price: float, atr: float):
-        """Обновление трейлинг-стопа"""
+        """ПЕРЕПИСАННЫЙ ТРЕЙЛИНГ-СТОП - МЕНЕЕ АГРЕССИВНЫЙ"""
         if self.position == 0:
             return
         
-        if self.position == 1:
+        if self.position == 1:  # LONG
             profit_pct = (current_price - self.entry_price) / self.entry_price
             self.highest_profit_pct = max(self.highest_profit_pct, profit_pct)
             
-            if profit_pct >= (atr / self.entry_price) * self.trailing_activation_atr:
+            # Позже активируем трейлинг
+            trailing_activation = 0.35
+            if profit_pct >= (atr / self.entry_price) * trailing_activation:
                 if not self.trailing_active:
                     self.trailing_active = True
-                    # Логи отключены: print(f"[TRAILING_OPTIMIZED] Активация при прибыли {profit_pct*100:.2f}%")
                 
-                # Динамический трейлинг
                 trailing_multiplier = self.trailing_distance_atr
-                # Раньше мы "сужали" трейлинг (×0.8) уже при +1% — это часто приводит к выбиванию шумом.
-                # Оставляем ширину базовой; сужение включаем только на очень большой прибыли.
-                if profit_pct > 0.03:
-                    trailing_multiplier *= 0.9
+                # Динамический трейлинг: больше прибыль = больше расстояние
+                if profit_pct > 0.025:
+                    trailing_multiplier *= 1.5
+                elif profit_pct > 0.015:
+                    trailing_multiplier *= 1.2
                 
                 trailing_stop_price = current_price - (atr * trailing_multiplier)
-                self.current_sl = max(self.current_sl, trailing_stop_price)
+                # Обновляем только если новый SL лучше
+                if trailing_stop_price > self.current_sl:
+                    self.current_sl = trailing_stop_price
             
-            if self.trailing_active and self.highest_profit_pct > 0:
-                current_drawdown = (self.highest_profit_pct - profit_pct) / self.highest_profit_pct
-                # Было 0.4 — слишком чувствительно. Делаем мягче.
-                if current_drawdown > 0.6:
-                    protective_sl = current_price - (atr * self.protective_trailing_atr)
-                    self.current_sl = max(self.current_sl, protective_sl)
-        
-        else:  # SHORT позиция
+        else:  # SHORT
             profit_pct = (self.entry_price - current_price) / self.entry_price
             self.lowest_profit_pct = min(self.lowest_profit_pct, -profit_pct)
             
-            # Используем отдельные параметры для SHORT (более строгие)
-            trailing_activation = self.trailing_activation_atr
             trailing_distance = self.short_config.get('trailing_distance_atr', self.trailing_distance_atr)
+            # Для SHORT активируем ещё позже
+            trailing_activation = 0.45
             
             if profit_pct >= (atr / self.entry_price) * trailing_activation:
                 if not self.trailing_active:
                     self.trailing_active = True
-                    # Логи отключены: print(f"[TRAILING_OPTIMIZED] Активация при прибыли {profit_pct*100:.2f}%")
                 
                 trailing_multiplier = trailing_distance
-                if profit_pct > 0.03:
-                    trailing_multiplier *= 0.9
+                if profit_pct > 0.025:
+                    trailing_multiplier *= 1.5
+                elif profit_pct > 0.015:
+                    trailing_multiplier *= 1.2
                 
                 trailing_stop_price = current_price + (atr * trailing_multiplier)
-                self.current_sl = min(self.current_sl, trailing_stop_price)
-            
-            if self.trailing_active and abs(self.lowest_profit_pct) > 0:
-                current_drawdown = (abs(self.lowest_profit_pct) - abs(profit_pct)) / abs(self.lowest_profit_pct)
-                if current_drawdown > 0.6:
-                    protective_sl = current_price + (atr * self.protective_trailing_atr)
-                    self.current_sl = min(self.current_sl, protective_sl)
+                # Обновляем только если новый SL лучше (ниже для SHORT)
+                if trailing_stop_price < self.current_sl:
+                    self.current_sl = trailing_stop_price
     
     def _check_full_close(self, current_price: float) -> bool:
         """Проверка полного закрытия"""

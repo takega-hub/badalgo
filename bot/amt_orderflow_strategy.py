@@ -69,6 +69,23 @@ def _breakout_quality_ok(df_ohlcv: pd.DataFrame, min_body_ratio: float = 0.6, mi
     vol_ok = float(last["volume"]) >= (v_avg * min_vol_mult) if v_avg > 0 else True
     return (body_ratio >= min_body_ratio) and vol_ok
 
+def _breakout_close_near_extreme_ok(df_ohlcv: pd.DataFrame, action: Action, close_pos_thresh: float = 0.8) -> bool:
+    """
+    Extra breakout confirmation:
+    - LONG: close should be in top X% of candle range
+    - SHORT: close should be in bottom X% of candle range
+    """
+    if df_ohlcv.empty:
+        return True
+    last = df_ohlcv.iloc[-1]
+    rng = float(last["high"] - last["low"])
+    if rng <= 0:
+        return False
+    close_pos = (float(last["close"]) - float(last["low"])) / rng  # 0..1
+    if action == Action.LONG:
+        return close_pos >= close_pos_thresh
+    return close_pos <= (1.0 - close_pos_thresh)
+
 def _breakout_candle_direction_ok(df_ohlcv: pd.DataFrame, action: Action) -> bool:
     if df_ohlcv.empty:
         return True
@@ -130,6 +147,28 @@ AMT_CONFIG_REGISTRY = {
     ),
 }
 
+def _resolve_symbol_settings(symbol: str, settings: Optional["SymbolSettings"] = None) -> "SymbolSettings":
+    """
+    Backwards-compatible helper for live-trading code.
+
+    Historically `bot/live.py` imported `_resolve_symbol_settings` from this module.
+    Some refactors moved settings resolution inline, but we keep this function to
+    avoid breaking imports and to provide a single place to apply defaults.
+
+    Args:
+        symbol: e.g. "BTCUSDT"
+        settings: optional pre-built SymbolSettings; if provided, returned as-is.
+
+    Returns:
+        SymbolSettings resolved from registry or defaults.
+    """
+    if settings is not None:
+        return settings
+    return AMT_CONFIG_REGISTRY.get(
+        symbol,
+        SymbolSettings(AbsorptionConfig(), VolumeProfileConfig(), LhOrderflowConfig()),
+    )
+
 def calculate_atr(df_ohlcv: pd.DataFrame, period: int = 14) -> float:
     if len(df_ohlcv) < period + 1: return 0.0
     h, l, c = df_ohlcv['high'], df_ohlcv['low'], df_ohlcv['close'].shift(1)
@@ -186,9 +225,9 @@ def generate_amt_signals(client: BybitClient, symbol: str, current_price: float,
     now_dt = current_time or datetime.now(timezone.utc)
     now = _safe_utc_timestamp(now_dt)
 
-    # ABSORPTION: disable for BTC/ETH in backtest (it is net-negative there), keep for SOL (can be toggled later)
+    # ABSORPTION: disabled for BTC/ETH/SOL in backtest (synthetic ticks -> noisy, no edge seen)
     # In live trading you may want to re-enable with real tick data.
-    if vp and symbol not in ("BTCUSDT", "ETHUSDT"):
+    if vp and symbol not in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
         if not _candle_context_ok_for_absorption(df_ohlcv, vol_mult=1.25, max_body_ratio=0.40):
             _dbg("abs:reject:candle_context", symbol=symbol)
         else:
@@ -200,8 +239,9 @@ def generate_amt_signals(client: BybitClient, symbol: str, current_price: float,
             else:
                 is_near_vah = is_near_val = True
 
-            # Backtest tweak: SOL absorption currently not adding edge; disable to reduce noise
-            abs_s = None if symbol == "SOLUSDT" else detect_absorption_squeeze_short(client, symbol, current_price, sym_c.absorption, trades_df, current_time)
+            abs_s = detect_absorption_squeeze_short(
+                client, symbol, current_price, sym_c.absorption, trades_df, current_time
+            )
             if abs_s:
                 _dbg("abs:raw_hit", symbol=symbol)
                 if not is_near_vah:
@@ -216,7 +256,9 @@ def generate_amt_signals(client: BybitClient, symbol: str, current_price: float,
                     _dbg("abs:accepted", symbol=symbol)
                     signals.append(abs_s)
 
-            abs_l = None if symbol == "SOLUSDT" else detect_absorption_squeeze_long(client, symbol, current_price, sym_c.absorption, trades_df, current_time)
+            abs_l = detect_absorption_squeeze_long(
+                client, symbol, current_price, sym_c.absorption, trades_df, current_time
+            )
             if abs_l:
                 _dbg("abs:raw_hit", symbol=symbol)
                 if not is_near_val:
@@ -236,48 +278,67 @@ def generate_amt_signals(client: BybitClient, symbol: str, current_price: float,
     if vp and symbol != "ETHUSDT":
         # make BTC strictest (was losing), SOL looser (was winning)
         if symbol == "BTCUSDT":
-            mult = 6.0  # Возвращено к предыдущему значению (7.0 было слишком строго)
-            q_vol_mult = 1.40
-            clearance_atr_mult = 0.35  # Возвращено к предыдущему значению
+            # BTC: longs underperform -> make LONG stricter than SHORT
+            mult_long = 7.0
+            mult_short = 6.0
+            q_vol_mult_long = 1.50
+            q_vol_mult_short = 1.40
+            clearance_long = 0.40
+            clearance_short = 0.35
+            rsi_long_max = 65   # was 75
+            rsi_short_min = 25  # keep
+            close_pos_thresh_long = 0.85
+            close_pos_thresh_short = 0.80
         else:  # SOLUSDT and others
             # Slightly stricter for SOL (it was marginally losing): filter more fakeouts
-            mult = 4.5
-            q_vol_mult = 1.25
-            clearance_atr_mult = 0.30
+            mult_long = 4.5
+            mult_short = 4.5
+            q_vol_mult_long = 1.25
+            q_vol_mult_short = 1.25
+            clearance_long = 0.30
+            clearance_short = 0.30
+            rsi_long_max = 75
+            rsi_short_min = 25
+            close_pos_thresh_long = 0.80
+            close_pos_thresh_short = 0.80
         # breakout long candidate
         if current_price > vp["vah"]:
             _dbg("brk:above_vah", symbol=symbol)
-            if not (dv > avg_d * mult):
+            if not (dv > avg_d * mult_long):
                 _dbg("brk:reject:dv_long", symbol=symbol)
             elif not can_long:
                 _dbg("brk:reject:trend_long", symbol=symbol)
-            elif not (rsi < 75):
+            elif not (rsi < rsi_long_max):
                 _dbg("brk:reject:rsi_long", symbol=symbol)
             elif not _breakout_candle_direction_ok(df_ohlcv, Action.LONG):
                 _dbg("brk:reject:dir_long", symbol=symbol)
-            elif atr14 > 0 and (current_price - float(vp["vah"])) < (atr14 * clearance_atr_mult):
+            elif not _breakout_close_near_extreme_ok(df_ohlcv, Action.LONG, close_pos_thresh=close_pos_thresh_long):
+                _dbg("brk:reject:closepos_long", symbol=symbol)
+            elif atr14 > 0 and (current_price - float(vp["vah"])) < (atr14 * clearance_long):
                 _dbg("brk:reject:clearance_long", symbol=symbol)
-            elif not _breakout_quality_ok(df_ohlcv, min_body_ratio=0.6, min_vol_mult=q_vol_mult):
+            elif not _breakout_quality_ok(df_ohlcv, min_body_ratio=0.6, min_vol_mult=q_vol_mult_long):
                 _dbg("brk:reject:quality_long", symbol=symbol)
-            else:
+        else:
                 _dbg("brk:accepted", symbol=symbol)
                 signals.append(Signal(timestamp=now, action=Action.LONG, price=current_price, reason=f"brk_long_dv{int(dv)}"))
         # breakout short candidate
         if current_price < vp["val"]:
             _dbg("brk:below_val", symbol=symbol)
-            if not (dv < -avg_d * mult):
+            if not (dv < -avg_d * mult_short):
                 _dbg("brk:reject:dv_short", symbol=symbol)
             elif not can_short:
                 _dbg("brk:reject:trend_short", symbol=symbol)
-            elif not (rsi > 25):
+            elif not (rsi > rsi_short_min):
                 _dbg("brk:reject:rsi_short", symbol=symbol)
             elif not _breakout_candle_direction_ok(df_ohlcv, Action.SHORT):
                 _dbg("brk:reject:dir_short", symbol=symbol)
-            elif atr14 > 0 and (float(vp["val"]) - current_price) < (atr14 * clearance_atr_mult):
+            elif not _breakout_close_near_extreme_ok(df_ohlcv, Action.SHORT, close_pos_thresh=close_pos_thresh_short):
+                _dbg("brk:reject:closepos_short", symbol=symbol)
+            elif atr14 > 0 and (float(vp["val"]) - current_price) < (atr14 * clearance_short):
                 _dbg("brk:reject:clearance_short", symbol=symbol)
-            elif not _breakout_quality_ok(df_ohlcv, min_body_ratio=0.6, min_vol_mult=q_vol_mult):
+            elif not _breakout_quality_ok(df_ohlcv, min_body_ratio=0.6, min_vol_mult=q_vol_mult_short):
                 _dbg("brk:reject:quality_short", symbol=symbol)
-            else:
+    else:
                 _dbg("brk:accepted", symbol=symbol)
                 signals.append(Signal(timestamp=now, action=Action.SHORT, price=current_price, reason=f"brk_short_dv{int(dv)}"))
 
@@ -360,4 +421,19 @@ def detect_absorption_squeeze_long(client: BybitClient, symbol: str, current_pri
 def get_signals_for_symbol(client: BybitClient, symbol: str, current_price: float, df_ohlcv: pd.DataFrame, settings: Any, trades_df: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> List[Signal]:
     return generate_amt_signals(client, symbol, current_price, df_ohlcv, trades_df, current_time)
 
-__all__ = ["AbsorptionConfig", "VolumeProfileConfig", "LhOrderflowConfig", "SymbolSettings", "build_volume_profile_from_ohlcv", "detect_absorption_squeeze_short", "detect_absorption_squeeze_long", "generate_amt_signals", "get_signals_for_symbol", "AMT_CONFIG_REGISTRY", "calculate_atr"]
+__all__ = [
+    "AbsorptionConfig",
+    "VolumeProfileConfig",
+    "LhOrderflowConfig",
+    "SymbolSettings",
+    "build_volume_profile_from_ohlcv",
+    "detect_absorption_squeeze_short",
+    "detect_absorption_squeeze_long",
+    "generate_amt_signals",
+    "get_signals_for_symbol",
+    "AMT_CONFIG_REGISTRY",
+    "calculate_atr",
+    "_parse_trades",
+    "_compute_cvd_metrics",
+    "_resolve_symbol_settings",
+]
