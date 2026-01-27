@@ -122,6 +122,30 @@ class WeightedEnsemble:
         self.rf_weight = rf_weight
         self.xgb_weight = xgb_weight
         self.classes_ = np.array([-1, 0, 1])  # SHORT, HOLD, LONG
+    
+    def predict_proba(self, X):
+        """Предсказывает вероятности для всех классов."""
+        # Получаем вероятности от обеих моделей
+        rf_proba = self.rf_model.predict_proba(X)
+        
+        # Для XGBoost нужно преобразовать классы обратно
+        xgb_proba = self.xgb_model.predict_proba(X)
+        # XGBoost возвращает классы 0,1,2, нужно преобразовать в -1,0,1
+        # Переупорядочиваем: [0,1,2] -> [-1,0,1]
+        xgb_proba_reordered = np.zeros_like(rf_proba)
+        xgb_proba_reordered[:, 0] = xgb_proba[:, 0]  # SHORT (0 -> -1)
+        xgb_proba_reordered[:, 1] = xgb_proba[:, 1]  # HOLD (1 -> 0)
+        xgb_proba_reordered[:, 2] = xgb_proba[:, 2]  # LONG (2 -> 1)
+        
+        # Взвешенное усреднение
+        ensemble_proba = (self.rf_weight * rf_proba + 
+                         self.xgb_weight * xgb_proba_reordered)
+        return ensemble_proba
+    
+    def predict(self, X):
+        """Предсказывает классы."""
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
 
 
 class TripleEnsemble:

@@ -969,6 +969,8 @@
                         <select id="ml-model-type-for-all" style="width: 100%; max-width: 400px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
                             <option value="">Auto (Ensemble > RF > XGB)</option>
                             <option value="ensemble">🎯 Ensemble (RF + XGBoost) - Recommended</option>
+                            <option value="triple_ensemble">🚀 TripleEnsemble (RF + XGBoost + LightGBM)</option>
+                            <option value="quad_ensemble">🌟 QuadEnsemble (RF + XGBoost + LightGBM + LSTM)</option>
                             <option value="rf">Random Forest</option>
                             <option value="xgb">XGBoost</option>
                         </select>
@@ -5000,7 +5002,13 @@
                         // Определяем тип модели для отображения
                         let modelTypeDisplay = modelType;
                         let modelTypeIcon = "📊";
-                        if (modelType.includes("ensemble")) {
+                        if (modelType.includes("quad") || modelType === "quad_ensemble") {
+                            modelTypeDisplay = "QuadEnsemble (RF + XGBoost + LightGBM + LSTM)";
+                            modelTypeIcon = "🌟";
+                        } else if (modelType.includes("triple") || modelType === "triple_ensemble") {
+                            modelTypeDisplay = "TripleEnsemble (RF + XGBoost + LightGBM)";
+                            modelTypeIcon = "🚀";
+                        } else if (modelType.includes("ensemble")) {
                             modelTypeDisplay = "Ensemble (RF + XGBoost)";
                             modelTypeIcon = "🎯";
                         } else if (modelType === "rf") {
@@ -5480,7 +5488,16 @@
                 
                 if (response.ok && data.success) {
                     if (statusDiv) {
-                        const displayType = modelType || 'Auto';
+                        let displayType = modelType || 'Auto';
+                        // Преобразуем техническое название в понятное
+                        const typeMap = {
+                            'ensemble': 'Ensemble (RF + XGBoost)',
+                            'triple_ensemble': 'TripleEnsemble (RF + XGBoost + LightGBM)',
+                            'quad_ensemble': 'QuadEnsemble (RF + XGBoost + LightGBM + LSTM)',
+                            'rf': 'Random Forest',
+                            'xgb': 'XGBoost'
+                        };
+                        displayType = typeMap[modelType] || displayType;
                         statusDiv.innerHTML = `<span style="color: #00ff88;">✔ Model type for all pairs saved successfully! (${displayType})</span>`;
                     }
                     console.log('Model type for all pairs saved:', modelType || 'Auto');

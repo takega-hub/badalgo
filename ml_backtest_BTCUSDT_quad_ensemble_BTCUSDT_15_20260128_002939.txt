@@ -1,0 +1,65 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: quad_ensemble_BTCUSDT_15
+Symbol: BTCUSDT
+Date: 2026-01-28 00:29:39
+Days Back: 7
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $999.93
+  Total PnL: $-0.07 (-0.01%)
+  Max Drawdown: $0.71 (0.07%)
+
+TRADE STATISTICS:
+  Total Trades: 5
+  Winning Trades: 2
+  Losing Trades: 3
+  Win Rate: 40.00%
+  Profit Factor: 0.90
+  Sharpe Ratio: 0.42
+
+TRADE DETAILS:
+  Average Win: $0.33
+  Average Loss: $-0.24
+  Best Trade: $0.48
+  Worst Trade: $-0.66
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2026-01-22 23:15:00 @ $89393.20 (LONG)
+    Exit: 2026-01-24 08:30:00 @ $89618.30 (OPPOSITE_SIGNAL)
+    PnL: $0.48 (+2.52%)
+    Confidence: 21.22%
+    Reason: ml_LONG_сила_слабое_21%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-24 08:30:00 @ $89618.30 (SHORT)
+    Exit: 2026-01-24 08:45:00 @ $89628.80 (OPPOSITE_SIGNAL)
+    PnL: $-0.05 (-0.12%)
+    Confidence: 62.97%
+    Reason: ml_SHORT_сила_умеренное_62%_TP_2.50%_SL_1.00%
+
+  Trade #3:
+    Entry: 2026-01-24 08:45:00 @ $89628.80 (LONG)
+    Exit: 2026-01-24 20:45:00 @ $89342.60 (OPPOSITE_SIGNAL)
+    PnL: $-0.66 (-3.19%)
+    Confidence: 25.52%
+    Reason: ml_LONG_сила_слабое_25%_TP_2.50%_SL_1.00%
+
+  Trade #4:
+    Entry: 2026-01-24 20:45:00 @ $89342.60 (SHORT)
+    Exit: 2026-01-24 21:00:00 @ $89252.10 (OPPOSITE_SIGNAL)
+    PnL: $0.18 (+1.01%)
+    Confidence: 26.38%
+    Reason: ml_SHORT_сила_слабое_26%_TP_2.50%_SL_1.00%
+
+  Trade #5:
+    Entry: 2026-01-24 21:00:00 @ $89252.10 (LONG)
+    Exit: 2026-01-27 21:15:00 @ $89254.70 (END_OF_BACKTEST)
+    PnL: $-0.02 (+0.03%)
+    Confidence: 40.12%
+    Reason: ml_LONG_сила_слабое_40%_TP_2.50%_SL_1.00%
