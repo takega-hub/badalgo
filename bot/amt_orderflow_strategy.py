@@ -169,6 +169,48 @@ def _resolve_symbol_settings(symbol: str, settings: Optional["SymbolSettings"] =
         SymbolSettings(AbsorptionConfig(), VolumeProfileConfig(), LhOrderflowConfig()),
     )
 
+def resolve_final_amt_configs(
+    symbol: str,
+    strategy_settings: Any,
+    current_time_utc: Optional[datetime] = None,
+    use_adaptive_volume: bool = False
+) -> tuple[VolumeProfileConfig, AbsorptionConfig]:
+    """
+    Resolve final AMT configs for live trading.
+    
+    Args:
+        symbol: Trading symbol (e.g. "BTCUSDT")
+        strategy_settings: Strategy settings object (may contain AMT-specific params)
+        current_time_utc: Current UTC time for adaptive volume adjustments
+        use_adaptive_volume: Whether to apply time-of-day volume adjustments
+    
+    Returns:
+        Tuple of (VolumeProfileConfig, AbsorptionConfig)
+    """
+    sym_settings = AMT_CONFIG_REGISTRY.get(
+        symbol,
+        SymbolSettings(AbsorptionConfig(), VolumeProfileConfig(), LhOrderflowConfig()),
+    )
+    
+    vp_cfg = sym_settings.volume_profile
+    abs_cfg = sym_settings.absorption
+    
+    # Apply adaptive volume adjustments if requested
+    if use_adaptive_volume and current_time_utc:
+        hour = current_time_utc.hour
+        # Asian session (0-8 UTC): lower liquidity -> higher thresholds
+        # European/American session (8-24 UTC): higher liquidity -> lower thresholds
+        if 0 <= hour < 8:
+            # Asian session: increase volume thresholds by 20%
+            abs_cfg = replace(
+                abs_cfg,
+                min_total_volume=abs_cfg.min_total_volume * 1.2,
+                min_cvd_delta=abs_cfg.min_cvd_delta * 1.2,
+            )
+        # else: use default thresholds for European/American sessions
+    
+    return vp_cfg, abs_cfg
+
 def calculate_atr(df_ohlcv: pd.DataFrame, period: int = 14) -> float:
     if len(df_ohlcv) < period + 1: return 0.0
     h, l, c = df_ohlcv['high'], df_ohlcv['low'], df_ohlcv['close'].shift(1)
@@ -195,7 +237,17 @@ def enhanced_trend_filter(df_ohlcv: pd.DataFrame, current_price: float) -> tuple
     bear_votes = int(current_price < e50) + int(current_price < e100) + int(current_price < e200)
     return bull_votes >= 2, bear_votes >= 2
 
-def generate_amt_signals(client: BybitClient, symbol: str, current_price: float, df_ohlcv: pd.DataFrame, trades_df: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> List[Signal]:
+def generate_amt_signals(
+    client: BybitClient,
+    symbol: str,
+    current_price: float,
+    df_ohlcv: pd.DataFrame,
+    trades_df: Optional[pd.DataFrame] = None,
+    current_time: Optional[datetime] = None,
+    vp_config: Optional[VolumeProfileConfig] = None,
+    abs_config: Optional[AbsorptionConfig] = None,
+    delta_aggr_mult: Optional[float] = None,
+) -> List[Signal]:
     signals: List[Signal] = []
     if df_ohlcv.empty or len(df_ohlcv) < 50:
         _dbg("reject:ohlcv_short", symbol=symbol)
@@ -436,4 +488,5 @@ __all__ = [
     "_parse_trades",
     "_compute_cvd_metrics",
     "_resolve_symbol_settings",
+    "resolve_final_amt_configs",
 ]

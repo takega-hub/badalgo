@@ -625,12 +625,13 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 try:
                     vol_ratio = float(self.df.loc[self.current_step, 'volatility_ratio'])
                     if action == 1:  # LONG
-                        lo, hi = (0.0020, 0.0075) if emergency_mode else (0.0025, 0.0060)
+                        # 🔥 В emergency_mode РАСШИРЯЕМ диапазон для возможности открытия сделок
+                        lo, hi = (0.0010, 0.0100) if emergency_mode else (0.0025, 0.0060)
                         if vol_ratio < lo or vol_ratio > hi:
                             return False
                     elif action == 2:  # SHORT
-                        # SHORT сейчас показывает плохой WR → делаем диапазон более “качественным”, но с послаблением в emergency
-                        lo, hi = (0.0015, 0.0090) if emergency_mode else (0.0020, 0.0075)
+                        # 🔥 В emergency_mode РАСШИРЯЕМ диапазон для возможности открытия сделок
+                        lo, hi = (0.0010, 0.0120) if emergency_mode else (0.0020, 0.0075)
                         if vol_ratio < lo or vol_ratio > hi:
                             return False
                 except Exception:
@@ -700,7 +701,8 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                         if adx_val < min_adx:
                             return False
                     elif action == 2:
-                        min_adx = 12.0 if emergency_mode else 15.0
+                        # 🔥 ИСПОЛЬЗУЕМ АДАПТИВНЫЙ min_adx для SHORT тоже!
+                        min_adx = max(8.0, self.min_adx * 0.4) if emergency_mode else 15.0
                         if adx_val < min_adx:
                             return False
                         # SHORT: по умолчанию требуем нисходящее направление (minus_di > plus_di)
@@ -714,19 +716,25 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 except Exception:
                     pass
             
-            # 6) trend_bias_1h (отрицательная корреляция — используем как фильтр “от противного”)
+            # 6) trend_bias_1h (отрицательная корреляция — используем как фильтр "от противного")
             if 'trend_bias_1h' in self.df.columns:
                 try:
                     trend_bias = float(self.df.loc[self.current_step, 'trend_bias_1h'])
-                    if action == 1 and trend_bias < -0.3:
-                        return False
+                    # 🔥 В emergency_mode ОСЛАБЛЯЕМ фильтр trend_bias
+                    if action == 1:
+                        threshold = -0.5 if emergency_mode else -0.3
+                        if trend_bias < threshold:
+                            return False
                     # SHORT: также не шортим при сильном бычьем уклоне
-                    if action == 2 and trend_bias > (0.35 if emergency_mode else 0.25):
-                        return False
+                    if action == 2:
+                        threshold = 0.50 if emergency_mode else 0.25
+                        if trend_bias > threshold:
+                            return False
                 except Exception:
                     pass
             
             # 7) Контекст цены (доп. фильтр)
+            # 🔥 В emergency_mode ОТКЛЮЧАЕМ price_context фильтр полностью
             if not emergency_mode:
                 try:
                     if not self._check_price_context(price, action):
@@ -742,27 +750,34 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                         last_change_pct = (price - prev_close) / prev_close * 100.0
                         if action == 1:
                             # 🔥 УЖЕСТОЧЕНО: не покупаем после роста >1.0% (было 1.5%)
-                            # Также используем ATR для определения "значимого" движения
+                            # В emergency_mode ОСЛАБЛЯЕМ до 3.0% для возможности открытия сделок
                             if 'atr' in self.df.columns:
                                 atr_val = float(self.df.loc[self.current_step, 'atr'])
                                 atr_pct = (atr_val / prev_close) * 100.0
-                                # Не покупаем если рост больше 1.5x ATR
-                                if last_change_pct > max(1.0, atr_pct * 1.5):
+                                # В emergency_mode разрешаем рост до 3.0% ИЛИ до 3x ATR
+                                threshold_pct = 3.0 if emergency_mode else 1.0
+                                threshold_atr_mult = 3.0 if emergency_mode else 1.5
+                                if last_change_pct > max(threshold_pct, atr_pct * threshold_atr_mult):
                                     return False
-                            elif last_change_pct > 1.0:  # Fallback если нет ATR
+                            elif last_change_pct > (3.0 if emergency_mode else 1.0):  # Fallback если нет ATR
                                 return False
-                        if action == 2 and last_change_pct < -1.5:
-                            return False  # не шортим после резкого падения
+                        if action == 2:
+                            # В emergency_mode ОСЛАБЛЯЕМ для SHORT тоже
+                            threshold = -3.0 if emergency_mode else -1.5
+                            if last_change_pct < threshold:
+                                return False  # не шортим после резкого падения
             except Exception:
                 pass
             
             # 8) ГАРАНТИЯ MIN RR RATIO 1.5 (критично важно!)
             sl_distance = max(atr * self.atr_multiplier, price * self.min_sl_percent)
             sl_distance = min(sl_distance, price * self.max_sl_percent)
-            min_tp_for_rr = sl_distance * self.min_rr_ratio
+            # 🔥 В emergency_mode ОСЛАБЛЯЕМ RR до 1.0 для возможности открытия сделок
+            min_rr_threshold = 1.0 if emergency_mode else self.min_rr_ratio
+            min_tp_for_rr = sl_distance * min_rr_threshold
             min_tp_distance = max(min_tp_for_rr, atr * self.tp_levels[0], price * self.min_tp_percent)
             actual_rr = min_tp_distance / sl_distance if sl_distance > 0 else 0
-            if actual_rr < self.min_rr_ratio - 0.01:
+            if actual_rr < min_rr_threshold - 0.01:
                 self.min_rr_violations += 1
                 return False
             
