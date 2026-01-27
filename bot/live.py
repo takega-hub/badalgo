@@ -5775,35 +5775,93 @@ def run_live_from_api(
                             hist_ts_py = hist_ts.to_pydatetime()
                             
                             # Проверяем возраст сигнала (должен быть не старше 15 минут)
-                            # Учитываем, что сигнал мог быть создан в MSK, поэтому добавляем буфер
+                            # ВАЖНО: Учитываем, что timestamp в истории в MSK, поэтому конвертируем в UTC для сравнения
                             age_from_now_minutes = abs((current_time_utc - hist_ts_py).total_seconds()) / 60
                             
                             if age_from_now_minutes <= 15:
-                                # Сигнал свежий - проверяем, что он actionable (не HOLD)
+                                # Сигнал свежий (не старше 15 минут) - проверяем, что он actionable (не HOLD)
                                 hist_action = hist_signal.get("action", "").upper()
                                 if hist_action in ("LONG", "SHORT"):
                                     hist_price = hist_signal.get("price", 0)
                                     hist_reason = hist_signal.get("reason", "")
+                                    hist_signal_id = hist_signal.get("signal_id")
                                     
-                                    # Ищем соответствующий сигнал в available_signals и обновляем его timestamp
-                                    # Сравниваем по цене (в пределах 0.1%) и reason
+                                    # ВАЖНО: Проверяем, был ли этот сигнал уже исполнен
+                                    # Используем signal_id из истории для проверки
+                                    if hist_signal_id and hist_signal_id in processed_signals:
+                                        # Сигнал уже был исполнен - пропускаем
+                                        _log(
+                                            f"⏭️ Signal from history already processed: {hist_action} @ ${hist_price:.2f} "
+                                            f"({hist_reason}) [ID: {hist_signal_id}]",
+                                            symbol
+                                        )
+                                        continue
+                                    
+                                    # ВАЖНО: Создаем объект Signal из истории для исполнения
+                                    # Если сигнал свежий и еще не был исполнен, добавляем его в available_signals
+                                    from bot.strategy import Signal, Action as SignalAction
+                                    
+                                    # Преобразуем action из строки в enum
+                                    hist_action_enum = SignalAction.LONG if hist_action == "LONG" else SignalAction.SHORT
+                                    
+                                    # Создаем объект Signal с timestamp в UTC (для проверки свежести)
+                                    hist_signal_obj = Signal(
+                                        timestamp=pd.Timestamp(hist_ts_py).tz_localize('UTC'),
+                                        action=hist_action_enum,
+                                        reason=hist_reason,
+                                        price=hist_price,
+                                    )
+                                    
+                                    # Устанавливаем signal_id из истории, если он есть
+                                    if hist_signal_id:
+                                        hist_signal_obj.signal_id = hist_signal_id
+                                    
+                                    # Проверяем, есть ли уже такой сигнал в available_signals
+                                    signal_already_exists = False
                                     for name, sig in available_signals:
                                         price_match = abs(sig.price - hist_price) / hist_price <= 0.001 if hist_price > 0 else False
                                         reason_match = sig.reason == hist_reason
                                         
                                         if price_match and reason_match:
-                                            # Проверяем, соответствует ли сигнал последней свече
+                                            signal_already_exists = True
+                                            # Обновляем timestamp существующего сигнала на время из истории
                                             if not df_ready.empty:
                                                 last_candle_close = float(df_ready['close'].iloc[-1])
                                                 price_match_candle = abs(sig.price - last_candle_close) / last_candle_close <= 0.001 if last_candle_close > 0 else False
                                                 
                                                 if price_match_candle:
-                                                    # Обновляем timestamp на текущее время
-                                                    sig.timestamp = pd.Timestamp(current_time_utc)
-                                                    _log(f"⚡ Updated signal timestamp from history: {name} {hist_action} @ ${hist_price:.2f} - timestamp updated to current time", symbol)
+                                                    # Обновляем timestamp на время последней свечи
+                                                    last_candle_ts = df_ready.index[-1]
+                                                    if isinstance(last_candle_ts, pd.Timestamp):
+                                                        if last_candle_ts.tzinfo is None:
+                                                            last_candle_ts = last_candle_ts.tz_localize('UTC')
+                                                        else:
+                                                            last_candle_ts = last_candle_ts.tz_convert('UTC')
+                                                        sig.timestamp = last_candle_ts
+                                                        _log(
+                                                            f"⚡ Updated signal timestamp from history: {name} {hist_action} @ ${hist_price:.2f} - "
+                                                            f"timestamp updated to last candle time",
+                                                            symbol
+                                                        )
+                                            break
+                                    
+                                    # Если сигнала нет в available_signals, добавляем его
+                                    if not signal_already_exists:
+                                        # Определяем имя стратегии по reason
+                                        strategy_name = "zscore" if hist_reason.startswith("zscore_") else "unknown"
+                                        available_signals.append((strategy_name, hist_signal_obj))
+                                        _log(
+                                            f"✅ Added fresh signal from history to available_signals: {hist_action} @ ${hist_price:.2f} "
+                                            f"({hist_reason}) - age: {age_from_now_minutes:.1f} min [ID: {hist_signal_id or 'none'}]",
+                                            symbol
+                                        )
                                     
                                     fresh_signals_available = True
-                                    _log(f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_price:.2f} ({hist_reason}) - age: {age_from_now_minutes:.1f} min", symbol)
+                                    _log(
+                                        f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_price:.2f} ({hist_reason}) - "
+                                        f"age: {age_from_now_minutes:.1f} min",
+                                        symbol
+                                    )
                                     break
                         except Exception as e:
                             # Пропускаем сигналы с ошибками парсинга
@@ -6401,12 +6459,21 @@ def run_live_from_api(
             signal_id = sig.signal_id if hasattr(sig, 'signal_id') and sig.signal_id else None
             if signal_id is None:
                 # Fallback: генерируем ID на основе timestamp, action, reason и price
-                # ВАЖНО: Используем точный timestamp и price для уникальности
+                # ВАЖНО: Используем нормализованный timestamp (без микросекунд и таймзоны) для совместимости с историей
+                # История сохраняет timestamp в MSK, но для генерации ID используем нормализованный формат
                 import hashlib
                 ts_str = str(ts) if hasattr(ts, 'isoformat') else str(ts)
+                # Нормализуем timestamp для генерации ID (убираем микросекунды и таймзону для совместимости)
+                ts_str_normalized = ts_str
+                if '.' in ts_str_normalized:
+                    ts_str_normalized = ts_str_normalized.split('.')[0]
+                if '+' in ts_str_normalized:
+                    ts_str_normalized = ts_str_normalized.split('+')[0]
+                elif 'Z' in ts_str_normalized:
+                    ts_str_normalized = ts_str_normalized.replace('Z', '')
                 # Используем больше знаков для price, чтобы избежать коллизий
                 price_str = f"{sig.price:.6f}"  # Увеличено с 4 до 6 знаков для большей точности
-                id_string = f"{ts_str}_{sig.action.value}_{sig.reason}_{price_str}_{symbol}"  # Добавлен symbol для уникальности
+                id_string = f"{ts_str_normalized}_{sig.action.value}_{sig.reason}_{price_str}_{symbol}"  # Добавлен symbol для уникальности
                 signal_id = hashlib.md5(id_string.encode()).hexdigest()[:16]
                 # Устанавливаем signal_id в сигнал для последующего использования
                 if hasattr(sig, 'signal_id'):
