@@ -12,6 +12,10 @@ from typing import List, Dict, Any, Optional
 HISTORY_FILE = Path(__file__).parent.parent.parent / "bot_history.json"
 MAX_TRADES = 1000
 MAX_SIGNALS = 5000
+# Максимальный возраст сигналов в днях (сигналы старше будут удалены)
+MAX_SIGNAL_AGE_DAYS = 2
+# Максимальный возраст сделок в днях (сделки старше будут удалены)
+MAX_TRADE_AGE_DAYS = 30  # Сделки храним дольше для статистики
 
 # Блокировка для синхронизации доступа к файлу истории
 _history_lock = threading.Lock()
@@ -223,6 +227,24 @@ def _load_history() -> Dict[str, List]:
     # Гарантируем наличие ключей
     history.setdefault("trades", [])
     history.setdefault("signals", [])
+    
+    # Автоматически очищаем старые сигналы и сделки при загрузке (если файл большой)
+    # Это предотвращает рост файла до огромных размеров
+    try:
+        signals_before = len(history.get("signals", []))
+        trades_before = len(history.get("trades", []))
+        
+        signals_removed = _clean_old_signals(history)
+        trades_removed = _clean_old_trades(history)
+        
+        # Сохраняем очищенную историю только если что-то было удалено
+        # Используем skip_cleanup=True чтобы избежать повторной очистки
+        if signals_removed > 0 or trades_removed > 0:
+            _save_history(history, skip_cleanup=True)
+            print(f"[history] 🧹 Cleaned history on load: removed {signals_removed} old signals (was {signals_before}, now {len(history.get('signals', []))}) and {trades_removed} old trades (was {trades_before}, now {len(history.get('trades', []))})")
+    except Exception as e:
+        print(f"[history] ⚠️ Error cleaning old data on load: {e}")
+    
     return history
 
 
@@ -323,22 +345,206 @@ def remove_duplicate_trades_internal(history: Optional[Dict[str, List]] = None) 
     return duplicates_removed
 
 
-def _save_history(history: Dict[str, List]):
-    """Сохранить историю в файл (атомарная запись через временный файл с блокировкой)."""
+def _clean_old_signals(history: Dict[str, List]) -> int:
+    """Удаляет сигналы старше MAX_SIGNAL_AGE_DAYS дней. Возвращает количество удаленных сигналов."""
+    if "signals" not in history:
+        return 0
+    
+    signals = history.get("signals", [])
+    if not signals:
+        return 0
+    
+    now = datetime.now(timezone.utc)
+    cutoff_time = now - timedelta(days=MAX_SIGNAL_AGE_DAYS)
+    
+    removed_count = 0
+    filtered_signals = []
+    
+    for signal in signals:
+        try:
+            ts_str = signal.get("timestamp", "")
+            if not ts_str:
+                # Если нет timestamp, оставляем сигнал (на случай старых данных)
+                filtered_signals.append(signal)
+                continue
+            
+            # Парсим timestamp в разных форматах
+            signal_time = None
+            if isinstance(ts_str, str):
+                if 'T' in ts_str:
+                    # ISO формат: 2026-01-27T11:30:00.000000+00:00 или 2026-01-27T11:30:00Z
+                    try:
+                        signal_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    except ValueError:
+                        # Пробуем другой формат
+                        try:
+                            signal_time = datetime.strptime(ts_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                            signal_time = signal_time.replace(tzinfo=timezone.utc)
+                        except ValueError:
+                            pass
+                else:
+                    # Другой формат: 2026-01-27 11:30:00
+                    try:
+                        signal_time = datetime.strptime(ts_str[:19], '%Y-%m-%d %H:%M:%S')
+                        signal_time = signal_time.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        pass
+            
+            if signal_time is None:
+                # Не удалось распарсить - оставляем сигнал для безопасности
+                filtered_signals.append(signal)
+                continue
+            
+            # Убеждаемся, что время в UTC
+            if signal_time.tzinfo is None:
+                signal_time = signal_time.replace(tzinfo=timezone.utc)
+            else:
+                signal_time = signal_time.astimezone(timezone.utc)
+            
+            # Проверяем возраст сигнала
+            if signal_time >= cutoff_time:
+                filtered_signals.append(signal)
+            else:
+                removed_count += 1
+        except Exception as e:
+            # В случае ошибки оставляем сигнал для безопасности
+            print(f"[history] ⚠️ Error cleaning signal: {e}, keeping signal")
+            filtered_signals.append(signal)
+    
+    history["signals"] = filtered_signals
+    return removed_count
+
+
+def _clean_old_trades(history: Dict[str, List]) -> int:
+    """Удаляет сделки старше MAX_TRADE_AGE_DAYS дней. Возвращает количество удаленных сделок."""
+    if "trades" not in history:
+        return 0
+    
+    trades = history.get("trades", [])
+    if not trades:
+        return 0
+    
+    now = datetime.now(timezone.utc)
+    cutoff_time = now - timedelta(days=MAX_TRADE_AGE_DAYS)
+    
+    removed_count = 0
+    filtered_trades = []
+    
+    for trade in trades:
+        try:
+            exit_time_str = trade.get("exit_time", "")
+            if not exit_time_str:
+                # Если нет времени выхода (открытая сделка), оставляем
+                filtered_trades.append(trade)
+                continue
+            
+            # Парсим timestamp в разных форматах
+            exit_time = None
+            if isinstance(exit_time_str, str):
+                if 'T' in exit_time_str:
+                    try:
+                        exit_time = datetime.fromisoformat(exit_time_str.replace('Z', '+00:00'))
+                    except ValueError:
+                        try:
+                            exit_time = datetime.strptime(exit_time_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                            exit_time = exit_time.replace(tzinfo=timezone.utc)
+                        except ValueError:
+                            pass
+                else:
+                    try:
+                        exit_time = datetime.strptime(exit_time_str[:19], '%Y-%m-%d %H:%M:%S')
+                        exit_time = exit_time.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        pass
+            
+            if exit_time is None:
+                # Не удалось распарсить - оставляем сделку для безопасности
+                filtered_trades.append(trade)
+                continue
+            
+            # Убеждаемся, что время в UTC
+            if exit_time.tzinfo is None:
+                exit_time = exit_time.replace(tzinfo=timezone.utc)
+            else:
+                exit_time = exit_time.astimezone(timezone.utc)
+            
+            # Проверяем возраст сделки
+            if exit_time >= cutoff_time:
+                filtered_trades.append(trade)
+            else:
+                removed_count += 1
+        except Exception as e:
+            # В случае ошибки оставляем сделку для безопасности
+            print(f"[history] ⚠️ Error cleaning trade: {e}, keeping trade")
+            filtered_trades.append(trade)
+    
+    history["trades"] = filtered_trades
+    return removed_count
+
+
+def _save_history(history: Dict[str, List], skip_cleanup: bool = False):
+    """Сохранить историю в файл (атомарная запись через временный файл с блокировкой).
+    
+    Args:
+        history: Словарь с ключами "signals" и "trades"
+        skip_cleanup: Если True, пропускает очистку старых данных (для избежания рекурсии)
+    """
     with _history_lock:
         try:
+            # Очищаем старые сигналы перед сохранением (если не пропущено)
+            signals_removed = 0
+            trades_removed = 0
+            if not skip_cleanup:
+                signals_removed = _clean_old_signals(history)
+                if signals_removed > 0:
+                    print(f"[history] 🗑️ Removed {signals_removed} signals older than {MAX_SIGNAL_AGE_DAYS} days")
+                
+                # Очищаем старые сделки перед сохранением
+                trades_removed = _clean_old_trades(history)
+                if trades_removed > 0:
+                    print(f"[history] 🗑️ Removed {trades_removed} trades older than {MAX_TRADE_AGE_DAYS} days")
+            
             # Убеждаемся, что директория существует
             HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
             
             # Атомарная запись через временный файл для предотвращения повреждения при конкурентной записи
             temp_file = HISTORY_FILE.with_suffix('.json.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
-            # Атомарно заменяем основной файл
-            import shutil
-            shutil.move(str(temp_file), str(HISTORY_FILE))
+            
+            # Логируем размер данных перед сохранением (только если файл большой)
+            signals_count = len(history.get("signals", []))
+            trades_count = len(history.get("trades", []))
+            if signals_count > 1000 or trades_count > 500:
+                print(f"[history] 💾 Saving history: {signals_count} signals, {trades_count} trades")
+            
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(history, f, indent=2, ensure_ascii=False)
+                
+                # Проверяем размер временного файла
+                temp_file_size = temp_file.stat().st_size
+                if temp_file_size > 10 * 1024 * 1024:  # Больше 10 МБ
+                    print(f"[history] ⚠️ History file is large: {temp_file_size / (1024*1024):.1f} MB")
+                
+                # Атомарно заменяем основной файл
+                import shutil
+                shutil.move(str(temp_file), str(HISTORY_FILE))
+                
+                # Логируем успешное сохранение только для больших операций
+                if signals_removed > 100 or trades_removed > 50:
+                    print(f"[history] ✅ History saved successfully after cleanup")
+            except Exception as write_error:
+                # Если ошибка записи, пытаемся удалить временный файл
+                print(f"[history] ❌ Error writing history file: {write_error}")
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception:
+                    pass
+                raise  # Пробрасываем ошибку дальше
         except Exception as e:
             print(f"[history] ⚠️ Error saving history: {e}")
+            import traceback
+            traceback.print_exc()
             # Пытаемся удалить временный файл если он остался
             try:
                 temp_file = HISTORY_FILE.with_suffix('.json.tmp')
@@ -469,11 +675,25 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
     
     history["signals"].append(signal)
     
-    # Ограничиваем размер истории
+    # Ограничиваем размер истории (оставляем последние MAX_SIGNALS сигналов)
+    signals_before_limit = len(history["signals"])
     if len(history["signals"]) > MAX_SIGNALS:
         history["signals"] = history["signals"][-MAX_SIGNALS:]
+        removed_by_limit = signals_before_limit - len(history["signals"])
+        if removed_by_limit > 0:
+            print(f"[history] 📊 Signal history limit reached: removed {removed_by_limit} oldest signals (keeping last {MAX_SIGNALS})")
     
-    _save_history(history)
+    # Сохраняем историю (внутри _save_history происходит очистка старых сигналов)
+    try:
+        _save_history(history)
+        # Логируем успешное сохранение только для важных сигналов (LONG/SHORT) и не слишком часто
+        if action.upper() in ("LONG", "SHORT"):
+            print(f"[history] ✅ Signal saved: {action} {symbol} @ ${price_normalized:.2f} ({strategy_type}) [{ts_str[:19]}]")
+    except Exception as e:
+        print(f"[history] ❌ ERROR saving signal to history: {e}")
+        import traceback
+        traceback.print_exc()
+        # Не поднимаем исключение дальше, чтобы не ломать работу бота
 
 
 def add_trade(

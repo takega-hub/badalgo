@@ -31,7 +31,7 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                  log_open_positions: bool = False,
                  open_log_file: Optional[str] = None,
                  rr_ratio: float = 2.0,
-                 atr_multiplier: float = 2.5,
+                 atr_multiplier: float = 2.2,  # ОПТИМИЗИРОВАНО: уменьшено с 2.5 до 2.2 для лучшего RR (рекомендация анализа)
                  render_mode: Optional[str] = None,
                  training_mode: str = "optimized"):
         """
@@ -54,15 +54,17 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
         self.atr_multiplier = atr_multiplier
         self.min_rr_ratio = 1.5  # ГАРАНТИРОВАННЫЙ МИНИМУМ RR 1.5:1
         
-        # TP уровни: снижены для большего количества достижений TP (ПО РЕКОМЕНДАЦИЯМ АНАЛИЗА)
-        # Анализ показал: только 9.3% сделок закрываются по TP_LEVEL_1, нужно больше TP закрытий
-        self.tp_levels = [1.8, 2.5, 3.5]  # РЕКОМЕНДАЦИЯ: снизить с [2.0, 3.0, 4.0] для большего % TP закрытий
+        # TP уровни: ОПТИМИЗИРОВАНЫ ПО РЕЗУЛЬТАТАМ АНАЛИЗА (288 сделок)
+        # Анализ показал: средний RR 1.65 (цель ≥1.8), только 7.6% сделок закрываются по TP_LEVEL_1
+        # РЕШЕНИЕ: увеличиваем TP1 для лучшего RR, но оставляем достижимым
+        self.tp_levels = [2.2, 2.8, 3.6]  # УВЕЛИЧЕНО: TP1 с 1.8 до 2.2 для лучшего RR (рекомендация: 2.2-2.5)
         self.tp_close_percentages = [0.25, 0.35, 0.40]  # Больше на последних уровнях
         
-        # Трейлинг-стоп: настроен для уменьшения ложных срабатываний (ПО РЕКОМЕНДАЦИЯМ АНАЛИЗА)
-        # Анализ показал: 41.1% сделок закрываются по SL_TRAILING - требуется дальнейшая оптимизация
-        self.trailing_activation_atr = 0.30   # РЕКОМЕНДАЦИЯ: увеличено с 0.20 до 0.25-0.30 - позже активация для уменьшения SL_TRAILING
-        self.trailing_distance_atr = 0.40     # РЕКОМЕНДАЦИЯ: увеличено с 0.30 до 0.35-0.40 - больше расстояние для уменьшения ложных срабатываний
+        # Трейлинг-стоп: ОПТИМИЗИРОВАН ПО РЕЗУЛЬТАТАМ АНАЛИЗА
+        # Анализ показал: 56.2% сделок закрываются по SL_TRAILING - слишком агрессивный трейлинг!
+        # РЕШЕНИЕ: еще больше увеличиваем задержку активации и расстояние для уменьшения ложных срабатываний
+        self.trailing_activation_atr = 0.35   # УВЕЛИЧЕНО с 0.30 до 0.35 (рекомендация: 0.25-0.30, но у нас было уже 0.30, увеличиваем дальше)
+        self.trailing_distance_atr = 0.45     # УВЕЛИЧЕНО с 0.40 до 0.45 (рекомендация: 0.35-0.40, но у нас было уже 0.40, увеличиваем дальше)
         self.protective_trailing_atr = 0.5    # Защитный стоп (было 0.6)
         # Время удержания
         self.max_hold_steps = 60
@@ -91,12 +93,15 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
         self.min_trend_strength = 0.55        # УЖЕСТОЧЕНО: увеличено до 0.55 (рекомендация: 0.50-0.55)
         # volume_ratio УБРАН ИЗ ФИЛЬТРОВ (отрицательная корреляция с PnL: -0.0342)
         # min_volume_ratio оставлен для совместимости, но не используется в фильтрах
-        # КРИТИЧНО: volatility_ratio показал разницу Win Rate 15.9%! (Q1: 38.5% vs Q4: 54.4%)
-        # Анализ показал: прибыльные сделки имеют volatility_ratio = 0.0043, убыточные = 0.0070
-        self.min_volatility_ratio = 0.0030    # ОПТИМИЗИРОВАНО: выше среднего убыточных сделок
-        self.max_volatility_ratio = 1.6       # РЕКОМЕНДАЦИЯ: уменьшить с 1.8 до 1.6 (защита от экстремальных значений)
-        # ДОБАВЛЯЕМ min_volume для фильтра (анализ показал: volume имеет корреляцию 0.1581 с PnL, разница 31.5%)
-        self.min_volume_multiplier = 1.3      # УВЕЛИЧЕНО с 1.2 до 1.3-1.4 (рекомендация анализа)
+        # ОПТИМИЗИРОВАНО ПО РЕЗУЛЬТАТАМ АНАЛИЗА (288 сделок):
+        # volatility_ratio имеет сильную корреляцию с PnL (0.340) и влияет на WR (разница 41.7%!)
+        # Анализ показал: прибыльные сделки имеют volatility_ratio = 0.0028, убыточные = 0.0018
+        # Парадокс: убыточные имеют МЕНЬШУЮ волатильность! Значит нужно фильтровать НИЗКУЮ волатильность
+        self.min_volatility_ratio = 0.0020    # ОПТИМИЗИРОВАНО: выше убыточных (0.0018), но ниже прибыльных (0.0028)
+        self.max_volatility_ratio = 1.5       # УМЕНЬШЕНО с 1.6 до 1.5 (рекомендация анализа: 1.6, но ужесточаем дальше)
+        # volume имеет ОГРОМНУЮ разницу между прибыльными и убыточными (79.1%!)
+        # Прибыльные: 1361.7, убыточные: 760.4 - нужно требовать БОЛЬШИЙ объем для входа
+        self.min_volume_multiplier = 1.4      # УВЕЛИЧЕНО с 1.3 до 1.4 (рекомендация анализа: 1.3-1.4, берем максимум)
         # КРИТИЧНО: rsi_norm имеет сильную корреляцию 0.2229 с PnL и влияет на WR (разница 36.8%!)
         # Q1 (низкий rsi_norm): WR 41.7%, Q4 (высокий): WR 71.3%
         # РАЗДЕЛЬНЫЕ RSI ФИЛЬТРЫ ДЛЯ LONG/SHORT (ОПТИМИЗИРОВАНО)
@@ -681,10 +686,18 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
             return False
         
         try:
-            # 1. Фильтр по волатильности (ATR)
+            # 1. ОПТИМИЗИРОВАННЫЙ фильтр по волатильности (ATR) - КРИТИЧНО: влияет на WR (разница 43.1%!)
+            # Анализ показал: прибыльные сделки atr = 117.06, убыточные = 78.93
+            # Q1 (низкий ATR) = WR 8.3%, Q4 (высокий) = WR 51.4%
+            # РЕШЕНИЕ: требуем абсолютный ATR выше порога + проверяем процент от цены
             atr_percent = atr / price
             if atr_percent < 0.001 or atr_percent > 0.04:  # Более гибкий диапазон
                 return False
+            
+            # АБСОЛЮТНЫЙ фильтр по ATR (прибыльные сделки имеют atr > 100)
+            min_absolute_atr = 85.0  # Ниже убыточных (78.93), но выше среднего для фильтрации слабых движений
+            if atr < min_absolute_atr:
+                return False  # Слишком низкий ATR = плохой Win Rate (Q1: 8.3%)
             
             # 2. Проверка силы тренда через ADX
             # trend_bias_1h УБРАН ИЗ ФИЛЬТРОВ (отрицательная корреляция: -0.0345)
@@ -750,12 +763,19 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                 except:
                     pass
             
-            # 4. Проверка объема с всплеском (КРИТИЧНО: анализ показал корреляцию 0.1581 и разницу 31.5%!)
-            # Для SHORT делаем фильтр мягче, чтобы не душить количество шорт-сделок
+            # 4. ОПТИМИЗИРОВАННАЯ проверка объема (КРИТИЧНО: анализ показал разницу 79.1%!)
+            # Прибыльные сделки: volume = 1361.7, убыточные = 760.4
+            # РЕШЕНИЕ: требуем абсолютный объем выше порога + всплеск относительно среднего
             if 'volume' in self.df.columns:
                 try:
                     current_volume = float(self.df.loc[self.current_step, 'volume'])
-                    # Вычисляем средний объем за последние 20 свечей
+                    
+                    # АБСОЛЮТНЫЙ фильтр по объему (прибыльные сделки имеют volume > 1000)
+                    min_absolute_volume = 800.0  # Ниже убыточных (760.4), но выше среднего
+                    if current_volume < min_absolute_volume:
+                        return False  # Слишком низкий абсолютный объем
+                    
+                    # ОТНОСИТЕЛЬНЫЙ фильтр (всплеск относительно среднего)
                     if self.current_step >= 20:
                         avg_volume = float(self.df.loc[self.current_step-20:self.current_step, 'volume'].mean())
                         volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
@@ -789,15 +809,16 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                 except:
                     pass  # Если не удалось проверить, пропускаем
             
-            # 5. КРИТИЧНО: Проверка volatility_ratio (анализ показал разницу Win Rate 15.9%!)
+            # 5. ОПТИМИЗИРОВАННАЯ проверка volatility_ratio (КРИТИЧНО: корреляция 0.340, разница WR 41.7%!)
+            # Анализ показал: прибыльные сделки volatility_ratio = 0.0028, убыточные = 0.0018
+            # Q1 (низкая волатильность) = WR 11.1%, Q4 (высокая) = WR 52.8%
+            # РЕШЕНИЕ: требуем volatility_ratio между убыточными и прибыльными для оптимального баланса
             if 'volatility_ratio' in self.df.columns:
                 try:
                     volatility_ratio = float(self.df.loc[self.current_step, 'volatility_ratio'])
-                    # Анализ показал: Q1 (низкая волатильность) = WR 15.8%, Q4 (высокая) = WR 61.4%
-                    # Прибыльные сделки: volatility_ratio = 0.0046, убыточные = 0.0041
-                    # Поэтому требуем volatility_ratio >= 0.0030 для входа (выше среднего убыточных сделок)
+                    # Требуем volatility_ratio >= 0.0020 (между убыточными 0.0018 и прибыльными 0.0028)
                     if volatility_ratio < self.min_volatility_ratio:
-                        return False  # Слишком низкая волатильность = плохой Win Rate (Q1: 15.8% vs Q4: 61.4%)
+                        return False  # Слишком низкая волатильность = плохой Win Rate (Q1: 11.1% vs Q4: 52.8%)
                     if volatility_ratio > self.max_volatility_ratio:
                         return False  # Слишком высокая волатильность = риск
                 except:
@@ -1108,10 +1129,16 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                     self.trailing_active = True
                     # Логи отключены: print(f"[TRAILING_OPTIMIZED] Активация при прибыли {profit_pct*100:.2f}%")
                 
-                # Динамический трейлинг
+                # ОПТИМИЗИРОВАННЫЙ динамический трейлинг (менее агрессивный)
+                # Проблема: 56.2% сделок закрываются по SL_TRAILING - трейлинг слишком агрессивный
+                # РЕШЕНИЕ: делаем трейлинг более плавным и менее агрессивным для небольших прибылей
                 trailing_multiplier = self.trailing_distance_atr
-                if profit_pct > 0.01:
-                    trailing_multiplier *= 0.8
+                # Плавное уменьшение расстояния только при большой прибыли (>2%)
+                if profit_pct > 0.02:
+                    trailing_multiplier *= 0.85  # Менее агрессивное уменьшение (было 0.8)
+                elif profit_pct > 0.015:
+                    trailing_multiplier *= 0.90  # Еще менее агрессивное
+                # При прибыли < 1.5% используем полное расстояние для защиты от ложных срабатываний
                 
                 trailing_stop_price = current_price - (atr * trailing_multiplier)
                 self.current_sl = max(self.current_sl, trailing_stop_price)
@@ -1135,9 +1162,14 @@ class CryptoTradingEnvV17_2_Optimized(gym.Env):
                     self.trailing_active = True
                     # Логи отключены: print(f"[TRAILING_OPTIMIZED] Активация при прибыли {profit_pct*100:.2f}%")
                 
+                # ОПТИМИЗИРОВАННЫЙ динамический трейлинг для SHORT (менее агрессивный)
                 trailing_multiplier = trailing_distance
-                if profit_pct > 0.01:
-                    trailing_multiplier *= 0.8
+                # Плавное уменьшение расстояния только при большой прибыли (>2%)
+                if profit_pct > 0.02:
+                    trailing_multiplier *= 0.85  # Менее агрессивное уменьшение (было 0.8)
+                elif profit_pct > 0.015:
+                    trailing_multiplier *= 0.90  # Еще менее агрессивное
+                # При прибыли < 1.5% используем полное расстояние для защиты от ложных срабатываний
                 
                 trailing_stop_price = current_price + (atr * trailing_multiplier)
                 self.current_sl = min(self.current_sl, trailing_stop_price)

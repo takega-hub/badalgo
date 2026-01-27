@@ -158,8 +158,12 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
     if df_signals is None or df_signals.empty:
         return results
 
+    # Определяем индекс последней строки для обновления timestamp свежих сигналов
+    last_row_idx = len(df_signals) - 1
+    last_row_position = -1
+    
     # df_signals содержит колонку 'signal' с значениями "LONG"/"SHORT"/"EXIT_*"
-    for idx, row in df_signals.iterrows():
+    for position, (idx, row) in enumerate(df_signals.iterrows()):
         sig = str(row.get("signal", "")).upper()
         if sig == "LONG":
             action = Action.LONG
@@ -176,6 +180,13 @@ def build_zscore_signals(df: pd.DataFrame, params: Optional[ConfigStrategyParams
         except Exception:
             ts = pd.Timestamp.now()
 
+        # КРИТИЧЕСКИ ВАЖНО: Если сигнал соответствует последней строке DataFrame,
+        # обновляем timestamp на текущее время, чтобы сигнал считался свежим
+        # Это гарантирует немедленное исполнение сигналов от Z-Score стратегии
+        if position == last_row_idx:
+            # Сигнал на последней свече - обновляем timestamp на текущее время
+            ts = pd.Timestamp.now(tz='UTC')
+        
         results.append(Signal(timestamp=ts, action=action, reason=str(reason), price=price))
 
     return results

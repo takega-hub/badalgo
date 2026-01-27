@@ -4424,6 +4424,7 @@ def run_live_from_api(
                             
                             # Проверяем, соответствует ли сигнал последней свече
                             matches_last_candle = False
+                            is_last_row_signal = False
                             if not df_ready.empty:
                                 last_candle_ts = df_ready.index[-1]
                                 if isinstance(last_candle_ts, pd.Timestamp):
@@ -4435,12 +4436,31 @@ def run_live_from_api(
                                     time_diff_seconds = abs((original_ts_py - last_candle_time).total_seconds())
                                     matches_last_candle = time_diff_seconds <= 60
                                     
+                                    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Если сигнал был сгенерирован на последней строке DataFrame,
+                                    # но timestamp старый (из-за исторических данных), считаем его соответствующим последней свече
+                                    # Проверяем по цене: если цена сигнала совпадает с ценой последней свечи - это свежий сигнал
+                                    last_candle_price = float(df_ready['close'].iloc[-1])
+                                    price_match = abs(sig.price - last_candle_price) / last_candle_price < 0.001  # 0.1% tolerance
+                                    
+                                    if price_match and not matches_last_candle:
+                                        # Цена совпадает, но timestamp старый - это сигнал с последней свечи со старым timestamp
+                                        is_last_row_signal = True
+                                        matches_last_candle = True
+                                        _log(
+                                            f"🔍 Z-Score signal detected as LAST ROW signal (price match): {sig.action.value} @ ${sig.price:.2f} | "
+                                            f"Original TS: {original_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                                            f"Last candle TS: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                                            f"Price match: {price_match}",
+                                            symbol
+                                        )
+                                    
                                     _log(
                                         f"🔍 Z-Score signal diagnostic: {sig.action.value} @ ${sig.price:.2f} | "
                                         f"Original TS: {original_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
                                         f"Last candle TS: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
                                         f"Diff: {time_diff_seconds:.0f}s | "
-                                        f"Matches last candle: {matches_last_candle}",
+                                        f"Matches last candle: {matches_last_candle} | "
+                                        f"Is last row signal: {is_last_row_signal}",
                                         symbol
                                     )
                             
@@ -4458,14 +4478,28 @@ def run_live_from_api(
                                 # ВАЖНО: Если сигнал соответствует последней свече - обновляем timestamp на текущее время
                                 # Это гарантирует, что сигнал будет считаться свежим и обработан немедленно
                                 ts_log_before = ts_log
-                                ts_log = update_signal_timestamp_if_fresh(ts_log, "Z-Score")
                                 
-                                if ts_log != ts_log_before:
+                                # Если сигнал был определен как сигнал с последней строки (даже со старым timestamp),
+                                # принудительно обновляем timestamp на текущее время
+                                if is_last_row_signal:
+                                    ts_log = datetime.now(timezone.utc)
                                     _log(
-                                        f"⚡ Z-Score signal timestamp UPDATED: {ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
-                                        f"{ts_log.strftime('%Y-%m-%d %H:%M:%S UTC')} (matched last candle)",
+                                        f"⚡ Z-Score signal timestamp FORCED UPDATE (last row): {ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
+                                        f"{ts_log.strftime('%Y-%m-%d %H:%M:%S UTC')}",
                                         symbol
                                     )
+                                else:
+                                    ts_log = update_signal_timestamp_if_fresh(ts_log, "Z-Score")
+                                    if ts_log != ts_log_before:
+                                        _log(
+                                            f"⚡ Z-Score signal timestamp UPDATED: {ts_log_before.strftime('%Y-%m-%d %H:%M:%S UTC')} -> "
+                                            f"{ts_log.strftime('%Y-%m-%d %H:%M:%S UTC')} (matched last candle)",
+                                            symbol
+                                        )
+                                
+                                # Также обновляем timestamp в объекте сигнала для немедленного исполнения
+                                if is_last_row_signal or matches_last_candle:
+                                    sig.timestamp = pd.Timestamp(ts_log)
                                 
                                 add_signal(
                                     action=sig.action.value,

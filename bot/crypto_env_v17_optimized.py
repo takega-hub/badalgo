@@ -1846,6 +1846,9 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             self.consecutive_losses += 1
             self.consecutive_wins = 0
         
+        # Сохраняем стратегии в trade_info перед сбросом
+        trade_strategies_snapshot = self.current_trade_strategies.copy() if hasattr(self, 'current_trade_strategies') and self.current_trade_strategies else []
+        
         # Сбрасываем список стратегий для следующей сделки
         self.current_trade_strategies = []
         
@@ -1857,6 +1860,7 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
             'tp_prices': self.tp_prices.copy(),
             'exit_price': final_price,
             'pnl': total_pnl,
+            'strategies': trade_strategies_snapshot,
             'exit_type': self.exit_type,
             'trailing_active': self.trailing_active,
             'duration': self.steps_since_open,
@@ -2133,18 +2137,28 @@ class CryptoTradingEnvV17_Optimized(gym.Env):
                 reward -= 6.0  # УВЕЛИЧЕНО с 4.0 до 6.0
                 # Логи отключены
         
-        # ШТРАФ ЗА VERY_BAD СДЕЛКИ (дополнительно к штрафу за убыток)
+        # ШТРАФ ЗА VERY_BAD СДЕЛКИ И БОНУСЫ ЗА ПРИБЫЛЬНЫЕ СДЕЛКИ ОТ СТРАТЕГИЙ
         if trade_closed and self.trade_history:
             last_trade = self.trade_history[-1]
             trade_quality = last_trade.get('trade_quality', 'NORMAL')
+            trade_strategies = last_trade.get('strategies', [])
+            
             if trade_quality == 'VERY_BAD':
                 reward -= 10.0  # УВЕЛИЧЕНО с 5.0 до 10.0 - двойной штраф за VERY_BAD сделки
                 
                 # 🔥 ДОПОЛНИТЕЛЬНЫЙ ШТРАФ ЕСЛИ VERY_BAD СДЕЛКА ОТ ВНЕШНЕЙ СТРАТЕГИИ
                 # Это учит модель избегать сигналы, которые приводят к плохим результатам
-                # Используем сохраненные стратегии из trade_history, так как current_trade_strategies уже сброшен
-                if hasattr(self, 'current_trade_strategies') and self.current_trade_strategies:
+                if trade_strategies:
                     reward -= 5.0  # Дополнительный штраф за плохой сигнал стратегии
+            
+            # 🔥 БОНУС ЗА ПРИБЫЛЬНУЮ СДЕЛКУ ОТ СТРАТЕГИИ
+            # Учим модель предпочитать сигналы, которые приводят к прибыли
+            elif trade_quality in ['GOOD', 'EXCELLENT'] and trade_strategies:
+                # Бонус пропорционален качеству сделки и количеству совпавших стратегий
+                quality_multiplier = 1.5 if trade_quality == 'EXCELLENT' else 1.0
+                strategy_count = len(trade_strategies)
+                strategy_success_bonus = 3.0 * quality_multiplier * (1.0 + strategy_count * 0.3)
+                reward += strategy_success_bonus
                 # Логи отключены
         
         # УЛУЧШЕННЫЙ БОНУС ЗА ХОРОШИЙ RR В ПОСЛЕДНИХ СДЕЛКАХ
