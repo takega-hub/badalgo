@@ -4913,55 +4913,74 @@ def run_live_from_api(
             
             # Функция для проверки, является ли сигнал свежим (строгая проверка: не старше 15 минут от текущего времени)
             def is_signal_fresh(sig, df_ready):
-                """Проверяет, является ли сигнал свежим (не старше 15 минут от текущего времени или соответствует последней свече)."""
+                """Проверяет, является ли сигнал свежим (не старше 15 минут от текущего времени или соответствует последней свече).
+
+                ВАЖНО: учитываем возможный сдвиг MSK/UTC. Сначала сравниваем «сырые» времена без таймзоны,
+                чтобы не ошибиться на 3 часа, если сигнал/свеча в MSK, а сервер в UTC.
+                """
                 try:
                     if df_ready.empty:
                         return True
-                    
-                    ts = sig.timestamp
-                    if isinstance(ts, pd.Timestamp):
-                        signal_ts = ts
-                        if signal_ts.tzinfo is None:
-                            signal_ts = signal_ts.tz_localize('UTC')
-                        else:
-                            # Конвертируем в UTC для сравнения (может быть MSK или другая таймзона)
-                            import pytz
-                            msk_tz = pytz.timezone('Europe/Moscow')
-                            if str(signal_ts.tz) == 'Europe/Moscow' or '+03:00' in str(signal_ts.tz):
-                                # Если время в MSK, конвертируем в UTC
-                                signal_ts = signal_ts.tz_convert('UTC')
-                            else:
-                                signal_ts = signal_ts.tz_convert('UTC')
-                        
-                        # Получаем текущее время
-                        current_time_utc = datetime.now(timezone.utc)
-                        if isinstance(current_time_utc, pd.Timestamp):
-                            current_time_utc = current_time_utc.to_pydatetime()
-                        
-                        # Проверяем, соответствует ли timestamp сигнала последней свече или одной из последних
-                        last_candle_ts = df_ready.index[-1]
-                        if isinstance(last_candle_ts, pd.Timestamp):
-                            if last_candle_ts.tzinfo is None:
-                                last_candle_ts = last_candle_ts.tz_localize('UTC')
-                            else:
-                                last_candle_ts = last_candle_ts.tz_convert('UTC')
-                            last_candle_time = last_candle_ts.to_pydatetime()
-                        else:
-                            last_candle_time = last_candle_ts
-                                
-                        # Если сигнал соответствует последней свече - он свежий
-                        signal_time = signal_ts.to_pydatetime()
-                        if abs((signal_time - last_candle_time).total_seconds()) <= 60:  # В пределах 1 минуты от последней свечи
+
+                    ts = getattr(sig, "timestamp", None)
+                    if not isinstance(ts, (pd.Timestamp, datetime)):
+                        return False
+
+                    # Приводим к pandas.Timestamp
+                    signal_ts_raw = pd.Timestamp(ts)
+
+                    # --- 1) Быстрая проверка: совпадает ли время сигнала с последней свече без учета таймзоны ---
+                    last_candle_idx = df_ready.index[-1]
+                    last_candle_raw = pd.Timestamp(last_candle_idx)
+                    try:
+                        raw_diff = abs(
+                            (
+                                signal_ts_raw.to_pydatetime().replace(tzinfo=None)
+                                - last_candle_raw.to_pydatetime().replace(tzinfo=None)
+                            ).total_seconds()
+                        )
+                        if raw_diff <= 60:
+                            # Если времена совпадают в пределах минуты, считаем сигнал свежим
+                            # независимо от сдвига UTC/MSK
                             return True
-                        
-                        # Также проверяем возраст от текущего времени (не старше 15 минут)
-                        time_diff_from_now = abs((current_time_utc - signal_time).total_seconds())
-                        if time_diff_from_now <= 900:  # 15 минут = 900 секунд
-                            return True
-                        
+                    except Exception:
+                        # Если сравнение «сырых» времен не удалось, просто продолжаем к UTC‑логике
+                        pass
+
+                    # --- 2) Нормализуем к UTC и применяем стандартные правила свежести ---
+                    signal_ts = signal_ts_raw
+                    if signal_ts.tzinfo is None:
+                        # Если таймзона не указана, считаем, что это UTC (как в большинстве стратегий)
+                        signal_ts = signal_ts.tz_localize("UTC")
+                    else:
+                        # Конвертируем в UTC для сравнения
+                        signal_ts = signal_ts.tz_convert("UTC")
+
+                    # Текущее время в UTC
+                    current_time_utc = datetime.now(timezone.utc)
+
+                    # Время последней свечи в UTC
+                    last_candle_ts = last_candle_raw
+                    if last_candle_ts.tzinfo is None:
+                        last_candle_ts = last_candle_ts.tz_localize("UTC")
+                    else:
+                        last_candle_ts = last_candle_ts.tz_convert("UTC")
+
+                    signal_time = signal_ts.to_pydatetime()
+                    last_candle_time = last_candle_ts.to_pydatetime()
+
+                    # 1) Если сигнал соответствует последней свече по времени (±60 секунд) — он свежий
+                    if abs((signal_time - last_candle_time).total_seconds()) <= 60:
+                        return True
+
+                    # 2) Если сигнал не старше 15 минут относительно текущего времени — он свежий
+                    time_diff_from_now = abs((current_time_utc - signal_time).total_seconds())
+                    if time_diff_from_now <= 900:  # 15 минут = 900 секунд
+                        return True
+
                     return False
                 except Exception as e:
-                    _log(f"⚠️ Error checking signal freshness: {e}", symbol=None)
+                    _log(f"⚠️ Error checking signal freshness: {e}", symbol)
                     # В случае ошибки считаем сигнал не свежим для строгости
                     return False
             

@@ -69,7 +69,7 @@ def main():
             threshold_pct=0.6,  # 0.6% (мягче!)
             use_atr_threshold=True,
             use_risk_adjusted=True,
-            min_risk_reward_ratio=1.2,  # Меньше требования!
+            min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
         )
         
         # Анализ распределения классов
@@ -124,13 +124,18 @@ def main():
             class_weight=class_weight_dict,  # 🔥 ЭКСТРЕМАЛЬНАЯ балансировка!
         )
         
+        # Определяем суффикс режима (MTF или 15m-only) по флагу окружения
+        ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "1")
+        ml_mtf_enabled = ml_mtf_enabled_env not in ("0", "false", "False", "no")
+        mode_suffix = "mtf" if ml_mtf_enabled else "15m"
+
         # Сохраняем модель с метаданными
         trainer.save_model(
             rf_model,
             trainer.scaler,
             feature_names,
             rf_metrics,
-            f"rf_{symbol}_{interval}.pkl",
+            f"rf_{symbol}_{interval}_{mode_suffix}.pkl",
             symbol=symbol,
             interval=interval,
             class_weights=class_weight_dict,
@@ -140,7 +145,7 @@ def main():
                 "max_depth": 12,
                 "forward_periods": 3,  # 🔥 Короче!
                 "threshold_pct": 0.6,  # 🔥 Мягче!
-                "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                "min_risk_reward_ratio": 2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам)
                 "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
                 "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
             },
@@ -164,7 +169,7 @@ def main():
             trainer.scaler,
             feature_names,
             xgb_metrics,
-            f"xgb_{symbol}_{interval}.pkl",
+            f"xgb_{symbol}_{interval}_{mode_suffix}.pkl",
             symbol=symbol,
             interval=interval,
             class_weights=class_weight_dict,
@@ -175,7 +180,7 @@ def main():
                 "learning_rate": 0.05,
                 "forward_periods": 3,  # 🔥 Короче!
                 "threshold_pct": 0.6,  # 🔥 Мягче!
-                "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                "min_risk_reward_ratio": 2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам)
                 "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
                 "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
             },
@@ -202,7 +207,7 @@ def main():
             trainer.scaler,
             feature_names,
             ensemble_metrics,
-            f"ensemble_{symbol}_{interval}.pkl",
+            f"ensemble_{symbol}_{interval}_{mode_suffix}.pkl",
             symbol=symbol,
             interval=interval,
             model_type="ensemble_ultra_aggressive",
@@ -217,7 +222,7 @@ def main():
                 "ensemble_method": "weighted_average",
                 "forward_periods": 3,  # 🔥 Короче!
                 "threshold_pct": 0.6,  # 🔥 Мягче!
-                "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                "min_risk_reward_ratio": 2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам)
                 "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
                 "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
             },
@@ -252,7 +257,7 @@ def main():
                 trainer.scaler,
                 feature_names,
                 triple_ensemble_metrics,
-                f"triple_ensemble_{symbol}_{interval}.pkl",
+                f"triple_ensemble_{symbol}_{interval}_{mode_suffix}.pkl",
                 symbol=symbol,
                 interval=interval,
                 model_type="triple_ensemble_ultra_aggressive",
@@ -270,7 +275,7 @@ def main():
                     "ensemble_method": "triple",
                     "forward_periods": 3,  # 🔥 Короче!
                     "threshold_pct": 0.6,  # 🔥 Мягче!
-                    "min_risk_reward_ratio": 1.2,  # 🔥 Меньше!
+                    "min_risk_reward_ratio": 2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам)
                     "hold_weight_multiplier": 0.05,  # 🔥 Экстремально низкий!
                     "long_short_weight_multiplier": 3.0,  # 🔥 Высокий!
                 },

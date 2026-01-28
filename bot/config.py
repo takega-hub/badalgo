@@ -293,6 +293,7 @@ class AppSettings:
     strategy_type: str = "rule-based"  # "rule-based", "ml", "hybrid"
     ml_model_path: Optional[str] = None  # Путь к обученной ML модели (для основной пары)
     ml_model_type_for_all: Optional[str] = None  # Тип модели для всех пар: "rf", "xgb", "ensemble" (None = авто-выбор)
+    ml_mtf_enabled: bool = False  # Использовать ли мульти-таймфреймовые ML модели (quad_ensemble / MTF фичи)
     ml_confidence_threshold: float = 0.5  # Минимальная уверенность ML модели для открытия позиции (0-1)
     ml_min_signal_strength: str = "слабое"  # Минимальная сила сигнала: "слабое", "умеренное", "среднее", "сильное", "очень_сильное"
     ml_stability_filter: bool = True  # Фильтр стабильности: игнорировать слабые сигналы при смене направления
@@ -683,6 +684,7 @@ def load_settings() -> AppSettings:
     ml_confidence = os.getenv("ML_CONFIDENCE_THRESHOLD", "").strip()
     ml_min_strength = os.getenv("ML_MIN_SIGNAL_STRENGTH", "").strip()
     ml_stability = os.getenv("ML_STABILITY_FILTER", "").strip()
+    ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "").strip()
     
     # Применяем настройки из .env ПЕРЕД автоматическим поиском модели
     if ml_strategy_type:
@@ -708,6 +710,12 @@ def load_settings() -> AppSettings:
     if ml_stability:
         settings.ml_stability_filter = ml_stability.lower() in ("true", "1", "yes", "on")
         _config_log(f"[config] ML_STABILITY_FILTER loaded from .env: {settings.ml_stability_filter}")
+
+    # Мульти-таймфреймовые ML модели (QuadEnsemble / MTF фичи)
+    # Если переменная не задана, оставляем значение по умолчанию из AppSettings
+    if ml_mtf_enabled_env:
+        settings.ml_mtf_enabled = ml_mtf_enabled_env.lower() not in ("0", "false", "no", "off")
+        _config_log(f"[config] ML_MTF_ENABLED loaded from .env: {settings.ml_mtf_enabled}")
     
     # Если модель не задана через env и не найдена автоматически выше, проверяем наличие модели и используем её
     # НО НЕ перезаписываем настройки, если они уже заданы в .env или найдены автоматически

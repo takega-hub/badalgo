@@ -92,7 +92,7 @@ def main():
         threshold_pct=1.0,  # 1.0% порог
         use_atr_threshold=True,
         use_risk_adjusted=True,
-        min_risk_reward_ratio=1.5,
+        min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
     )
     
     target_dist = df_with_target['target'].value_counts().to_dict()

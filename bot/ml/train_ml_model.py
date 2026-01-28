@@ -89,7 +89,7 @@ def main():
             threshold_pct=threshold_pct,  # Более мягкий порог для большего количества сигналов
             use_atr_threshold=True,  # Использовать динамический порог на основе ATR
             use_risk_adjusted=True,  # Использовать риск-скорректированную целевую переменную
-            min_risk_reward_ratio=1.5,  # Сниженное соотношение риск/прибыль 1.5:1 (было 2.0) для большего количества сигналов
+            min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
         )
         print(f"  Using threshold: {threshold_pct}% (optimized for {symbol})")
         

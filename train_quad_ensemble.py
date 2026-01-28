@@ -106,32 +106,78 @@ def main():
     # Загружаем настройки
     settings = load_settings()
     
+    # Определяем, использовать ли MTF-режим при обучении (читаем из окружения)
+    ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "1")
+    ml_mtf_enabled = ml_mtf_enabled_env not in ("0", "false", "False", "no")
+    mode_suffix = "mtf" if ml_mtf_enabled else "15m"
+    
     # === Шаг 1: Сбор данных ===
-    print(f"\n[Step 1] Collecting historical data for {args.symbol}...")
+    if ml_mtf_enabled:
+        print(f"\n[Step 1] Collecting historical data (15m, 1h, 4h) for {args.symbol}...")
+    else:
+        print(f"\n[Step 1] Collecting historical data (15m only) for {args.symbol}...")
     collector = DataCollector(settings.api)
     
-    # Собираем данные
-    df_raw = collector.collect_klines(
-        symbol=args.symbol,
-        interval=args.interval.replace('m', ''),
-        start_date=None,
-        end_date=None,
-        limit=200,
-    )
+    # Базовый интервал (ожидаем '15m')
+    base_interval = args.interval.replace('m', '')
     
-    if df_raw.empty:
-        print(f"❌ No data collected for {args.symbol}. Skipping.")
-        return
+    if ml_mtf_enabled:
+        # Собираем данные сразу для нескольких таймфреймов
+        mtf_data = collector.collect_multiple_timeframes(
+            symbol=args.symbol,
+            intervals=[base_interval, "60", "240"],  # 15m, 1h, 4h
+            start_date=None,
+            end_date=None,
+        )
+        
+        df_raw_15m = mtf_data.get(base_interval)
+        df_raw_1h = mtf_data.get("60")
+        df_raw_4h = mtf_data.get("240")
+        
+        if df_raw_15m is None or df_raw_15m.empty:
+            print(f"❌ No 15m data collected for {args.symbol}. Skipping.")
+            return
+        
+        print(f"✅ Collected {len(df_raw_15m)} candles on 15m timeframe")
+    else:
+        # Старый режим: собираем только 15m данные
+        df_raw_15m = collector.collect_klines(
+            symbol=args.symbol,
+            interval=base_interval,
+            start_date=None,
+            end_date=None,
+            limit=200,
+        )
+        if df_raw_15m.empty:
+            print(f"❌ No 15m data collected for {args.symbol}. Skipping.")
+            return
+        print(f"✅ Collected {len(df_raw_15m)} candles on 15m timeframe (no higher TF)")
     
-    print(f"✅ Collected {len(df_raw)} candles")
-    
-    # === Шаг 2: Feature Engineering ===
-    print(f"\n[Step 2] Creating features...")
+    # === Шаг 2: Feature Engineering (включая MTF при необходимости) ===
+    print(f"\n[Step 2] Creating features{' (including higher timeframes)' if ml_mtf_enabled else ' (15m only)'}...")
     feature_engineer = FeatureEngineer()
     
-    # Создаем технические индикаторы
-    df_features = feature_engineer.create_technical_indicators(df_raw)
-    print(f"✅ Created {len(feature_engineer.get_feature_names())} features")
+    # Создаем технические индикаторы на базовом ТФ (15m)
+    df_features = feature_engineer.create_technical_indicators(df_raw_15m)
+    
+    if ml_mtf_enabled:
+        # Добавляем мульти‑таймфреймовые признаки (1h, 4h), если данные есть
+        higher_timeframes = {}
+        df_raw_1h = mtf_data.get("60")
+        df_raw_4h = mtf_data.get("240")
+        if df_raw_1h is not None and not df_raw_1h.empty:
+            higher_timeframes["60"] = df_raw_1h
+        if df_raw_4h is not None and not df_raw_4h.empty:
+            higher_timeframes["240"] = df_raw_4h
+        
+        if higher_timeframes:
+            df_features = feature_engineer.add_mtf_features(df_features, higher_timeframes)
+            print(f"✅ Created {len(feature_engineer.get_feature_names())} features (with MTF)")
+        else:
+            print("⚠️ Could not collect 1h/4h data — training on 15m features only.")
+            print(f"✅ Created {len(feature_engineer.get_feature_names())} features")
+    else:
+        print(f"✅ Created {len(feature_engineer.get_feature_names())} features (15m only)")
     
     # Создаем целевую переменную
     print(f"\n[Step 3] Creating target variable...")
@@ -141,7 +187,7 @@ def main():
         threshold_pct=1.0,  # 1.0% порог
         use_atr_threshold=True,
         use_risk_adjusted=True,
-        min_risk_reward_ratio=1.5,
+        min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
     )
     
     target_dist = df_with_target['target'].value_counts().to_dict()
@@ -211,7 +257,7 @@ def main():
     
     # === Шаг 6: Сохранение модели ===
     print(f"\n[Step 6] Saving model...")
-    model_filename = f"quad_ensemble_{args.symbol}_{args.interval.replace('m', '')}.pkl"
+    model_filename = f"quad_ensemble_{args.symbol}_{args.interval.replace('m', '')}_{mode_suffix}.pkl"
     
     try:
         trainer.save_model(

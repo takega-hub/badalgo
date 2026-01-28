@@ -1181,7 +1181,44 @@ def build_ml_signals(
     # Это значительно ускоряет работу, так как создание индикаторов - самая затратная операция
     # Подготовка фичей (без verbose логирования)
     try:
+        # Определяем, включен ли MTF-режим для ML (по окружению, синхронно с train_* скриптами)
+        import os
+        ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "1")
+        ml_mtf_enabled = ml_mtf_enabled_env not in ("0", "false", "False", "no")
+
+        # Базовые технические индикаторы на 15m
         df_with_features = strategy.feature_engineer.create_technical_indicators(df_work)
+
+        # Если включен MTF-режим, добавляем фичи 1h/4h по той же схеме, что и при обучении
+        if ml_mtf_enabled:
+            try:
+                # Строим агрегированные OHLCV для 1h и 4h из 15m данных
+                ohlcv_agg = {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+                df_1h = df_work.resample("60T").agg(ohlcv_agg).dropna()
+                df_4h = df_work.resample("240T").agg(ohlcv_agg).dropna()
+
+                higher_timeframes = {}
+                if df_1h is not None and not df_1h.empty:
+                    higher_timeframes["60"] = df_1h
+                if df_4h is not None and not df_4h.empty:
+                    higher_timeframes["240"] = df_4h
+
+                if higher_timeframes:
+                    df_with_features = strategy.feature_engineer.add_mtf_features(
+                        df_with_features,
+                        higher_timeframes,
+                    )
+                    print(f"[ml_strategy] MTF features enabled for ML signals (1h/4h). Columns: {len(df_with_features.columns)}")
+                else:
+                    print("[ml_strategy] MTF enabled but failed to build 1h/4h data – using 15m-only features")
+            except Exception as mtf_err:
+                print(f"[ml_strategy] Warning: failed to add MTF features in build_ml_signals: {mtf_err}")
     except Exception as e:
         print(f"[ml_strategy] Error preparing features: {e}")
         # Возвращаем пустые сигналы при ошибке

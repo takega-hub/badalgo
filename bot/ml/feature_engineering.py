@@ -258,6 +258,101 @@ class FeatureEngineer:
         # Сводный признак
         df["fvg_trend"] = df["fvg_up"] - df["fvg_down"]
         
+        # Обновляем список фичей (используется при обучении моделей)
+        self.feature_names = [col for col in df.columns if col not in required_cols]
+        
+        # Возвращаем DataFrame (индекс — timestamp, если он был)
+        return df
+
+    def add_mtf_features(
+        self,
+        df_features: pd.DataFrame,
+        higher_timeframes: dict,
+    ) -> pd.DataFrame:
+        """
+        Добавляет мульти‑таймфреймовые признаки (1h, 4h и т.п.) к уже посчитанным фичам 15m.
+        
+        Args:
+            df_features: DataFrame c фичами базового таймфрейма (обычно 15m),
+                         индекс — DatetimeIndex (timestamp).
+            higher_timeframes: словарь {interval: df_raw}, где interval, например, "60", "240".
+        
+        Returns:
+            DataFrame с добавленными MTF‑фичами.
+        """
+        if df_features is None or df_features.empty:
+            return df_features
+        
+        df = df_features.copy()
+        
+        # Убеждаемся, что индекс — DatetimeIndex
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if "timestamp" in df.columns:
+                df = df.set_index("timestamp")
+            else:
+                # Если нет timestamp — ничего не добавляем
+                return df
+        
+        # Какие признаки берем с верхних ТФ
+        base_cols = [
+            "adx",
+            "plus_di",
+            "minus_di",
+            "rsi",
+            "atr_pct",
+            "volume_ratio",
+            "z_score",
+        ]
+        
+        # Карта суффиксов для понятных имен
+        tf_suffix_map = {
+            "60": "1h",
+            "240": "4h",
+            "360": "6h",
+        }
+        
+        for interval, df_htf_raw in (higher_timeframes or {}).items():
+            if df_htf_raw is None or df_htf_raw.empty:
+                continue
+            
+            # Выбираем суффикс
+            suffix = tf_suffix_map.get(str(interval), str(interval))
+            suffix = f"_{suffix}"
+            
+            try:
+                # Считаем фичи для верхнего ТФ отдельным экземпляром FeatureEngineer,
+                # чтобы не портить feature_names базового.
+                fe_htf = FeatureEngineer()
+                df_htf = fe_htf.create_technical_indicators(df_htf_raw)
+                
+                # Берем только нужные колонки, которые реально есть
+                cols = [c for c in base_cols if c in df_htf.columns]
+                if not cols:
+                    continue
+                
+                df_htf = df_htf[cols]
+                
+                # Приводим индекс к DatetimeIndex, если нужно
+                if not isinstance(df_htf.index, pd.DatetimeIndex):
+                    if "timestamp" in df_htf.columns:
+                        df_htf = df_htf.set_index("timestamp")
+                    else:
+                        continue
+                
+                # Ресемплируем / выравниваем по индексу базового ТФ: используем forward‑fill
+                df_htf_aligned = df_htf.reindex(df.index, method="ffill")
+                
+                for col in cols:
+                    new_col = f"{col}{suffix}"
+                    df[new_col] = df_htf_aligned[col]
+                    if new_col not in self.feature_names:
+                        self.feature_names.append(new_col)
+            except Exception as e:
+                print(f"[feature_engineering] Warning: failed to add MTF features for interval {interval}: {e}")
+                continue
+        
+        return df
+
         # 5) Wick-to-Body ratio (снятие ликвидности / SMC контекст)
         body = (df["close"] - df["open"]).abs()
         upper_wick = df[["close", "open"]].max(axis=1) - df["high"]

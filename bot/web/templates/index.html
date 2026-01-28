@@ -2589,6 +2589,17 @@
                             </span>
                         </small>
                     </div>
+                    <div class="form-group">
+                        <label>ML MTF (Multi‑TimeFrame) Enabled:</label>
+                        <input type="checkbox" name="ml_mtf_enabled" ${app.ml_mtf_enabled ? 'checked' : ''} style="width: 20px; height: 20px;">
+                        <small style="color: #aaa; display: block; margin-top: 4px;">
+                            <strong>Использовать мульти‑таймфреймовые ML модели (с фичами 1h/4h и QuadEnsemble)</strong><br>
+                            <span style="color: #888; font-size: 0.9em;">
+                                • Выключено: обычные 15m модели (ensemble / triple)<br>
+                                • Включено: при авто‑выборе по умолчанию используются quad_ensemble/MTF‑модели (если доступны)
+                            </span>
+                        </small>
+                    </div>
                     
                     <!-- Блок тестирования с улучшенным дизайном -->
                     <div style="margin-top: 20px; padding: 15px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">
@@ -2655,11 +2666,11 @@
                     // Добавляем app settings в risk форму
                     payload.app = {};
                     for (const [key, value] of formData.entries()) {
-                        if (['symbol', 'timeframe', 'leverage', 'live_poll_seconds', 'ml_confidence_threshold', 'ml_min_signal_strength', 'ml_stability_filter'].includes(key)) {
-                            if (key === 'ml_stability_filter') {
-                                // Обрабатываем checkbox отдельно
-                                payload.app[key] = event.target.querySelector('[name="ml_stability_filter"]').checked;
-                            } else if (key === 'ml_confidence_threshold') {
+                        // Числовые/строковые параметры берем из formData.
+                        // Булевые чекбоксы (ml_stability_filter, ml_mtf_enabled) обрабатываем отдельно ниже,
+                        // чтобы их можно было как включать, так и выключать (unchecked чекбоксы не попадают в formData).
+                        if (['symbol', 'timeframe', 'leverage', 'live_poll_seconds', 'ml_confidence_threshold', 'ml_min_signal_strength'].includes(key)) {
+                            if (key === 'ml_confidence_threshold') {
                                 // Обрабатываем запятую как разделитель десятичных дробей (для локализованного ввода)
                                 const normalizedValue = String(value).replace(',', '.');
                                 const numValue = parseFloat(normalizedValue);
@@ -2671,6 +2682,16 @@
                                 payload.app[key] = isNaN(numValue) ? value : numValue;
                             }
                         }
+                    }
+
+                    // Явно передаем значения чекбоксов (они отсутствуют в formData, когда сняты)
+                    const stabilityCheckbox = event.target.querySelector('[name="ml_stability_filter"]');
+                    if (stabilityCheckbox) {
+                        payload.app.ml_stability_filter = stabilityCheckbox.checked;
+                    }
+                    const mtfCheckbox = event.target.querySelector('[name="ml_mtf_enabled"]');
+                    if (mtfCheckbox) {
+                        payload.app.ml_mtf_enabled = mtfCheckbox.checked;
                     }
                 }
                 
@@ -5790,7 +5811,7 @@
                     return;
                 }
                 
-                if (!confirm(`Are you sure you want to train LSTM and QuadEnsemble models for ALL symbols?\n\nThis will train:\n1. LSTM models for: BTCUSDT, ETHUSDT, SOLUSDT\n2. QuadEnsemble models for: BTCUSDT, ETHUSDT, SOLUSDT\n\nThis process may take 30-60 minutes.`)) {
+                if (!confirm(`Are you sure you want to retrain all QuadEnsemble models for ALL symbols?\n\nThis will retrain QuadEnsemble models for:\n- BTCUSDT\n- ETHUSDT\n- SOLUSDT\n\nUsing retrain_all_models.py with min_risk_reward_ratio=2.0\n\nThis process may take 30-60 minutes.`)) {
                     return;
                 }
                 

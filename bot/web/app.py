@@ -302,6 +302,8 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ML_CONFIDENCE_THRESHOLD'] = str(settings.ml_confidence_threshold)
         env_dict['ML_MIN_SIGNAL_STRENGTH'] = str(settings.ml_min_signal_strength)
         env_dict['ML_STABILITY_FILTER'] = str(settings.ml_stability_filter).lower()
+        # Флаг MTF для ML
+        env_dict['ML_MTF_ENABLED'] = '1' if getattr(settings, 'ml_mtf_enabled', False) else '0'
         if settings.ml_model_type_for_all:
             env_dict['ML_MODEL_TYPE_FOR_ALL'] = str(settings.ml_model_type_for_all).lower()
         else:
@@ -1233,17 +1235,18 @@ def api_get_settings():
                 "enable_momentum_strategy": settings.enable_momentum_strategy,
                 "enable_liquidity_sweep_strategy": settings.enable_liquidity_sweep_strategy,
                 "enable_smc_strategy": settings.enable_smc_strategy,
-                "enable_ict_strategy": settings.enable_ict_strategy,
-                "enable_zscore_strategy": settings.enable_zscore_strategy,
-                "enable_vbo_strategy": settings.enable_vbo_strategy,
-                "enable_breakout_trend_hybrid_strategy": settings.enable_breakout_trend_hybrid_strategy,
-                "enable_amt_of_strategy": settings.enable_amt_of_strategy,
-                "strategy_priority": settings.strategy_priority,
-                "ml_model_path": settings.ml_model_path,
-                "ml_model_type_for_all": settings.ml_model_type_for_all or "",
-                "ml_confidence_threshold": settings.ml_confidence_threshold,
-                "ml_min_signal_strength": settings.ml_min_signal_strength,
-                "ml_stability_filter": settings.ml_stability_filter,
+            "enable_ict_strategy": settings.enable_ict_strategy,
+            "enable_zscore_strategy": settings.enable_zscore_strategy,
+            "enable_vbo_strategy": settings.enable_vbo_strategy,
+            "enable_breakout_trend_hybrid_strategy": settings.enable_breakout_trend_hybrid_strategy,
+            "enable_amt_of_strategy": settings.enable_amt_of_strategy,
+            "strategy_priority": settings.strategy_priority,
+            "ml_model_path": settings.ml_model_path,
+            "ml_model_type_for_all": settings.ml_model_type_for_all or "",
+            "ml_mtf_enabled": getattr(settings, "ml_mtf_enabled", False),
+            "ml_confidence_threshold": settings.ml_confidence_threshold,
+            "ml_min_signal_strength": settings.ml_min_signal_strength,
+            "ml_stability_filter": settings.ml_stability_filter,
             },
         })
 
@@ -1378,6 +1381,10 @@ def api_update_settings():
                             print(f"[web] ML model type for all pairs updated: {value.lower()}")
                         else:
                             return jsonify({"error": f"Invalid ml_model_type_for_all: {value}. Allowed: {', '.join([t for t in allowed_types if t])}, or empty for auto"}), 400
+                    elif key == "ml_mtf_enabled":
+                        # Чекбокс из формы приходит как bool
+                        setattr(settings, key, bool(value))
+                        print(f"[web] ML MTF enabled: {settings.ml_mtf_enabled}")
                     elif key in ("timeframe", "leverage", "live_poll_seconds"):
                         # Обрабатываем числовые значения для app параметров (могут прийти с запятой)
                         if isinstance(value, str):
@@ -1446,7 +1453,13 @@ def api_update_settings():
         from bot.shared_settings import set_settings
         set_settings(settings)
         
-        print(f"[web] Settings updated. ML config: confidence={settings.ml_confidence_threshold}, strength={settings.ml_min_signal_strength}, stability={settings.ml_stability_filter}")
+        print(
+            "[web] Settings updated. ML config: "
+            f"confidence={settings.ml_confidence_threshold}, "
+            f"strength={settings.ml_min_signal_strength}, "
+            f"stability={settings.ml_stability_filter}, "
+            f"mtf={getattr(settings, 'ml_mtf_enabled', False)}"
+        )
         print(f"[web] Strategy settings: TREND={settings.enable_trend_strategy}, FLAT={settings.enable_flat_strategy}, ML={settings.enable_ml_strategy}, MOMENTUM={settings.enable_momentum_strategy}, LIQUIDITY={settings.enable_liquidity_sweep_strategy}")
         
         # Возвращаем обновленные настройки в ответе, чтобы фронтенд мог их использовать
@@ -2313,8 +2326,9 @@ def api_ml_models_all_pairs():
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         models_info = {}
         
-        # Получаем предпочтение типа модели
+        # Получаем предпочтение типа модели и флаг MTF
         model_type_preference = getattr(settings, 'ml_model_type_for_all', None)
+        ml_mtf_enabled = getattr(settings, 'ml_mtf_enabled', False)
         
         models_dir = Path(__file__).parent.parent.parent / "ml_models"
         trainer = ModelTrainer()
@@ -2363,8 +2377,15 @@ def api_ml_models_all_pairs():
                             found_model = str(model_file)
                             break
                 else:
-                    # Автоматический выбор: предпочитаем ensemble > rf > xgb
-                    for model_type in ["ensemble", "rf", "xgb"]:
+                    # Автоматический выбор:
+                    # Если включен MTF-режим, сначала пробуем quad_ensemble / triple_ensemble,
+                    # иначе используем старый приоритет ensemble > rf > xgb
+                    if ml_mtf_enabled:
+                        auto_types = ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]
+                    else:
+                        auto_types = ["ensemble", "rf", "xgb"]
+                    
+                    for model_type in auto_types:
                         pattern = f"{model_type}_{symbol}_*.pkl"
                         for model_file in sorted(models_dir.glob(pattern), reverse=True):
                             if model_file.is_file():
@@ -3068,12 +3089,13 @@ quad_ensemble_training_status = training_statuses["quad_all"]
 @app.route("/api/ml/model/train-quad-ensemble", methods=["POST"])
 @login_required
 def api_ml_model_train_quad_ensemble():
-    """Обучить LSTM и QuadEnsemble модели для всех пар (BTCUSDT, ETHUSDT, SOLUSDT)."""
+    """Переобучить все QuadEnsemble модели для всех пар (BTCUSDT, ETHUSDT, SOLUSDT) используя retrain_all_models.py."""
     if not settings:
         return jsonify({"error": "Settings not loaded"}), 500
     
     try:
         data = request.json or {}
+        days = data.get("days", 180)  # Количество дней данных
         
         # Проверяем, не запущен ли уже процесс
         if (training_statuses["quad_all"] and 
@@ -3114,60 +3136,103 @@ def api_ml_model_train_quad_ensemble():
             try:
                 import subprocess
                 import sys
+                import time
+                import re
                 
                 # Инициализируем статус
                 init_training_status("quad_all")
+                update_status("Initializing", "", 5, "Инициализация переобучения QuadEnsemble моделей...")
                 
+                # Путь к скрипту retrain_all_models.py
+                retrain_script_path = project_root / "retrain_all_models.py"
+                
+                if not retrain_script_path.exists():
+                    raise FileNotFoundError(f"Скрипт retrain_all_models.py не найден: {retrain_script_path}")
+                
+                print(f"[web] 🚀 Запуск переобучения всех QuadEnsemble моделей через retrain_all_models.py...")
+                print(f"[web] Параметры: --type quad_ensemble --days {days}")
+                
+                update_status("Starting", "", 10, f"Запуск переобучения QuadEnsemble (данные: {days} дней)...")
+                
+                # Запускаем процесс с перехватом вывода для отслеживания прогресса
+                # Устанавливаем UTF-8 кодировку для Windows
+                env = os.environ.copy()
+                if sys.platform == 'win32':
+                    env['PYTHONIOENCODING'] = 'utf-8'
+                
+                process = subprocess.Popen(
+                    [sys.executable, str(retrain_script_path), "--type", "quad_ensemble", "--days", str(days)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',  # Заменяем нечитаемые символы вместо ошибки
+                    bufsize=1,
+                    cwd=str(project_root),
+                    env=env
+                )
+                
+                # Отслеживаем вывод для определения прогресса
                 symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-                total_symbols = len(symbols)
+                current_symbol_idx = 0
+                models_processed = 0
+                total_models = 0
                 
-                # === Шаг 1: Обучение LSTM моделей ===
-                print(f"[web] 🚀 Запуск обучения LSTM моделей для всех символов...")
-                lstm_script_path = project_root / "train_lstm_model.py"
-                
-                for idx, symbol in enumerate(symbols):
-                    # Прогресс для LSTM: 0-50% (каждый символ = 50/3 = ~16.67%)
-                    progress = int(((idx + 1) / total_symbols) * 50)
-                    update_status("LSTM Training", symbol, progress, 
-                                f"Обучение LSTM для {symbol}... ({idx+1}/{total_symbols})")
+                # Читаем вывод построчно
+                for line in process.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
                     
-                    print(f"[web] 📊 Обучение LSTM для {symbol}...")
-                    subprocess.run(
-                        [sys.executable, str(lstm_script_path), "--symbol", symbol],
-                        check=True,
-                        cwd=str(project_root)
-                    )
-                    print(f"[web] ✅ LSTM для {symbol} обучен!")
-                
-                update_status("LSTM Training", "All", 50, "LSTM модели обучены для всех символов")
-                
-                # === Шаг 2: Обучение QuadEnsemble моделей ===
-                print(f"[web] 🚀 Запуск обучения QuadEnsemble для всех символов...")
-                quad_script_path = project_root / "train_quad_ensemble.py"
-                
-                for idx, symbol in enumerate(symbols):
-                    # Прогресс для QuadEnsemble: 50-100% (каждый символ = 50/3 = ~16.67%)
-                    progress = 50 + int(((idx + 1) / total_symbols) * 50)
-                    update_status("QuadEnsemble Training", symbol, progress,
-                                f"Обучение QuadEnsemble для {symbol}... ({idx+1}/{total_symbols})")
+                    print(f"[retrain_all_models] {line}")
                     
-                    print(f"[web] 📊 Обучение QuadEnsemble для {symbol}...")
-                    subprocess.run(
-                        [sys.executable, str(quad_script_path), "--symbol", symbol],
-                        check=True,
-                        cwd=str(project_root)
-                    )
-                    print(f"[web] ✅ QuadEnsemble для {symbol} обучен!")
+                    # Определяем общее количество моделей
+                    if "Найдено моделей для переобучения:" in line:
+                        match = re.search(r'(\d+)', line)
+                        if match:
+                            total_models = int(match.group(1))
+                            print(f"[web] Найдено {total_models} QuadEnsemble моделей для переобучения")
+                    
+                    # Отслеживаем прогресс по символам
+                    for idx, symbol in enumerate(symbols):
+                        if symbol in line and ("Переобучение:" in line or "Обработка:" in line):
+                            current_symbol_idx = idx
+                            progress = 20 + int((idx / len(symbols)) * 70)
+                            update_status("Training", symbol, progress, 
+                                        f"Переобучение QuadEnsemble для {symbol}...")
+                            break
+                    
+                    # Отслеживаем завершение модели
+                    if "✅ Успешно переобучена" in line:
+                        models_processed += 1
+                        if total_models > 0:
+                            progress = 20 + int((models_processed / total_models) * 70)
+                            update_status("Training", symbols[min(current_symbol_idx, len(symbols)-1)], 
+                                        progress, f"Переобучено {models_processed}/{total_models} моделей...")
+                    
+                    # Ошибки
+                    if "❌" in line or "Ошибка" in line:
+                        error_match = re.search(r'Ошибка[:\s]+(.+)', line)
+                        if error_match:
+                            update_status("Error", "", training_statuses["quad_all"]["progress"], 
+                                        f"Ошибка: {error_match.group(1)}", error=error_match.group(1))
                 
-                update_status("Completed", "All", 100, "Обучение завершено успешно!")
-                print(f"[web] ✅ Обучение LSTM и QuadEnsemble для всех символов завершено!")
+                # Ждем завершения процесса
+                return_code = process.wait()
+                
+                if return_code == 0:
+                    update_status("Completed", "All", 100, "Переобучение всех QuadEnsemble моделей завершено успешно!")
+                    print(f"[web] ✅ Переобучение всех QuadEnsemble моделей завершено!")
+                else:
+                    raise subprocess.CalledProcessError(return_code, process.args)
                 
             except Exception as e:
                 error_msg = str(e)
-                print(f"[web] ❌ Ошибка при обучении: {e}")
+                print(f"[web] ❌ Ошибка при переобучении QuadEnsemble: {e}")
                 import traceback
                 traceback.print_exc()
-                update_status("Error", "", quad_ensemble_training_status["progress"], 
+                current_progress = training_statuses["quad_all"]["progress"] if training_statuses["quad_all"] else 0
+                update_status("Error", "", current_progress, 
                             f"Ошибка: {error_msg}", error=error_msg)
         
         # Запускаем в отдельном потоке
@@ -3177,7 +3242,7 @@ def api_ml_model_train_quad_ensemble():
         
         return jsonify({
             "success": True,
-            "message": "Запущено обучение LSTM и QuadEnsemble для всех пар (BTCUSDT, ETHUSDT, SOLUSDT). Это может занять 30-60 минут.",
+            "message": f"Запущено переобучение всех QuadEnsemble моделей (данные: {days} дней). Это может занять 30-60 минут.",
             "status": "training"
         })
         
@@ -4099,6 +4164,7 @@ def api_chart_data():
                     # Определяем, какую модель использовать для данного символа на графике
                     models_dir = Path(__file__).parent.parent.parent / "ml_models"
                     model_type_preference = getattr(settings, "ml_model_type_for_all", None)
+                    ml_mtf_enabled = getattr(settings, "ml_mtf_enabled", False)
                     model_path_for_chart = None
                     
                     # 1) Пытаемся использовать явно выбранную модель, если она подходит символу и (при наличии) типу
@@ -4121,7 +4187,7 @@ def api_chart_data():
                                         model_path_for_chart = str(model_path_obj)
                                         print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart}")
                     
-                    # 2) Если явная модель не подходит, ищем по предпочтению или авто (ensemble > rf > xgb)
+                    # 2) Если явная модель не подходит, ищем по предпочтению или авто
                     if not model_path_for_chart and models_dir.exists():
                         if model_type_preference:
                             pattern = f"{model_type_preference}_{symbol}_*.pkl"
@@ -4131,7 +4197,13 @@ def api_chart_data():
                                     print(f"[web] Using preferred ML model for chart {symbol}: {model_path_for_chart}")
                                     break
                         else:
-                            for model_type in ["ensemble", "rf", "xgb"]:
+                            # Авто-выбор: учитываем флаг MTF
+                            if ml_mtf_enabled:
+                                auto_types = ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]
+                            else:
+                                auto_types = ["ensemble", "rf", "xgb"]
+                            
+                            for model_type in auto_types:
                                 pattern = f"{model_type}_{symbol}_*.pkl"
                                 for model_file in sorted(models_dir.glob(pattern), reverse=True):
                                     if model_file.is_file():
