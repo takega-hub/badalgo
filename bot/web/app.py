@@ -1243,7 +1243,7 @@ def api_get_settings():
             "strategy_priority": settings.strategy_priority,
             "ml_model_path": settings.ml_model_path,
             "ml_model_type_for_all": settings.ml_model_type_for_all or "",
-            "ml_mtf_enabled": getattr(settings, "ml_mtf_enabled", False),
+            "ml_mtf_enabled": settings.ml_mtf_enabled,
             "ml_confidence_threshold": settings.ml_confidence_threshold,
             "ml_min_signal_strength": settings.ml_min_signal_strength,
             "ml_stability_filter": settings.ml_stability_filter,
@@ -1328,7 +1328,8 @@ def api_update_settings():
                                "enable_zscore_strategy", "enable_vbo_strategy",
                                "enable_breakout_trend_hybrid_strategy",
                                "enable_amt_of_strategy",
-                               "ml_stability_filter"):
+                               "ml_stability_filter",
+                               "ml_mtf_enabled"):
                         setattr(settings, key, bool(value))
                     elif key == "symbol":
                         # Проверяем доступные пары
@@ -1381,10 +1382,6 @@ def api_update_settings():
                             print(f"[web] ML model type for all pairs updated: {value.lower()}")
                         else:
                             return jsonify({"error": f"Invalid ml_model_type_for_all: {value}. Allowed: {', '.join([t for t in allowed_types if t])}, or empty for auto"}), 400
-                    elif key == "ml_mtf_enabled":
-                        # Чекбокс из формы приходит как bool
-                        setattr(settings, key, bool(value))
-                        print(f"[web] ML MTF enabled: {settings.ml_mtf_enabled}")
                     elif key in ("timeframe", "leverage", "live_poll_seconds"):
                         # Обрабатываем числовые значения для app параметров (могут прийти с запятой)
                         if isinstance(value, str):

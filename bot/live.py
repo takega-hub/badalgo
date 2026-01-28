@@ -5831,15 +5831,16 @@ def run_live_from_api(
                         else:
                             hist_ts = pd.Timestamp(hist_timestamp_str)
                         
-                        # Нормализуем timezone: если время в MSK, конвертируем в UTC для сравнения
+                        # Нормализуем timezone для timestamp из истории.
+                        # ВАЖНО: В истории все timestamp хранятся в московском времени (MSK, +03:00).
+                        # Поэтому:
+                        #   - если таймзона отсутствует (naive datetime), считаем, что это MSK и конвертируем в UTC;
+                        #   - если таймзона явно MSK, просто конвертируем в UTC;
+                        #   - иначе (другая таймзона) также конвертируем в UTC.
                         if hist_ts.tzinfo is None:
-                            # Если нет таймзоны, пытаемся определить по строке
-                            if '+03:00' in str(hist_timestamp_str) or 'Europe/Moscow' in str(hist_timestamp_str):
-                                hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
-                            else:
-                                hist_ts = hist_ts.tz_localize('UTC')
+                            # Исторические сигналы по умолчанию в MSK → локализуем как MSK и приводим к UTC
+                            hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
                         elif str(hist_ts.tz) == 'Europe/Moscow' or '+03:00' in str(hist_ts.tz):
-                            # Если время в MSK, конвертируем в UTC
                             hist_ts = hist_ts.tz_convert('UTC')
                         else:
                             hist_ts = hist_ts.tz_convert('UTC')
