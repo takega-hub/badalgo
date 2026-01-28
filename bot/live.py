@@ -3628,17 +3628,45 @@ def run_live_from_api(
                     model_filename = Path(local_model_path).name
                     if "_" in model_filename:
                         parts = model_filename.replace(".pkl", "").split("_")
-                        if len(parts) >= 2 and parts[1] == symbol:
+                        symbol_match = False
+                        # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_15 или quad_ensemble_SYMBOL_15
+                        if len(parts) >= 3 and (parts[0] == "triple" or parts[0] == "quad"):
+                            if parts[2] == symbol:
+                                symbol_match = True
+                        # Для обычных моделей: формат ensemble_SYMBOL_15, rf_SYMBOL_15
+                        elif len(parts) >= 2:
+                            if parts[1] == symbol:
+                                symbol_match = True
+                        
+                        if symbol_match:
                             # local_settings содержит модель именно для этого символа → используем её
                             current_settings.ml_model_path = local_model_path
+                        else:
+                            # Модель не соответствует символу - очищаем путь, чтобы найти правильную модель
+                            current_settings.ml_model_path = None
             except Exception:
                 # В случае любой ошибки просто продолжаем с current_settings как есть
                 pass
             
             # ВАЖНО: Обновляем ml_model_path для текущего символа, если ML стратегия включена
             # Это необходимо, потому что ml_model_path зависит от символа
-            # НО: если модель уже установлена (например, MultiSymbolManager), не переопределяем её
-            if current_settings.enable_ml_strategy and not current_settings.ml_model_path:
+            # НО: если модель уже установлена и соответствует символу (например, MultiSymbolManager), не переопределяем её
+            # Проверяем, что текущая модель соответствует символу
+            model_needs_update = True
+            if current_settings.ml_model_path:
+                model_filename = Path(current_settings.ml_model_path).name
+                if "_" in model_filename:
+                    parts = model_filename.replace(".pkl", "").split("_")
+                    # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_15 или quad_ensemble_SYMBOL_15
+                    if len(parts) >= 3 and (parts[0] == "triple" or parts[0] == "quad"):
+                        if parts[2] == symbol:
+                            model_needs_update = False  # Модель соответствует символу
+                    # Для обычных моделей: формат ensemble_SYMBOL_15, rf_SYMBOL_15
+                    elif len(parts) >= 2:
+                        if parts[1] == symbol:
+                            model_needs_update = False  # Модель соответствует символу
+            
+            if current_settings.enable_ml_strategy and model_needs_update:
                 try:
                     models_dir = Path(__file__).parent.parent / "ml_models"
                     if models_dir.exists():
