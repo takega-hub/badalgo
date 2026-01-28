@@ -85,7 +85,8 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
         # КРИТИЧНО: Устанавливаем observation_space ДО super().__init__()
         # чтобы он был правильного размера когда reset() вызывает _get_observation()
         # ВАЖНО: _count_mtf_features() использует self.df_1h и self.df_4h, которые уже установлены выше
-        mtf_features_count = self._count_mtf_features()
+        # Подсчитываем MTF признаки: 6 (1h) + 5 (4h) + 3 (trend alignment) + 1 (conflict) + 4 (zones) = 19
+        mtf_features_count = 19 if self.mtf_enabled else 19  # Всегда 19, даже если MTF отключен (заполняются нулями)
         base_features_count = len(obs_cols) + 12  # Базовые признаки + состояние позиции
         n_features = base_features_count + mtf_features_count
         
@@ -150,23 +151,24 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
         self.short_config['min_rsi_norm'] = MTF_SHORT_RSI_MIN  # 0.40 (было 0.35)
         self.short_config['max_rsi_norm'] = MTF_SHORT_RSI_MAX  # 0.85 (без изменений)
         
-        # 5. ADX ФИЛЬТРЫ - сила тренда
-        self.min_adx = MTF_MIN_ADX  # 27.0 (было 25.0)
+        # 5. ADX ФИЛЬТРЫ - сила тренда (ОБНОВЛЕНО на основе анализа V18)
+        self.min_adx = MTF_MIN_ADX  # 30.0 (было 27.0) - УСИЛЕНО для лучших входов
+        self.mtf_min_adx_short = MTF_MIN_ADX_SHORT  # 25.0 (было 22.0) - УСИЛЕНО для SHORT
         
-        # Сохраняем оптимизированные параметры для использования в фильтрах
-        self.mtf_min_absolute_atr = MTF_MIN_ABSOLUTE_ATR  # 120.0 (было 85.0)
-        self.mtf_atr_percent_min = MTF_ATR_PERCENT_MIN  # 0.0015 (было 0.001)
-        self.mtf_min_absolute_volume = MTF_MIN_ABSOLUTE_VOLUME  # 900.0 (было 800.0)
-        self.mtf_min_volume_spike = MTF_MIN_VOLUME_SPIKE  # 1.6 (было 1.5)
-        self.mtf_min_volume_spike_short = MTF_MIN_VOLUME_SPIKE_SHORT  # 1.3 (было 1.1)
-        self.mtf_min_adx_short = MTF_MIN_ADX_SHORT  # 22.0 (было 20.0)
+        # Сохраняем оптимизированные параметры для использования в фильтрах (ОБНОВЛЕНО)
+        self.mtf_min_absolute_atr = MTF_MIN_ABSOLUTE_ATR  # 150.0 (было 120.0) - УСИЛЕНО
+        self.mtf_atr_percent_min = MTF_ATR_PERCENT_MIN  # 0.0015 (без изменений)
+        self.mtf_min_absolute_volume = MTF_MIN_ABSOLUTE_VOLUME  # 900.0 (без изменений)
+        self.mtf_min_volume_spike = MTF_MIN_VOLUME_SPIKE  # 1.8 (было 1.6) - УСИЛЕНО
+        self.mtf_min_volume_spike_short = MTF_MIN_VOLUME_SPIKE_SHORT  # 1.3 (без изменений)
         
-        print(f"[MTF_OPTIMIZED] Применены оптимизированные параметры:")
+        print(f"[MTF_OPTIMIZED] Применены оптимизированные параметры (V18 анализ):")
         print(f"  volatility_ratio: {self.min_volatility_ratio} - {self.max_volatility_ratio}")
         print(f"  trailing: активация={self.trailing_activation_atr}, расстояние={self.trailing_distance_atr}")
         print(f"  TP уровни: {self.tp_levels}")
         print(f"  ATR минимум: {self.mtf_min_absolute_atr}, процент: {self.mtf_atr_percent_min}")
         print(f"  Volume минимум: {self.mtf_min_absolute_volume}, всплеск: {self.mtf_min_volume_spike}/{self.mtf_min_volume_spike_short}")
+        print(f"  ADX: LONG={self.min_adx}, SHORT={self.mtf_min_adx_short}")
         
         # Проверка синхронизации данных
         if self.df_1h is not None:
@@ -193,10 +195,19 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
                 return
         
         # Проверяем перекрытие временных диапазонов
-        df_start = pd.to_datetime(self.df['timestamp'].iloc[0])
-        df_end = pd.to_datetime(self.df['timestamp'].iloc[-1])
-        df_1h_start = pd.to_datetime(self.df_1h['timestamp'].iloc[0])
-        df_1h_end = pd.to_datetime(self.df_1h['timestamp'].iloc[-1])
+        # Правильно конвертируем timestamp (может быть в миллисекундах)
+        def safe_to_datetime(ts):
+            if isinstance(ts, (int, float)) and ts > 1e12:
+                return pd.to_datetime(ts, unit='ms')
+            elif isinstance(ts, (int, float)):
+                return pd.to_datetime(ts, unit='s')
+            else:
+                return pd.to_datetime(ts)
+        
+        df_start = safe_to_datetime(self.df['timestamp'].iloc[0])
+        df_end = safe_to_datetime(self.df['timestamp'].iloc[-1])
+        df_1h_start = safe_to_datetime(self.df_1h['timestamp'].iloc[0])
+        df_1h_end = safe_to_datetime(self.df_1h['timestamp'].iloc[-1])
         
         if df_start < df_1h_start or df_end > df_1h_end:
             print(f"⚠️ [MTF] Предупреждение: временные диапазоны не полностью перекрываются")
@@ -231,14 +242,31 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             return 0
         
         # Преобразуем timestamp в нужный формат
-        if isinstance(timestamp, str):
-            timestamp = pd.to_datetime(timestamp)
-        elif not isinstance(timestamp, pd.Timestamp):
-            timestamp = pd.to_datetime(timestamp)
+        def safe_to_datetime(ts):
+            if isinstance(ts, pd.Timestamp):
+                return ts
+            elif isinstance(ts, str):
+                return pd.to_datetime(ts)
+            elif isinstance(ts, (int, float)) and ts > 1e12:
+                return pd.to_datetime(ts, unit='ms')
+            elif isinstance(ts, (int, float)):
+                return pd.to_datetime(ts, unit='s')
+            else:
+                return pd.to_datetime(ts)
+        
+        timestamp = safe_to_datetime(timestamp)
         
         # Ищем ближайший индекс
         if time_col:
-            time_series = pd.to_datetime(df_target[time_col])
+            # Правильно конвертируем timestamp колонку
+            if df_target[time_col].dtype in ['int64', 'float64', 'int32', 'float32']:
+                first_val = df_target[time_col].iloc[0] if len(df_target) > 0 else 0
+                if first_val > 1e12:  # Миллисекунды
+                    time_series = pd.to_datetime(df_target[time_col], unit='ms')
+                else:  # Секунды
+                    time_series = pd.to_datetime(df_target[time_col], unit='s')
+            else:
+                time_series = pd.to_datetime(df_target[time_col])
         else:
             time_series = df_target.index
         
@@ -261,22 +289,15 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
         return result
     
     def _count_mtf_features(self) -> int:
-        """Подсчитывает количество MTF признаков"""
-        count = 0
+        """
+        Подсчитывает количество MTF признаков
         
-        if self.df_1h is not None:
-            count += 6  # ADX, +DI, -DI, RSI, ATR%, Volume для 1h
-        
-        if self.df_4h is not None:
-            count += 5  # ADX, +DI, -DI, RSI, Price ratio для 4h
-        
-        # Дополнительные MTF признаки (всегда добавляются, даже если MTF отключен)
-        count += 3  # Trend alignment (alignment_15m_1h, alignment_1h_4h, overall_alignment)
-        count += 1  # Conflict score
-        count += 4  # Zone analysis (zone_15m, zone_1h, zone_4h, zone_consensus)
-        
-        # ИТОГО: 6 + 5 + 3 + 1 + 4 = 19 признаков (если оба ТФ включены)
-        return count
+        ВАЖНО: Всегда возвращает 19 признаков, даже если MTF отключен.
+        Это гарантирует постоянный размер observation_space.
+        """
+        # Всегда возвращаем фиксированное количество признаков:
+        # 6 (1h) + 5 (4h) + 3 (trend alignment) + 1 (conflict) + 4 (zones) = 19
+        return 19
     
     def _get_mtf_features(self, current_idx: int) -> np.ndarray:
         """
@@ -292,8 +313,20 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
         
         try:
             # Получаем текущее время из основного датафрейма
+            # Правильно конвертируем timestamp (может быть в миллисекундах)
+            def safe_to_datetime(ts):
+                if isinstance(ts, pd.Timestamp):
+                    return ts
+                elif isinstance(ts, (int, float)) and ts > 1e12:
+                    return pd.to_datetime(ts, unit='ms')
+                elif isinstance(ts, (int, float)):
+                    return pd.to_datetime(ts, unit='s')
+                else:
+                    return pd.to_datetime(ts)
+            
             if 'timestamp' in self.df.columns:
-                current_time = pd.to_datetime(self.df.iloc[current_idx]['timestamp'])
+                ts_val = self.df.iloc[current_idx]['timestamp']
+                current_time = safe_to_datetime(ts_val)
             elif isinstance(self.df.index, pd.DatetimeIndex):
                 current_time = self.df.index[current_idx]
             else:
@@ -509,17 +542,16 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             expected_size = self.observation_space.shape[0]
             actual_size = len(observation)
             if expected_size != actual_size:
-                print(f"⚠️ [MTF] Несоответствие размеров наблюдения!")
-                print(f"   Ожидается: {expected_size}, Получено: {actual_size}")
-                print(f"   Базовое: {len(base_observation)}, MTF: {len(mtf_features)}")
-                # Исправляем observation_space если размер не совпадает
+                # Автоматически исправляем observation_space
                 self.observation_space = spaces.Box(
                     low=-np.inf,
                     high=np.inf,
                     shape=(actual_size,),
                     dtype=np.float32
                 )
-                print(f"   ✅ observation_space обновлен до размера {actual_size}")
+                # Выводим информативное сообщение только один раз
+                print(f"ℹ️ [MTF] Размер observation_space скорректирован: {expected_size} → {actual_size}")
+                print(f"   (Базовое: {len(base_observation)}, MTF: {len(mtf_features)})")
             self._obs_size_checked = True
         
         if np.any(np.isnan(observation)):
@@ -709,9 +741,20 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             return True
         
         try:
-            # Получаем текущее время
+            # Получаем текущее время (правильно конвертируем timestamp)
+            def safe_to_datetime(ts):
+                if isinstance(ts, pd.Timestamp):
+                    return ts
+                elif isinstance(ts, (int, float)) and ts > 1e12:
+                    return pd.to_datetime(ts, unit='ms')
+                elif isinstance(ts, (int, float)):
+                    return pd.to_datetime(ts, unit='s')
+                else:
+                    return pd.to_datetime(ts)
+            
             if 'timestamp' in self.df.columns:
-                current_time = pd.to_datetime(self.df.iloc[self.current_step]['timestamp'])
+                ts_val = self.df.iloc[self.current_step]['timestamp']
+                current_time = safe_to_datetime(ts_val)
             elif isinstance(self.df.index, pd.DatetimeIndex):
                 current_time = self.df.index[self.current_step]
             else:
@@ -769,12 +812,14 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             
             if action_type == 'LONG':
                 # Для LONG: восходящий тренд на 1h (используем оптимизированный min_adx - 5 для 1h)
-                min_adx_1h = max(22.0, self.min_adx - 5.0)  # 27 - 5 = 22 (совместимо)
-                return (adx_1h >= min_adx_1h and plus_di_1h > minus_di_1h * 1.1)
+                # Новое значение: 30.0 - 5 = 25.0 (более строгий фильтр)
+                min_adx_1h = max(25.0, self.min_adx - 5.0)  # 30 - 5 = 25 (усилено)
+                return (adx_1h >= min_adx_1h and plus_di_1h > minus_di_1h * 1.15)  # Усилено: 1.1 → 1.15
             else:  # SHORT
                 # Для SHORT: нисходящий тренд на 1h (используем оптимизированный min_adx_short - 2 для 1h)
-                min_adx_1h_short = max(20.0, self.mtf_min_adx_short - 2.0)  # 22 - 2 = 20 (совместимо)
-                return (adx_1h >= min_adx_1h_short and minus_di_1h > plus_di_1h * 1.1)
+                # Новое значение: 25.0 - 2 = 23.0 (более строгий фильтр)
+                min_adx_1h_short = max(23.0, self.mtf_min_adx_short - 2.0)  # 25 - 2 = 23 (усилено)
+                return (adx_1h >= min_adx_1h_short and minus_di_1h > plus_di_1h * 1.15)  # Усилено: 1.1 → 1.15
                 
         except Exception as e:
             return True  # При ошибке пропускаем
@@ -813,7 +858,7 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
     
     def _check_trend_conflict(self, timestamp: pd.Timestamp, action_type: str) -> bool:
         """
-        Проверка конфликта трендов между ТФ
+        УСИЛЕННАЯ проверка конфликта трендов между ТФ
         
         Args:
             timestamp: Временная метка
@@ -842,14 +887,50 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             minus_di_1h = float(row_1h.get('minus_di', 25))
             plus_di_4h = float(row_4h.get('plus_di', 25))
             minus_di_4h = float(row_4h.get('minus_di', 25))
+            adx_1h = float(row_1h.get('adx', 0))
+            adx_4h = float(row_4h.get('adx', 0))
             
-            # Конфликт: 4h тренд против 1h тренда
+            # УСИЛЕННАЯ ПРОВЕРКА: конфликт если:
+            # 1. Оба ТФ против входа (базовый случай)
+            # 2. Один ТФ против входа И другой нейтрален (слабый сигнал)
+            # 3. Оба ТФ нейтральны (нет четкого направления)
+            
             if action_type == 'LONG':
-                # Конфликт: 4h нисходящий И 1h тоже нисходящий (оба против LONG)
-                return (minus_di_4h > plus_di_4h and minus_di_1h > plus_di_1h)
+                # 1h против LONG
+                trend_1h_against = minus_di_1h > plus_di_1h * 1.05  # Усилено: требуется явное превосходство
+                # 4h против LONG
+                trend_4h_against = minus_di_4h > plus_di_4h * 1.05
+                # 1h нейтрален (нет четкого направления)
+                trend_1h_neutral = abs(plus_di_1h - minus_di_1h) < 2.0 or adx_1h < 20
+                # 4h нейтрален
+                trend_4h_neutral = abs(plus_di_4h - minus_di_4h) < 2.0 or adx_4h < 20
+                
+                # Конфликт если:
+                # - Оба против
+                # - Один против И другой нейтрален
+                # - Оба нейтральны (нет четкого направления для LONG)
+                return (trend_1h_against and trend_4h_against) or \
+                       (trend_1h_against and trend_4h_neutral) or \
+                       (trend_4h_against and trend_1h_neutral) or \
+                       (trend_1h_neutral and trend_4h_neutral)
             else:  # SHORT
-                # Конфликт: 4h восходящий И 1h тоже восходящий (оба против SHORT)
-                return (plus_di_4h > minus_di_4h and plus_di_1h > minus_di_1h)
+                # 1h против SHORT
+                trend_1h_against = plus_di_1h > minus_di_1h * 1.05
+                # 4h против SHORT
+                trend_4h_against = plus_di_4h > minus_di_4h * 1.05
+                # 1h нейтрален
+                trend_1h_neutral = abs(plus_di_1h - minus_di_1h) < 2.0 or adx_1h < 20
+                # 4h нейтрален
+                trend_4h_neutral = abs(plus_di_4h - minus_di_4h) < 2.0 or adx_4h < 20
+                
+                # Конфликт если:
+                # - Оба против
+                # - Один против И другой нейтрален
+                # - Оба нейтральны (нет четкого направления для SHORT)
+                return (trend_1h_against and trend_4h_against) or \
+                       (trend_1h_against and trend_4h_neutral) or \
+                       (trend_4h_against and trend_1h_neutral) or \
+                       (trend_1h_neutral and trend_4h_neutral)
                 
         except Exception as e:
             return False  # При ошибке не считаем конфликтом

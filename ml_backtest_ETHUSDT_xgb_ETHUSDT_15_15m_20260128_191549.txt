@@ -1,0 +1,58 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: xgb_ETHUSDT_15_15m
+Symbol: ETHUSDT
+Date: 2026-01-28 19:15:49
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $991.97
+  Total PnL: $-8.03 (-0.80%)
+  Max Drawdown: $25.40 (2.54%)
+
+TRADE STATISTICS:
+  Total Trades: 4
+  Winning Trades: 2
+  Losing Trades: 2
+  Win Rate: 50.00%
+  Profit Factor: 0.68
+  Sharpe Ratio: -2.47
+
+TRADE DETAILS:
+  Average Win: $8.69
+  Average Loss: $-12.70
+  Best Trade: $16.60
+  Worst Trade: $-14.01
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2025-12-31 18:15:00 @ $2980.85 (SHORT)
+    Exit: 2026-01-07 18:15:00 @ $3150.29 (TIME_LIMIT)
+    PnL: $-11.39 (-56.84%)
+    Confidence: 90.42%
+    Reason: ml_SHORT_сила_очень_сильное_90%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-07 19:45:00 @ $3143.83 (SHORT)
+    Exit: 2026-01-14 19:45:00 @ $3366.22 (TIME_LIMIT)
+    PnL: $-14.01 (-70.74%)
+    Confidence: 82.19%
+    Reason: ml_SHORT_сила_сильное_82%_TP_2.50%_SL_1.00%
+
+  Trade #3:
+    Entry: 2026-01-15 04:15:00 @ $3298.59 (SHORT)
+    Exit: 2026-01-22 04:15:00 @ $3017.22 (TIME_LIMIT)
+    PnL: $16.60 (+85.30%)
+    Confidence: 87.87%
+    Reason: ml_SHORT_сила_сильное_87%_TP_2.50%_SL_1.00%
+
+  Trade #4:
+    Entry: 2026-01-22 09:00:00 @ $3008.94 (SHORT)
+    Exit: 2026-01-28 16:00:00 @ $2996.93 (END_OF_BACKTEST)
+    PnL: $0.77 (+3.99%)
+    Confidence: 85.91%
+    Reason: ml_SHORT_сила_сильное_85%_TP_2.50%_SL_1.00%

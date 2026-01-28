@@ -221,10 +221,30 @@ def train_mtf_model():
                 continue
             
             # Находим время разделения
-            split_time = pd.to_datetime(df_15m.iloc[train_size]['timestamp'] if 'timestamp' in df_15m.columns else df_15m.index[train_size])
+            # Правильно конвертируем timestamp (может быть в миллисекундах)
+            def safe_to_datetime(ts):
+                if isinstance(ts, pd.Timestamp):
+                    return ts
+                elif isinstance(ts, (int, float)) and ts > 1e12:
+                    return pd.to_datetime(ts, unit='ms')
+                elif isinstance(ts, (int, float)):
+                    return pd.to_datetime(ts, unit='s')
+                else:
+                    return pd.to_datetime(ts)
+            
+            split_ts = df_15m.iloc[train_size]['timestamp'] if 'timestamp' in df_15m.columns else df_15m.index[train_size]
+            split_time = safe_to_datetime(split_ts)
             
             # Разделяем по времени
-            df[time_col] = pd.to_datetime(df[time_col])
+            # Правильно конвертируем timestamp колонку
+            if df[time_col].dtype in ['int64', 'float64', 'int32', 'float32']:
+                first_val = df[time_col].iloc[0] if len(df) > 0 else 0
+                if first_val > 1e12:  # Миллисекунды
+                    df[time_col] = pd.to_datetime(df[time_col], unit='ms')
+                else:  # Секунды
+                    df[time_col] = pd.to_datetime(df[time_col], unit='s')
+            else:
+                df[time_col] = pd.to_datetime(df[time_col])
             train_mask = df[time_col] <= split_time
             test_mask = df[time_col] > split_time
             

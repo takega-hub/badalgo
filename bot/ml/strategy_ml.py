@@ -77,6 +77,13 @@ class MLStrategy:
         self.confidence_history = []
         self.max_history_size = 100
         
+        # История последних сигналов для предотвращения противоречивых сигналов
+        # Хранит последние N сигналов: [(timestamp, action, confidence), ...]
+        self.signal_history = []
+        self.max_signal_history = 20  # Храним последние 20 сигналов
+        self.min_bars_between_opposite_signals = 4  # Минимум баров между противоположными сигналами
+        self.min_confidence_difference = 0.15  # Минимальная разница уверенности между LONG и SHORT (15%)
+        
         # Загружаем модель
         self.model_data = self._load_model()
         self.model = self.model_data["model"]
@@ -484,49 +491,36 @@ class MLStrategy:
                 if np.isnan(hold_prob) or not np.isfinite(hold_prob):
                     hold_prob = 0.0
                 
-                # УЛУЧШЕНИЕ ДЛЯ АНСАМБЛЕЙ: Используем относительную уверенность
-                # Для ансамблей вероятности распределяются более равномерно, поэтому
-                # используем разницу между LONG/SHORT и HOLD вместо абсолютной уверенности
+                # УЛУЧШЕННАЯ ЛОГИКА ДЛЯ АНСАМБЛЕЙ: Требуем более высокую уверенность и разницу между LONG/SHORT
+                # Повышаем минимальный порог для ансамблей (было 0.1%, теперь 0.3%)
+                ensemble_absolute_min = 0.003  # Минимальная абсолютная уверенность 0.3% (повышено для фильтрации слабых сигналов)
                 
-                # ДЛЯ АНСАМБЛЕЙ: Если LONG или SHORT выше минимального порога (0.1%) и выше другого,
-                # принимаем сигнал ДАЖЕ ЕСЛИ HOLD выше обоих (это нормально для ансамблей)
-                # Используем очень низкий порог (0.1%) чтобы не игнорировать слабые сигналы от ансамблей
-                ensemble_absolute_min = 0.001  # Минимальная абсолютная уверенность 0.1% (очень низкий для максимального количества сигналов)
+                # Вычисляем разницу между LONG и SHORT
+                prob_diff = abs(long_prob - short_prob)
                 
-                # Определяем предсказание: выбираем LONG или SHORT если они выше минимума и выше другого
-                # Игнорируем HOLD для ансамблей, так как он часто доминирует из-за распределения вероятностей
-                if long_prob >= ensemble_absolute_min and long_prob > short_prob:
-                    # LONG выше SHORT и выше минимума - принимаем LONG
+                # Определяем предсказание: выбираем LONG или SHORT только если:
+                # 1. Вероятность выше минимума
+                # 2. Разница между LONG и SHORT достаточна (минимум min_confidence_difference)
+                # 3. Вероятность выше противоположной
+                if long_prob >= ensemble_absolute_min and long_prob > short_prob and prob_diff >= self.min_confidence_difference:
+                    # LONG выше SHORT, выше минимума и разница достаточна - принимаем LONG
                     prediction = 1  # LONG
-                    # Используем реальную вероятность LONG, но увеличиваем на основе относительной разницы
-                    # НО не превышаем саму вероятность long_prob
-                    relative_confidence = (long_prob - short_prob) / (short_prob + 1e-10) if short_prob > 0 else long_prob
-                    # Проверяем на NaN
-                    if np.isnan(relative_confidence) or not np.isfinite(relative_confidence):
-                        relative_confidence = 0.0
-                    # Увеличиваем уверенность, но не более чем до long_prob (реальная вероятность)
-                    # Используем более консервативный множитель
-                    confidence = min(long_prob * (1 + relative_confidence * 0.5), long_prob)
+                    # Используем реальную вероятность LONG, но учитываем разницу
+                    # Чем больше разница, тем выше уверенность (но не превышаем long_prob)
+                    confidence = min(long_prob * (1 + prob_diff * 0.3), long_prob)
                     # Проверяем результат на NaN
                     if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = long_prob
-                elif short_prob >= ensemble_absolute_min and short_prob > long_prob:
-                    # SHORT выше LONG и выше минимума - принимаем SHORT
+                elif short_prob >= ensemble_absolute_min and short_prob > long_prob and prob_diff >= self.min_confidence_difference:
+                    # SHORT выше LONG, выше минимума и разница достаточна - принимаем SHORT
                     prediction = -1  # SHORT
-                    # Используем реальную вероятность SHORT, но увеличиваем на основе относительной разницы
-                    # НО не превышаем саму вероятность short_prob
-                    relative_confidence = (short_prob - long_prob) / (long_prob + 1e-10) if long_prob > 0 else short_prob
-                    # Проверяем на NaN
-                    if np.isnan(relative_confidence) or not np.isfinite(relative_confidence):
-                        relative_confidence = 0.0
-                    # Увеличиваем уверенность, но не более чем до short_prob (реальная вероятность)
-                    # Используем более консервативный множитель
-                    confidence = min(short_prob * (1 + relative_confidence * 0.5), short_prob)
+                    # Используем реальную вероятность SHORT, но учитываем разницу
+                    confidence = min(short_prob * (1 + prob_diff * 0.3), short_prob)
                     # Проверяем результат на NaN
                     if np.isnan(confidence) or not np.isfinite(confidence):
                         confidence = short_prob
                 else:
-                    # HOLD - либо LONG и SHORT ниже минимума, либо они равны
+                    # HOLD - либо LONG и SHORT ниже минимума, либо разница недостаточна
                     prediction = 0
                     confidence = hold_prob
                 
@@ -711,14 +705,14 @@ class MLStrategy:
             profit_pct = int(target_profit_pct_margin)
             
             # Проверяем минимальную силу сигнала (только для LONG/SHORT, не для HOLD)
-            # Для ансамблей используем очень мягкие пороги - НЕ ИГНОРИРУЕМ СЛАБЫЕ СИГНАЛЫ
+            # Повышаем пороги для фильтрации слабых сигналов
             if self.is_ensemble:
-                # Для ансамблей почти полностью отключаем проверку min_strength
-                # Используем очень низкий порог (0.1-0.5%) чтобы не блокировать слабые сигналы
+                # Для ансамблей используем более высокие пороги для избирательности
+                # Минимум 0.5% для волатильных, 0.7% для стабильных символов
                 if is_volatile_symbol:
-                    min_strength = 0.001  # 0.1% для волатильных символов (почти отключен)
+                    min_strength = 0.005  # 0.5% для волатильных символов (повышено с 0.1%)
                 else:
-                    min_strength = 0.005  # 0.5% для стабильных символов (почти отключен)
+                    min_strength = 0.007  # 0.7% для стабильных символов (повышено с 0.5%)
             else:
                 # Для одиночных моделей используем стандартные пороги
                 if is_volatile_symbol:
@@ -729,6 +723,57 @@ class MLStrategy:
             if prediction != 0 and confidence < min_strength:
                 # Сигнал не проходит минимальный порог силы - возвращаем HOLD
                 return Signal(row.name, Action.HOLD, f"ml_сила_слишком_слабая_{strength}_{confidence_pct}%_мин_{int(min_strength*100)}%", current_price)
+            
+            # НОВЫЙ ФИЛЬТР: Проверяем историю сигналов для предотвращения противоречивых сигналов
+            if prediction != 0:
+                # Проверяем, был ли недавно противоположный сигнал
+                opposite_action = Action.SHORT if prediction == 1 else Action.LONG
+                # Проверяем последние N сигналов с конца списка
+                recent_opposite_count = 0
+                for i in range(min(self.min_bars_between_opposite_signals, len(self.signal_history))):
+                    idx = len(self.signal_history) - 1 - i
+                    if idx >= 0:
+                        sig = self.signal_history[idx]
+                        if sig[1] == opposite_action:
+                            recent_opposite_count += 1
+                
+                if recent_opposite_count > 0:
+                    # Был недавно противоположный сигнал - требуем более высокую уверенность для смены направления
+                    # Увеличиваем требуемую уверенность на 30-50% для смены направления
+                    stability_multiplier = 1.3 if is_volatile_symbol else 1.5
+                    required_confidence = min_strength * stability_multiplier
+                    
+                    if confidence < required_confidence:
+                        return Signal(
+                            row.name, 
+                            Action.HOLD, 
+                            f"ml_противоречивый_сигнал_{strength}_{confidence_pct}%_требуется_{int(required_confidence*100)}%_после_{opposite_action.value}", 
+                            current_price
+                        )
+                
+                # Проверяем, был ли недавно такой же сигнал (избегаем дублирования)
+                same_action = Action.LONG if prediction == 1 else Action.SHORT
+                recent_same_count = 0
+                for i in range(min(2, len(self.signal_history))):
+                    idx = len(self.signal_history) - 1 - i
+                    if idx >= 0:
+                        sig = self.signal_history[idx]
+                        if sig[1] == same_action:
+                            recent_same_count += 1
+                
+                if recent_same_count > 0:
+                    # Был недавно такой же сигнал - требуем более высокую уверенность для повторного входа
+                    # Увеличиваем требуемую уверенность на 20% для повторного входа
+                    repeat_multiplier = 1.2
+                    required_confidence = min_strength * repeat_multiplier
+                    
+                    if confidence < required_confidence:
+                        return Signal(
+                            row.name, 
+                            Action.HOLD, 
+                            f"ml_дублирующий_сигнал_{strength}_{confidence_pct}%_требуется_{int(required_confidence*100)}%", 
+                            current_price
+                        )
             
             # === Подготовка данных для дополнительной фильтрации ===
             
@@ -1002,28 +1047,27 @@ class MLStrategy:
             # Возвращаем только LONG, SHORT или HOLD
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
-                # Для ансамблей почти полностью отключаем проверку confidence_threshold
-                # НЕ ИГНОРИРУЕМ СЛАБЫЕ СИГНАЛЫ ОТ АНСАМБЛЕЙ
+                # Повышаем пороги для ансамблей для избирательности
                 if self.is_ensemble:
-                    # Для ансамблей используем очень низкий порог (0.1-0.5% от стандартного) для максимального количества сигналов
-                    threshold_mult = 0.001 if is_volatile_symbol else 0.005  # 0.1-0.5% от стандартного
-                    # Для ансамблей также снижаем dynamic_threshold до минимума
-                    dynamic_threshold = self.confidence_threshold * 0.01  # 1% от стандартного (очень низкий, почти отключен)
+                    # Для ансамблей используем более высокие пороги (20-30% от стандартного) вместо 0.1-0.5%
+                    threshold_mult = 0.20 if is_volatile_symbol else 0.30  # 20-30% от стандартного (повышено)
+                    # Для ансамблей также повышаем dynamic_threshold
+                    dynamic_threshold = self.confidence_threshold * 0.30  # 30% от стандартного (повышено с 1%)
                 else:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
                 
                 effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
-                # Для ансамблей effective_threshold очень низкий (0.1-0.5%), поэтому слабые сигналы НЕ блокируются
+                # Для ансамблей effective_threshold теперь выше, что фильтрует слабые сигналы
                 if confidence < effective_threshold:
-                    # Модель не уверена - HOLD (для ансамблей это почти никогда не срабатывает)
-                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
+                    # Модель не уверена - HOLD
+                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%_мин_{int(effective_threshold*100)}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Для ансамблей делаем фильтр стабильности очень мягким - НЕ БЛОКИРУЕМ СЛАБЫЕ СИГНАЛЫ
+                # Повышаем пороги для ансамблей для предотвращения частой смены направления
                 if self.stability_filter and has_position == Bias.SHORT:
                     if self.is_ensemble:
-                        stability_threshold = 0.001  # Для ансамблей почти полностью отключен (0.1%)
+                        stability_threshold = max(self.confidence_threshold * 0.40, 0.25)  # Повышено с 0.1% до 25-40%
                     elif is_volatile_symbol:
                         stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
                     else:
@@ -1039,6 +1083,12 @@ class MLStrategy:
                         return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                 # Сигнал LONG
                 reason = f"ml_LONG_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%"
+                
+                # Обновляем историю сигналов
+                signal_action = Action.LONG
+                self.signal_history.append((row.name, signal_action, confidence))
+                if len(self.signal_history) > self.max_signal_history:
+                    self.signal_history.pop(0)
                 
                 # Собираем информацию о показателях для ML
                 indicators_info = {
@@ -1061,28 +1111,27 @@ class MLStrategy:
                 return Signal(row.name, Action.LONG, reason, current_price, indicators_info=indicators_info)
             
             elif prediction == -1:  # SHORT
-                # Для ансамблей почти полностью отключаем проверку confidence_threshold
-                # НЕ ИГНОРИРУЕМ СЛАБЫЕ СИГНАЛЫ ОТ АНСАМБЛЕЙ
+                # Повышаем пороги для ансамблей для избирательности
                 if self.is_ensemble:
-                    # Для ансамблей используем очень низкий порог (0.1-0.5% от стандартного) для максимального количества сигналов
-                    threshold_mult = 0.001 if is_volatile_symbol else 0.005  # 0.1-0.5% от стандартного
-                    # Для ансамблей также снижаем dynamic_threshold до минимума
-                    dynamic_threshold = self.confidence_threshold * 0.01  # 1% от стандартного (очень низкий, почти отключен)
+                    # Для ансамблей используем более высокие пороги (20-30% от стандартного) вместо 0.1-0.5%
+                    threshold_mult = 0.20 if is_volatile_symbol else 0.30  # 20-30% от стандартного (повышено)
+                    # Для ансамблей также повышаем dynamic_threshold
+                    dynamic_threshold = self.confidence_threshold * 0.30  # 30% от стандартного (повышено с 1%)
                 else:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
                 
                 effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
-                # Для ансамблей effective_threshold очень низкий (0.1-0.5%), поэтому слабые сигналы НЕ блокируются
+                # Для ансамблей effective_threshold теперь выше, что фильтрует слабые сигналы
                 if confidence < effective_threshold:
-                    # Модель не уверена - HOLD (для ансамблей это почти никогда не срабатывает)
-                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%", current_price)
+                    # Модель не уверена - HOLD
+                    return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%_мин_{int(effective_threshold*100)}%", current_price)
                 
                 # Фильтр стабильности: если есть позиция в противоположном направлении, требуем более высокую уверенность
-                # Для ансамблей делаем фильтр стабильности очень мягким - НЕ БЛОКИРУЕМ СЛАБЫЕ СИГНАЛЫ
+                # Повышаем пороги для ансамблей для предотвращения частой смены направления
                 if self.stability_filter and has_position == Bias.LONG:
                     if self.is_ensemble:
-                        stability_threshold = 0.001  # Для ансамблей почти полностью отключен (0.1%)
+                        stability_threshold = max(self.confidence_threshold * 0.40, 0.25)  # Повышено с 0.1% до 25-40%
                     elif is_volatile_symbol:
                         stability_threshold = max(self.confidence_threshold * 0.70, 0.35)  # Очень мягкий порог
                     else:
@@ -1098,6 +1147,12 @@ class MLStrategy:
                         return Signal(row.name, Action.HOLD, f"ml_объем_не_подтверждает_{strength}_{confidence_pct}%", current_price)
                 # Сигнал SHORT
                 reason = f"ml_SHORT_сила_{strength}_{confidence_pct}%_TP_{tp_pct:.2f}%_SL_{sl_pct:.2f}%"
+                
+                # Обновляем историю сигналов
+                signal_action = Action.SHORT
+                self.signal_history.append((row.name, signal_action, confidence))
+                if len(self.signal_history) > self.max_signal_history:
+                    self.signal_history.pop(0)
                 
                 # Собираем информацию о показателях для ML
                 indicators_info = {
@@ -1121,6 +1176,11 @@ class MLStrategy:
             
             else:  # prediction == 0 (HOLD)
                 # Модель предсказывает нейтральное движение
+                # Обновляем историю сигналов (HOLD тоже записываем для отслеживания)
+                self.signal_history.append((row.name, Action.HOLD, confidence))
+                if len(self.signal_history) > self.max_signal_history:
+                    self.signal_history.pop(0)
+                
                 reason = f"ml_нейтрально_сила_{strength}_{confidence_pct}%_ожидание"
                 return Signal(row.name, Action.HOLD, reason, current_price)
         
@@ -1200,8 +1260,8 @@ def build_ml_signals(
                     "close": "last",
                     "volume": "sum",
                 }
-                df_1h = df_work.resample("60T").agg(ohlcv_agg).dropna()
-                df_4h = df_work.resample("240T").agg(ohlcv_agg).dropna()
+                df_1h = df_work.resample("60min").agg(ohlcv_agg).dropna()
+                df_4h = df_work.resample("240min").agg(ohlcv_agg).dropna()
 
                 higher_timeframes = {}
                 if df_1h is not None and not df_1h.empty:

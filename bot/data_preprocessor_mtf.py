@@ -80,8 +80,17 @@ def synchronize_mtf_data(df_list: List[pd.DataFrame]) -> List[pd.DataFrame]:
         print("⚠️ Не удалось определить временную колонку для 15m")
         return df_list
     
-    # Преобразуем в datetime
-    df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m])
+        # Преобразуем в datetime
+        # Проверяем формат: если это число (Unix timestamp в мс), используем unit='ms'
+        if df_15m[time_col_15m].dtype in ['int64', 'float64', 'int32', 'float32']:
+            # Проверяем, это миллисекунды или секунды
+            first_val = df_15m[time_col_15m].iloc[0]
+            if first_val > 1e12:  # Если больше 1e12, это миллисекунды
+                df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m], unit='ms')
+            else:  # Иначе секунды
+                df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m], unit='s')
+        else:
+            df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m])
     
     # Синхронизируем остальные таймфреймы
     synchronized = [df_15m]
@@ -105,7 +114,16 @@ def synchronize_mtf_data(df_list: List[pd.DataFrame]) -> List[pd.DataFrame]:
             continue
         
         # Преобразуем в datetime
-        df_tf[time_col_tf] = pd.to_datetime(df_tf[time_col_tf])
+        # Проверяем формат: если это число (Unix timestamp в мс), используем unit='ms'
+        if df_tf[time_col_tf].dtype in ['int64', 'float64', 'int32', 'float32']:
+            # Проверяем, это миллисекунды или секунды
+            first_val = df_tf[time_col_tf].iloc[0] if len(df_tf) > 0 else 0
+            if first_val > 1e12:  # Если больше 1e12, это миллисекунды
+                df_tf[time_col_tf] = pd.to_datetime(df_tf[time_col_tf], unit='ms')
+            else:  # Иначе секунды
+                df_tf[time_col_tf] = pd.to_datetime(df_tf[time_col_tf], unit='s')
+        else:
+            df_tf[time_col_tf] = pd.to_datetime(df_tf[time_col_tf])
         
         # Оставляем только данные в диапазоне основного датафрейма
         start_time = df_15m[time_col_15m].iloc[0]
@@ -143,7 +161,15 @@ def resample_to_timeframe(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
     # Определяем временную колонку
     if 'timestamp' in df_resampled.columns:
         time_col = 'timestamp'
-        df_resampled[time_col] = pd.to_datetime(df_resampled[time_col])
+        # Проверяем формат timestamp
+        if df_resampled[time_col].dtype in ['int64', 'float64', 'int32', 'float32']:
+            first_val = df_resampled[time_col].iloc[0] if len(df_resampled) > 0 else 0
+            if first_val > 1e12:  # Миллисекунды
+                df_resampled[time_col] = pd.to_datetime(df_resampled[time_col], unit='ms')
+            else:  # Секунды
+                df_resampled[time_col] = pd.to_datetime(df_resampled[time_col], unit='s')
+        else:
+            df_resampled[time_col] = pd.to_datetime(df_resampled[time_col])
         df_resampled = df_resampled.set_index(time_col)
     elif isinstance(df_resampled.index, pd.DatetimeIndex):
         pass  # Уже DatetimeIndex

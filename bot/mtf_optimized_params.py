@@ -1,86 +1,83 @@
 """
-Оптимизированные параметры для V18 MTF на основе анализа V17
-Применяются рекомендации из OPTIMIZATION_RECOMMENDATIONS.md
+Оптимизированные параметры для V18 MTF на основе анализа V18 MTF
+Обновлено после анализа результатов обучения V18 MTF (Win Rate 31.5%, отрицательный PnL)
 """
 
 # ============================================================================
-# ПРИОРИТЕТ 1: КРИТИЧНЫЕ ОПТИМИЗАЦИИ
+# ПРИОРИТЕТ 1: КРИТИЧНЫЕ ОПТИМИЗАЦИИ (на основе анализа V18 MTF)
 # ============================================================================
 
 # 1. VOLATILITY_RATIO - САМЫЙ ВАЖНЫЙ ПРИЗНАК!
-# Анализ: корреляция 0.4182, разница WR 52.8%
-# Прибыльные: 0.0029, Убыточные: 0.0019
-# Q1 (низкая) = WR 11.2%, Q4 (высокая) = WR 64.0%
-MTF_MIN_VOLATILITY_RATIO = 0.0025  # УВЕЛИЧЕНО с 0.0020 (ближе к прибыльным 0.0029)
-MTF_MAX_VOLATILITY_RATIO = 1.2     # УМЕНЬШЕНО с 1.5 (более строгий фильтр)
+# Анализ V18: Win Rate 31.5%, слишком много плохих входов
+MTF_MIN_VOLATILITY_RATIO = 0.0025  # Оставляем (уже оптимизировано)
+MTF_MAX_VOLATILITY_RATIO = 1.1     # УМЕНЬШЕНО с 1.2 (более строгий фильтр плохих входов)
 
-# 2. ТРЕЙЛИНГ-СТОП - главная проблема (52% закрытий по SL_TRAILING)
+# 2. ТРЕЙЛИНГ-СТОП - главная проблема V18 (52.3% закрытий по SL_TRAILING)
 # Анализ: слишком агрессивный трейлинг → преждевременные закрытия
-MTF_TRAILING_ACTIVATION_ATR = 0.40  # УВЕЛИЧЕНО с 0.35 (активация позже)
-MTF_TRAILING_DISTANCE_ATR = 0.50   # УВЕЛИЧЕНО с 0.45 (больше расстояние)
+MTF_TRAILING_ACTIVATION_ATR = 0.50  # УВЕЛИЧЕНО с 0.40 (активация позже, меньше преждевременных закрытий)
+MTF_TRAILING_DISTANCE_ATR = 0.60   # УВЕЛИЧЕНО с 0.50 (больше расстояние, меньше стоп-аутов)
 
 # ============================================================================
 # ПРИОРИТЕТ 2: ВАЖНЫЕ ОПТИМИЗАЦИИ
 # ============================================================================
 
-# 3. ATR - критически важен (корреляция 0.3484, разница WR 47.3%)
-# Анализ: прибыльные = 216.44, убыточные = 135.16
-# Q1 (низкий) = WR 13.6%, Q4 (высокий) = WR 60.9%
-MTF_MIN_ABSOLUTE_ATR = 120.0       # УВЕЛИЧЕНО с 85.0 (ближе к прибыльным)
-MTF_ATR_PERCENT_MIN = 0.0015       # УВЕЛИЧЕНО с 0.001 (более строгий)
+# 3. ATR - критически важен (много SL_INITIAL: 26.1%)
+# Анализ V18: нужно ужесточить фильтры для лучших входов
+MTF_MIN_ABSOLUTE_ATR = 150.0       # УВЕЛИЧЕНО с 120.0 (только сильные движения)
+MTF_ATR_PERCENT_MIN = 0.0015       # Оставляем
 
-# 4. VOLUME - очень важен (корреляция 0.3371, разница WR 49.3%)
-# Анализ: прибыльные = 1024.09, убыточные = 481.24
-# Q1 (низкий) = WR 14.3%, Q4 (высокий) = WR 63.5%
-MTF_MIN_ABSOLUTE_VOLUME = 900.0    # УВЕЛИЧЕНО с 800.0 (ближе к прибыльным 1024.09)
-MTF_MIN_VOLUME_SPIKE = 1.6         # УВЕЛИЧЕНО с 1.5 для LONG
-MTF_MIN_VOLUME_SPIKE_SHORT = 1.3   # УВЕЛИЧЕНО с 1.1 для SHORT
+# 4. VOLUME - очень важен (много VERY_BAD сделок: 28.9%)
+# Анализ V18: нужно больше объема для подтверждения входа
+MTF_MIN_ABSOLUTE_VOLUME = 900.0    # Оставляем
+MTF_MIN_VOLUME_SPIKE = 1.8         # УВЕЛИЧЕНО с 1.6 (более строгий фильтр для LONG)
+MTF_MIN_VOLUME_SPIKE_SHORT = 1.3   # Оставляем
 
-# 5. TP УРОВНИ - для лучшего RR
-# Анализ: средний RR = 1.69 (цель ≥1.8), только 10.3% закрываются по TP_LEVEL_1
-MTF_TP_LEVELS = [2.5, 3.0, 3.8]    # УВЕЛИЧЕНО: TP1 с 2.2 до 2.5
+# 5. TP УРОВНИ - для лучшего RR (средний RR 1.80, цель ≥1.8)
+# Анализ V18: только 6.9% закрываются по TP_LEVEL_1 - нужно увеличить TP1
+MTF_TP_LEVELS = [2.8, 3.2, 4.0]    # УВЕЛИЧЕНО: TP1 с 2.5 до 2.8 (лучший RR)
 
 # ============================================================================
 # ПРИОРИТЕТ 3: ОПЦИОНАЛЬНЫЕ ОПТИМИЗАЦИИ
 # ============================================================================
 
-# 6. RSI - влияет на WR (разница 48.5%)
-# Анализ: Q1 (низкий) = WR 41.7%, Q4 (высокий) = WR 67.6%
-MTF_LONG_RSI_MIN = 0.15            # Оставляем как есть
-MTF_LONG_RSI_MAX = 0.55            # УМЕНЬШЕНО с 0.60 (более строгий)
-MTF_SHORT_RSI_MIN = 0.40           # УВЕЛИЧЕНО с 0.35 (более строгий)
-MTF_SHORT_RSI_MAX = 0.85           # Оставляем как есть
+# 6. RSI - влияет на WR
+# Анализ V18: оставляем как есть (уже оптимизировано)
+MTF_LONG_RSI_MIN = 0.15            # Оставляем
+MTF_LONG_RSI_MAX = 0.55            # Оставляем
+MTF_SHORT_RSI_MIN = 0.40           # Оставляем
+MTF_SHORT_RSI_MAX = 0.85           # Оставляем
 
-# 7. ADX - сила тренда
-MTF_MIN_ADX = 27.0                 # УВЕЛИЧЕНО с 25.0 (более сильные тренды)
-MTF_MIN_ADX_SHORT = 22.0           # УВЕЛИЧЕНО с 20.0 для SHORT
+# 7. ADX - сила тренда (много плохих входов)
+# Анализ V18: нужно ужесточить - только сильные тренды
+MTF_MIN_ADX = 30.0                 # УВЕЛИЧЕНО с 27.0 (только очень сильные тренды)
+MTF_MIN_ADX_SHORT = 25.0           # УВЕЛИЧЕНО с 22.0 для SHORT (более строгий)
 
 # ============================================================================
 # СЛОВАРЬ ДЛЯ ПРИМЕНЕНИЯ
 # ============================================================================
 
 MTF_OPTIMIZED_PARAMS = {
-    # Приоритет 1
-    'min_volatility_ratio': MTF_MIN_VOLATILITY_RATIO,
-    'max_volatility_ratio': MTF_MAX_VOLATILITY_RATIO,
-    'trailing_activation_atr': MTF_TRAILING_ACTIVATION_ATR,
-    'trailing_distance_atr': MTF_TRAILING_DISTANCE_ATR,
+    # Приоритет 1 (критично - на основе анализа V18)
+    'min_volatility_ratio': MTF_MIN_VOLATILITY_RATIO,  # 0.0025
+    'max_volatility_ratio': MTF_MAX_VOLATILITY_RATIO,  # 1.1 (уменьшено с 1.2)
+    'trailing_activation_atr': MTF_TRAILING_ACTIVATION_ATR,  # 0.50 (увеличено с 0.40)
+    'trailing_distance_atr': MTF_TRAILING_DISTANCE_ATR,  # 0.60 (увеличено с 0.50)
     
-    # Приоритет 2
-    'min_absolute_atr': MTF_MIN_ABSOLUTE_ATR,
-    'atr_percent_min': MTF_ATR_PERCENT_MIN,
-    'min_absolute_volume': MTF_MIN_ABSOLUTE_VOLUME,
-    'min_volume_spike': MTF_MIN_VOLUME_SPIKE,
-    'min_volume_spike_short': MTF_MIN_VOLUME_SPIKE_SHORT,
-    'tp_levels': MTF_TP_LEVELS,
+    # Приоритет 2 (важно)
+    'min_absolute_atr': MTF_MIN_ABSOLUTE_ATR,  # 150.0 (увеличено с 120.0)
+    'atr_percent_min': MTF_ATR_PERCENT_MIN,  # 0.0015
+    'min_absolute_volume': MTF_MIN_ABSOLUTE_VOLUME,  # 900.0
+    'min_volume_spike': MTF_MIN_VOLUME_SPIKE,  # 1.8 (увеличено с 1.6)
+    'min_volume_spike_short': MTF_MIN_VOLUME_SPIKE_SHORT,  # 1.3
+    'tp_levels': MTF_TP_LEVELS,  # [2.8, 3.2, 4.0] (увеличено с [2.5, 3.0, 3.8])
     
-    # Приоритет 3
-    'long_rsi_min': MTF_LONG_RSI_MIN,
-    'long_rsi_max': MTF_LONG_RSI_MAX,
-    'short_rsi_min': MTF_SHORT_RSI_MIN,
-    'short_rsi_max': MTF_SHORT_RSI_MAX,
-    'min_adx': MTF_MIN_ADX,
-    'min_adx_short': MTF_MIN_ADX_SHORT,
+    # Приоритет 3 (опционально)
+    'long_rsi_min': MTF_LONG_RSI_MIN,  # 0.15
+    'long_rsi_max': MTF_LONG_RSI_MAX,  # 0.55
+    'short_rsi_min': MTF_SHORT_RSI_MIN,  # 0.40
+    'short_rsi_max': MTF_SHORT_RSI_MAX,  # 0.85
+    'min_adx': MTF_MIN_ADX,  # 30.0 (увеличено с 27.0)
+    'min_adx_short': MTF_MIN_ADX_SHORT,  # 25.0 (увеличено с 22.0)
 }
 
 # ============================================================================

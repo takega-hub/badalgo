@@ -4210,6 +4210,38 @@ def run_live_from_api(
             ml_actionable = []
             ml_filtered = []
             
+            # Вспомогательная функция для форматирования timestamp в MSK (для удобства пользователя)
+            def format_timestamp_msk(ts, include_timezone=True):
+                """Форматирует timestamp в MSK для логирования (удобно для пользователя)."""
+                try:
+                    import pytz
+                    msk_tz = pytz.timezone('Europe/Moscow')
+                    
+                    if ts is None:
+                        return "N/A"
+                    
+                    # Конвертируем в pandas Timestamp если нужно
+                    if not isinstance(ts, pd.Timestamp):
+                        ts = pd.Timestamp(ts)
+                    
+                    # Нормализуем в UTC
+                    if ts.tzinfo is None:
+                        ts = ts.tz_localize('UTC')
+                    else:
+                        ts = ts.tz_convert('UTC')
+                    
+                    # Конвертируем в MSK
+                    ts_msk = ts.tz_convert(msk_tz)
+                    ts_py = ts_msk.to_pydatetime()
+                    
+                    if include_timezone:
+                        return ts_py.strftime('%Y-%m-%d %H:%M:%S MSK')
+                    else:
+                        return ts_py.strftime('%Y-%m-%d %H:%M:%S')
+                except Exception as e:
+                    # В случае ошибки возвращаем строковое представление
+                    return str(ts)
+            
             # Вспомогательная функция для обновления timestamp сигнала, если он соответствует последней свече
             def update_signal_timestamp_if_fresh(ts_log, strategy_name: str = ""):
                 """Обновляет timestamp сигнала на текущее время, если он соответствует последней свече."""
@@ -4776,6 +4808,40 @@ def run_live_from_api(
                     )
                     # Обновляем статус после генерации
                     update_worker_status(symbol, current_status="Running", last_action="ML signals generated")
+                    
+                    # КРИТИЧЕСКИ ВАЖНО: Обновляем timestamp для всех ML сигналов, если они соответствуют последней свече
+                    # Это гарантирует, что свежие сигналы будут правильно обработаны
+                    if not df_ready.empty:
+                        last_candle_ts = df_ready.index[-1]
+                        if isinstance(last_candle_ts, pd.Timestamp):
+                            if last_candle_ts.tzinfo is None:
+                                last_candle_ts = last_candle_ts.tz_localize('UTC')
+                            else:
+                                last_candle_ts = last_candle_ts.tz_convert('UTC')
+                            last_candle_time = last_candle_ts.to_pydatetime()
+                            
+                            for sig in ml_signals:
+                                try:
+                                    signal_ts = sig.timestamp
+                                    if isinstance(signal_ts, pd.Timestamp):
+                                        if signal_ts.tzinfo is None:
+                                            signal_ts = signal_ts.tz_localize('UTC')
+                                        else:
+                                            signal_ts = signal_ts.tz_convert('UTC')
+                                        signal_ts_py = signal_ts.to_pydatetime()
+                                        
+                                        # Проверяем, соответствует ли timestamp сигнала последней свече (в пределах 1 минуты)
+                                        time_diff_seconds = abs((signal_ts_py - last_candle_time).total_seconds())
+                                        if time_diff_seconds <= 60:  # 1 минута
+                                            # Обновляем timestamp на текущее время UTC
+                                            updated_ts = datetime.now(timezone.utc)
+                                            sig.timestamp = pd.Timestamp(updated_ts).tz_localize('UTC')
+                                            ts_old_msk = format_timestamp_msk(signal_ts_py)
+                                            ts_new_msk = format_timestamp_msk(updated_ts)
+                                            _log(f"⚡ ML signal timestamp updated: {ts_old_msk} -> {ts_new_msk} (matched last candle)", symbol)
+                                except Exception as e:
+                                    _log(f"⚠️ Error updating ML signal timestamp: {e}", symbol)
+                    
                     ml_generated = [s for s in ml_signals if s.action in (MlAction.LONG, MlAction.SHORT)]
                     _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
                     
@@ -4821,6 +4887,232 @@ def run_live_from_api(
                     print(f"[live] ❌ Error generating ML signals: {e}")
                     import traceback
                     traceback.print_exc()
+            
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем timestamp для всех сигналов в all_signals, если они соответствуют последней свече
+            # Это гарантирует, что свежие сигналы будут правильно обработаны независимо от стратегии
+            if not df_ready.empty and all_signals:
+                last_candle_ts = df_ready.index[-1]
+                if isinstance(last_candle_ts, pd.Timestamp):
+                    if last_candle_ts.tzinfo is None:
+                        last_candle_ts = last_candle_ts.tz_localize('UTC')
+                    else:
+                        last_candle_ts = last_candle_ts.tz_convert('UTC')
+                    last_candle_time = last_candle_ts.to_pydatetime()
+                    
+                    for sig in all_signals:
+                        try:
+                            signal_ts = sig.timestamp
+                            if isinstance(signal_ts, pd.Timestamp):
+                                if signal_ts.tzinfo is None:
+                                    signal_ts = signal_ts.tz_localize('UTC')
+                                else:
+                                    signal_ts = signal_ts.tz_convert('UTC')
+                                signal_ts_py = signal_ts.to_pydatetime()
+                                
+                                # Проверяем, соответствует ли timestamp сигнала последней свече (в пределах 1 минуты)
+                                time_diff_seconds = abs((signal_ts_py - last_candle_time).total_seconds())
+                                if time_diff_seconds <= 60:  # 1 минута
+                                    # Обновляем timestamp на текущее время UTC
+                                    updated_ts = datetime.now(timezone.utc)
+                                    sig.timestamp = pd.Timestamp(updated_ts).tz_localize('UTC')
+                                    # Логируем только для ML сигналов, чтобы не засорять логи
+                                    if hasattr(sig, 'reason') and 'ml_' in sig.reason.lower():
+                                        _log(f"⚡ Signal timestamp updated: {signal_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} -> {updated_ts.strftime('%Y-%m-%d %H:%M:%S UTC')} (matched last candle)", symbol)
+                        except Exception as e:
+                            # Не логируем ошибки для каждого сигнала, чтобы не засорять логи
+                            pass
+            
+            # ========== ЗАГРУЗКА СВЕЖИХ СИГНАЛОВ ИЗ ИСТОРИИ (ПЕРЕД ДИАГНОСТИКОЙ) ==========
+            # ВАЖНО: Загружаем свежие сигналы из истории ПЕРЕД диагностикой и проверкой свежести,
+            # чтобы они были включены в all_signals и прошли все проверки
+            try:
+                from bot.web.history import get_signals
+                # Получаем последние сигналы из истории для текущего символа
+                recent_signals = get_signals(limit=20, symbol_filter=symbol)  # Увеличено с 10 до 20 для надежности
+                current_time_utc = datetime.now(timezone.utc)
+                
+                _log(f"🔍 Checking {len(recent_signals)} recent signals from history for {symbol}", symbol)
+                
+                for hist_signal in recent_signals:
+                    try:
+                        # Получаем timestamp из истории
+                        hist_timestamp_str = hist_signal.get("timestamp", "")
+                        if not hist_timestamp_str:
+                            continue
+                        
+                        # Парсим timestamp (ВАЖНО: в истории хранится MSK время)
+                        import pytz
+                        msk_tz = pytz.timezone('Europe/Moscow')
+                        try:
+                            if isinstance(hist_timestamp_str, str):
+                                # Пробуем разные форматы парсинга
+                                # Формат 1: ISO с таймзоной (2026-01-28T15:45:00+03:00)
+                                if 'T' in hist_timestamp_str:
+                                    # Используем fromisoformat для правильного парсинга таймзоны
+                                    hist_dt = datetime.fromisoformat(hist_timestamp_str.replace('Z', '+00:00'))
+                                    hist_ts = pd.Timestamp(hist_dt)
+                                else:
+                                    # Формат 2: Простая строка без T (2026-01-28 15:45:00)
+                                    hist_ts = pd.Timestamp(hist_timestamp_str)
+                            else:
+                                hist_ts = pd.Timestamp(hist_timestamp_str)
+                        except Exception as e:
+                            _log(f"⚠️ Error parsing timestamp '{hist_timestamp_str}': {e}", symbol)
+                            continue
+                        
+                        # Нормализуем timezone для timestamp из истории.
+                        # ВАЖНО: В истории все timestamp хранятся в московском времени (MSK, +03:00).
+                        # Поэтому:
+                        #   - если таймзона отсутствует (naive datetime), считаем, что это MSK и конвертируем в UTC;
+                        #   - если таймзона явно MSK или +03:00, просто конвертируем в UTC;
+                        #   - иначе (другая таймзона) также конвертируем в UTC.
+                        if hist_ts.tzinfo is None:
+                            # Исторические сигналы по умолчанию в MSK → локализуем как MSK и приводим к UTC
+                            hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
+                        elif str(hist_ts.tz) == 'Europe/Moscow' or '+03:00' in str(hist_ts.tz) or (hasattr(hist_ts.tz, 'utcoffset') and hist_ts.tz.utcoffset(None).total_seconds() == 10800):
+                            # MSK таймзона (+03:00 = 10800 секунд) → конвертируем в UTC
+                            hist_ts = hist_ts.tz_convert('UTC')
+                        else:
+                            # Другая таймзона → конвертируем в UTC
+                            hist_ts = hist_ts.tz_convert('UTC')
+                        
+                        hist_ts_py = hist_ts.to_pydatetime()
+                        
+                        # Проверяем возраст сигнала (должен быть не старше 15 минут)
+                        # ВАЖНО: Все сравнения выполняем в MSK для единообразия
+                        import pytz
+                        msk_tz = pytz.timezone('Europe/Moscow')
+                        hist_ts_msk = hist_ts.tz_convert(msk_tz).to_pydatetime()
+                        current_time_msk = current_time_utc.astimezone(msk_tz)
+                        age_from_now_minutes = abs((current_time_msk - hist_ts_msk).total_seconds()) / 60
+                        
+                        # ДИАГНОСТИКА: Логируем все сигналы из истории для отладки
+                        hist_action_check = hist_signal.get("action", "").upper()
+                        hist_reason_check = hist_signal.get("reason", "")
+                        if hist_action_check in ("LONG", "SHORT") and "ml_" in hist_reason_check.lower():
+                            _log(
+                                f"🔍 History signal check: {hist_action_check} @ ${hist_signal.get('price', 0):.2f} | "
+                                f"TS (raw): {hist_timestamp_str} | TS (UTC): {hist_ts_py} | "
+                                f"Age: {age_from_now_minutes:.1f} min | Fresh: {age_from_now_minutes <= 15}",
+                                symbol
+                            )
+                        
+                        if age_from_now_minutes <= 15:
+                                # Сигнал свежий (не старше 15 минут) - проверяем, что он actionable (не HOLD)
+                                hist_action = hist_signal.get("action", "").upper()
+                                if hist_action in ("LONG", "SHORT"):
+                                    hist_price = hist_signal.get("price", 0)
+                                    hist_reason = hist_signal.get("reason", "")
+                                    hist_signal_id = hist_signal.get("signal_id")
+                                    
+                                    # ВАЖНО: Проверяем, был ли этот сигнал уже исполнен
+                                    # Используем signal_id из истории для проверки
+                                    if hist_signal_id and hist_signal_id in processed_signals:
+                                        # Сигнал уже был исполнен - пропускаем
+                                        _log(
+                                            f"⏭️ Signal from history already processed: {hist_action} @ ${hist_price:.2f} "
+                                            f"({hist_reason}) [ID: {hist_signal_id}]",
+                                            symbol
+                                        )
+                                        continue
+                                    
+                                    # ВАЖНО: Создаем объект Signal из истории для исполнения
+                                    # Если сигнал свежий и еще не был исполнен, добавляем его в all_signals
+                                    from bot.strategy import Signal, Action as SignalAction
+                                    
+                                    # Преобразуем action из строки в enum
+                                    hist_action_enum = SignalAction.LONG if hist_action == "LONG" else SignalAction.SHORT
+                                    
+                                    # Создаем объект Signal с timestamp в UTC (для проверки свежести)
+                                    hist_signal_obj = Signal(
+                                        timestamp=pd.Timestamp(hist_ts_py).tz_localize('UTC'),
+                                        action=hist_action_enum,
+                                        reason=hist_reason,
+                                        price=hist_price,
+                                    )
+                                    
+                                    # Устанавливаем signal_id из истории, если он есть
+                                    if hist_signal_id:
+                                        hist_signal_obj.signal_id = hist_signal_id
+                                    
+                                    # Проверяем, есть ли уже такой сигнал в all_signals (по signal_id или по цене+reason)
+                                    signal_already_exists = False
+                                    for existing_sig in all_signals:
+                                        # Сначала проверяем по signal_id (самый надежный способ)
+                                        if hist_signal_id and hasattr(existing_sig, 'signal_id') and existing_sig.signal_id == hist_signal_id:
+                                            signal_already_exists = True
+                                            break
+                                        
+                                        # Если signal_id не совпадает, проверяем по цене и reason
+                                        price_match = abs(existing_sig.price - hist_price) / hist_price <= 0.001 if hist_price > 0 else False
+                                        # Сравниваем reason с учетом возможного префикса "zscore_"
+                                        sig_reason_normalized = existing_sig.reason.replace("zscore_", "") if existing_sig.reason.startswith("zscore_") else existing_sig.reason
+                                        hist_reason_normalized = hist_reason.replace("zscore_", "") if hist_reason.startswith("zscore_") else hist_reason
+                                        reason_match = sig_reason_normalized == hist_reason_normalized
+                                        
+                                        if price_match and reason_match:
+                                            signal_already_exists = True
+                                            # Обновляем timestamp существующего сигнала на время из истории (если оно свежее)
+                                            if not df_ready.empty:
+                                                last_candle_close = float(df_ready['close'].iloc[-1])
+                                                price_match_candle = abs(existing_sig.price - last_candle_close) / last_candle_close <= 0.001 if last_candle_close > 0 else False
+                                                
+                                                if price_match_candle:
+                                                    # Обновляем timestamp на время последней свечи
+                                                    last_candle_ts = df_ready.index[-1]
+                                                    if isinstance(last_candle_ts, pd.Timestamp):
+                                                        if last_candle_ts.tzinfo is None:
+                                                            last_candle_ts = last_candle_ts.tz_localize('UTC')
+                                                        else:
+                                                            last_candle_ts = last_candle_ts.tz_convert('UTC')
+                                                        existing_sig.timestamp = last_candle_ts
+                                                        _log(
+                                                            f"⚡ Updated signal timestamp from history: {hist_action} @ ${hist_price:.2f} - "
+                                                            f"timestamp updated to last candle time",
+                                                            symbol
+                                                        )
+                                            break
+                                    
+                                    # Если сигнала нет в all_signals, добавляем его
+                                    if not signal_already_exists:
+                                        # Определяем имя стратегии по reason и strategy_type
+                                        hist_strategy_type = hist_signal.get("strategy_type", "").lower()
+                                        
+                                        # ВАЖНО: Если reason не начинается с префикса стратегии, добавляем его
+                                        # Это нужно для правильной фильтрации сигналов по стратегиям
+                                        if hist_strategy_type == "zscore" and not hist_reason.startswith("zscore_"):
+                                            # Добавляем префикс "zscore_" к reason для совместимости с фильтрацией
+                                            hist_reason = f"zscore_{hist_reason}"
+                                            hist_signal_obj.reason = hist_reason
+                                        
+                                        # ВАЖНО: Добавляем сигнал в all_signals для правильной фильтрации по стратегиям
+                                        all_signals.append(hist_signal_obj)
+                                        
+                                        _log(
+                                            f"✅ Added fresh signal from history to all_signals: {hist_action} @ ${hist_price:.2f} "
+                                            f"({hist_reason}) - age: {age_from_now_minutes:.1f} min [ID: {hist_signal_id or 'none'}] "
+                                            f"[strategy: {hist_strategy_type}]",
+                                            symbol
+                                        )
+                                    
+                                    # Отмечаем, что найден свежий сигнал из истории
+                                    fresh_signals_available = True
+                                    _log(
+                                        f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_price:.2f} ({hist_reason}) - "
+                                        f"age: {age_from_now_minutes:.1f} min",
+                                        symbol
+                                    )
+                                    # НЕ делаем break - продолжаем проверять остальные сигналы для добавления всех свежих
+                    except Exception as e:
+                        # Пропускаем сигналы с ошибками парсинга
+                        _log(f"⚠️ Error processing signal from history: {e}", symbol)
+                        continue
+            except Exception as e:
+                # Если не удалось проверить историю - продолжаем с проверкой объектов
+                _log(f"⚠️ Error loading signals from history: {e}", symbol)
+                import traceback
+                traceback.print_exc()
+            # ========== КОНЕЦ ЗАГРУЗКИ СИГНАЛОВ ИЗ ИСТОРИИ ==========
             
             # ========== ДИАГНОСТИКА СИГНАЛОВ (НАЧАЛО) ==========
             # Логируем общее количество сгенерированных сигналов
@@ -4915,8 +5207,8 @@ def run_live_from_api(
             def is_signal_fresh(sig, df_ready):
                 """Проверяет, является ли сигнал свежим (не старше 15 минут от текущего времени или соответствует последней свече).
 
-                ВАЖНО: учитываем возможный сдвиг MSK/UTC. Сначала сравниваем «сырые» времена без таймзоны,
-                чтобы не ошибиться на 3 часа, если сигнал/свеча в MSK, а сервер в UTC.
+                ВАЖНО: Все сравнения выполняются в MSK для единообразия, независимо от часового пояса сервера.
+                Это гарантирует корректную работу с сигналами из истории, которые хранятся в MSK.
                 """
                 try:
                     if df_ready.empty:
@@ -4926,61 +5218,57 @@ def run_live_from_api(
                     if not isinstance(ts, (pd.Timestamp, datetime)):
                         return False
 
+                    import pytz
+                    msk_tz = pytz.timezone('Europe/Moscow')
+                    
                     # Приводим к pandas.Timestamp
                     signal_ts_raw = pd.Timestamp(ts)
 
-                    # --- 1) Быстрая проверка: совпадает ли время сигнала с последней свече без учета таймзоны ---
-                    last_candle_idx = df_ready.index[-1]
-                    last_candle_raw = pd.Timestamp(last_candle_idx)
-                    try:
-                        raw_diff = abs(
-                            (
-                                signal_ts_raw.to_pydatetime().replace(tzinfo=None)
-                                - last_candle_raw.to_pydatetime().replace(tzinfo=None)
-                            ).total_seconds()
-                        )
-                        if raw_diff <= 60:
-                            # Если времена совпадают в пределах минуты, считаем сигнал свежим
-                            # независимо от сдвига UTC/MSK
-                            return True
-                    except Exception:
-                        # Если сравнение «сырых» времен не удалось, просто продолжаем к UTC‑логике
-                        pass
-
-                    # --- 2) Нормализуем к UTC и применяем стандартные правила свежести ---
+                    # Нормализуем timestamp сигнала: сначала в UTC, затем в MSK
                     signal_ts = signal_ts_raw
                     if signal_ts.tzinfo is None:
                         # Если таймзона не указана, считаем, что это UTC (как в большинстве стратегий)
                         signal_ts = signal_ts.tz_localize("UTC")
                     else:
-                        # Конвертируем в UTC для сравнения
+                        # Конвертируем в UTC для нормализации
                         signal_ts = signal_ts.tz_convert("UTC")
+                    
+                    # Конвертируем в MSK для сравнения
+                    signal_ts_msk = signal_ts.tz_convert(msk_tz)
+                    signal_time_msk = signal_ts_msk.to_pydatetime()
 
-                    # Текущее время в UTC
+                    # Текущее время: сначала UTC, затем MSK
                     current_time_utc = datetime.now(timezone.utc)
+                    current_time_msk = current_time_utc.astimezone(msk_tz)
 
-                    # Время последней свечи в UTC
-                    last_candle_ts = last_candle_raw
+                    # Время последней свечи: сначала UTC, затем MSK
+                    last_candle_idx = df_ready.index[-1]
+                    last_candle_ts = pd.Timestamp(last_candle_idx)
                     if last_candle_ts.tzinfo is None:
                         last_candle_ts = last_candle_ts.tz_localize("UTC")
                     else:
                         last_candle_ts = last_candle_ts.tz_convert("UTC")
-
-                    signal_time = signal_ts.to_pydatetime()
-                    last_candle_time = last_candle_ts.to_pydatetime()
+                    
+                    # Конвертируем в MSK для сравнения
+                    last_candle_ts_msk = last_candle_ts.tz_convert(msk_tz)
+                    last_candle_time_msk = last_candle_ts_msk.to_pydatetime()
 
                     # 1) Если сигнал соответствует последней свече по времени (±60 секунд) — он свежий
-                    if abs((signal_time - last_candle_time).total_seconds()) <= 60:
+                    # Сравниваем в MSK
+                    if abs((signal_time_msk - last_candle_time_msk).total_seconds()) <= 60:
                         return True
 
                     # 2) Если сигнал не старше 15 минут относительно текущего времени — он свежий
-                    time_diff_from_now = abs((current_time_utc - signal_time).total_seconds())
+                    # Сравниваем в MSK
+                    time_diff_from_now = abs((current_time_msk - signal_time_msk).total_seconds())
                     if time_diff_from_now <= 900:  # 15 минут = 900 секунд
                         return True
 
                     return False
                 except Exception as e:
                     _log(f"⚠️ Error checking signal freshness: {e}", symbol)
+                    import traceback
+                    traceback.print_exc()
                     # В случае ошибки считаем сигнал не свежим для строгости
                     return False
             
@@ -5066,17 +5354,17 @@ def run_live_from_api(
                 ict_sig = ict_signals_only[-1]
             
             if main_sig:
-                ts_str = main_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(main_sig.timestamp, 'strftime') else str(main_sig.timestamp)
+                ts_str = format_timestamp_msk(main_sig.timestamp)
                 is_fresh = is_signal_fresh(main_sig, df_ready)
                 freshness_marker = "FRESH" if is_fresh else "NOT FRESH (will be filtered)"
                 print(f"[live]   🎯 Latest TREND/FLAT signal ({freshness_marker}): {main_sig.action.value} @ ${main_sig.price:.2f} ({main_sig.reason}) [{ts_str}]")
             if ml_sig:
-                ts_str = ml_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ml_sig.timestamp, 'strftime') else str(ml_sig.timestamp)
+                ts_str = format_timestamp_msk(ml_sig.timestamp)
                 is_fresh = is_signal_fresh(ml_sig, df_ready)
                 freshness_marker = "FRESH" if is_fresh else "NOT FRESH (will be filtered)"
                 print(f"[live]   🎯 Latest ML signal ({freshness_marker}): {ml_sig.action.value} @ ${ml_sig.price:.2f} ({ml_sig.reason}) [{ts_str}]")
             if smc_sig:
-                ts_str = smc_sig.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(smc_sig.timestamp, 'strftime') else str(smc_sig.timestamp)
+                ts_str = format_timestamp_msk(smc_sig.timestamp)
                 is_fresh = is_signal_fresh(smc_sig, df_ready)
                 freshness_marker = "FRESH" if is_fresh else "NOT FRESH (will be filtered)"
                 print(f"[live]   🎯 Latest SMC signal ({freshness_marker}): {smc_sig.action.value} @ ${smc_sig.price:.2f} ({smc_sig.reason}) [{ts_str}]")
@@ -5156,10 +5444,25 @@ def run_live_from_api(
                     
                     # ВАЖНО: Проверяем, является ли сигнал свежим после сохранения
                     # Если сигнал свежий - добавляем его в all_signals для немедленной обработки
+                    # Все сравнения выполняем в MSK для единообразия
                     is_fresh_after_save = False
                     try:
+                        import pytz
+                        msk_tz = pytz.timezone('Europe/Moscow')
                         current_time_utc = datetime.now(timezone.utc)
-                        age_from_now_minutes = abs((current_time_utc - ts_log).total_seconds()) / 60
+                        current_time_msk = current_time_utc.astimezone(msk_tz)
+                        
+                        # Конвертируем ts_log в MSK для сравнения
+                        if isinstance(ts_log, datetime):
+                            if ts_log.tzinfo is None:
+                                ts_log_utc = ts_log.replace(tzinfo=timezone.utc)
+                            else:
+                                ts_log_utc = ts_log.astimezone(timezone.utc)
+                            ts_log_msk = ts_log_utc.astimezone(msk_tz)
+                        else:
+                            ts_log_msk = pd.Timestamp(ts_log).tz_convert(msk_tz).to_pydatetime()
+                        
+                        age_from_now_minutes = abs((current_time_msk - ts_log_msk).total_seconds()) / 60
                         is_fresh_after_save = age_from_now_minutes <= 15
                     except:
                         pass
@@ -5189,7 +5492,8 @@ def run_live_from_api(
                             )
                     
                     freshness_marker = "⚡ FRESH" if is_fresh_after_save else "⏳ NOT FRESH"
-                    _log(f"💾 Saved latest {strategy_type_name} signal to history: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_log.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts_log, 'strftime') else ts_log}] {freshness_marker}", symbol)
+                    ts_str_msk = format_timestamp_msk(ts_log)
+                    _log(f"💾 Saved latest {strategy_type_name} signal to history: {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str_msk}] {freshness_marker}", symbol)
                 except Exception as e:
                     print(f"[live] ⚠️ Warning: Failed to save latest {strategy_type_name} signal to history: {e}")
                     import traceback
@@ -5784,17 +6088,22 @@ def run_live_from_api(
                 # Проверяем, есть ли свежие сигналы (в пределах 15 минут)
                 for name, s in available_signals:
                     if is_signal_fresh(s, df_ready):
-                        # Дополнительно проверяем возраст от текущего времени
+                        # Дополнительно проверяем возраст от текущего времени (в MSK для единообразия)
                         try:
+                            import pytz
+                            msk_tz = pytz.timezone('Europe/Moscow')
                             if isinstance(s.timestamp, pd.Timestamp):
                                 signal_ts = s.timestamp
                                 if signal_ts.tzinfo is None:
                                     signal_ts = signal_ts.tz_localize('UTC')
                                 else:
                                     signal_ts = signal_ts.tz_convert('UTC')
+                                # Конвертируем в MSK для сравнения
+                                signal_ts_msk = signal_ts.tz_convert(msk_tz).to_pydatetime()
                                 current_time_utc = datetime.now(timezone.utc)
+                                current_time_msk = current_time_utc.astimezone(msk_tz)
                                 age_from_now_minutes = abs(
-                                    (current_time_utc - signal_ts.to_pydatetime()).total_seconds()
+                                    (current_time_msk - signal_ts_msk).total_seconds()
                                 ) / 60
                                 if age_from_now_minutes <= 15:
                                     fresh_signals_available = True
@@ -5802,171 +6111,8 @@ def run_live_from_api(
                         except Exception:
                             pass
             
-            # ДОПОЛНИТЕЛЬНО: Проверяем свежесть сигналов из истории и обновляем timestamp в available_signals
-            # Это гарантирует, что сигналы, только что сохраненные в историю, будут обнаружены немедленно
-            # ВАЖНО: Проверяем историю всегда, а не только когда нет свежих сигналов из объектов
-            # Это позволяет обрабатывать свежие сигналы из истории даже если есть свежие сигналы из объектов
-            try:
-                from bot.web.history import get_signals
-                # Получаем последние сигналы из истории для текущего символа
-                recent_signals = get_signals(limit=10, symbol_filter=symbol)
-                current_time_utc = datetime.now(timezone.utc)
-                
-                for hist_signal in recent_signals:
-                    try:
-                        # Получаем timestamp из истории
-                        hist_timestamp_str = hist_signal.get("timestamp", "")
-                        if not hist_timestamp_str:
-                            continue
-                        
-                        # Парсим timestamp (ВАЖНО: в истории хранится MSK время)
-                        import pytz
-                        msk_tz = pytz.timezone('Europe/Moscow')
-                        if isinstance(hist_timestamp_str, str):
-                            # Пробуем разные форматы
-                            try:
-                                hist_ts = pd.Timestamp(hist_timestamp_str)
-                            except:
-                                continue
-                        else:
-                            hist_ts = pd.Timestamp(hist_timestamp_str)
-                        
-                        # Нормализуем timezone для timestamp из истории.
-                        # ВАЖНО: В истории все timestamp хранятся в московском времени (MSK, +03:00).
-                        # Поэтому:
-                        #   - если таймзона отсутствует (naive datetime), считаем, что это MSK и конвертируем в UTC;
-                        #   - если таймзона явно MSK, просто конвертируем в UTC;
-                        #   - иначе (другая таймзона) также конвертируем в UTC.
-                        if hist_ts.tzinfo is None:
-                            # Исторические сигналы по умолчанию в MSK → локализуем как MSK и приводим к UTC
-                            hist_ts = hist_ts.tz_localize(msk_tz).tz_convert('UTC')
-                        elif str(hist_ts.tz) == 'Europe/Moscow' or '+03:00' in str(hist_ts.tz):
-                            hist_ts = hist_ts.tz_convert('UTC')
-                        else:
-                            hist_ts = hist_ts.tz_convert('UTC')
-                        
-                        hist_ts_py = hist_ts.to_pydatetime()
-                        
-                        # Проверяем возраст сигнала (должен быть не старше 15 минут)
-                        # ВАЖНО: Учитываем, что timestamp в истории в MSK, поэтому конвертируем в UTC для сравнения
-                        age_from_now_minutes = abs((current_time_utc - hist_ts_py).total_seconds()) / 60
-                        
-                        if age_from_now_minutes <= 15:
-                                # Сигнал свежий (не старше 15 минут) - проверяем, что он actionable (не HOLD)
-                                hist_action = hist_signal.get("action", "").upper()
-                                if hist_action in ("LONG", "SHORT"):
-                                    hist_price = hist_signal.get("price", 0)
-                                    hist_reason = hist_signal.get("reason", "")
-                                    hist_signal_id = hist_signal.get("signal_id")
-                                    
-                                    # ВАЖНО: Проверяем, был ли этот сигнал уже исполнен
-                                    # Используем signal_id из истории для проверки
-                                    if hist_signal_id and hist_signal_id in processed_signals:
-                                        # Сигнал уже был исполнен - пропускаем
-                                        _log(
-                                            f"⏭️ Signal from history already processed: {hist_action} @ ${hist_price:.2f} "
-                                            f"({hist_reason}) [ID: {hist_signal_id}]",
-                                            symbol
-                                        )
-                                        continue
-                                    
-                                    # ВАЖНО: Создаем объект Signal из истории для исполнения
-                                    # Если сигнал свежий и еще не был исполнен, добавляем его в available_signals
-                                    from bot.strategy import Signal, Action as SignalAction
-                                    
-                                    # Преобразуем action из строки в enum
-                                    hist_action_enum = SignalAction.LONG if hist_action == "LONG" else SignalAction.SHORT
-                                    
-                                    # Создаем объект Signal с timestamp в UTC (для проверки свежести)
-                                    hist_signal_obj = Signal(
-                                        timestamp=pd.Timestamp(hist_ts_py).tz_localize('UTC'),
-                                        action=hist_action_enum,
-                                        reason=hist_reason,
-                                        price=hist_price,
-                                    )
-                                    
-                                    # Устанавливаем signal_id из истории, если он есть
-                                    if hist_signal_id:
-                                        hist_signal_obj.signal_id = hist_signal_id
-                                    
-                                    # Проверяем, есть ли уже такой сигнал в available_signals
-                                    # ВАЖНО: Сравниваем по signal_id если он есть, иначе по цене и reason
-                                    signal_already_exists = False
-                                    for name, sig in available_signals:
-                                        # Сначала проверяем по signal_id (самый надежный способ)
-                                        if hist_signal_id and hasattr(sig, 'signal_id') and sig.signal_id == hist_signal_id:
-                                            signal_already_exists = True
-                                            break
-                                        
-                                        # Если signal_id не совпадает, проверяем по цене и reason
-                                        price_match = abs(sig.price - hist_price) / hist_price <= 0.001 if hist_price > 0 else False
-                                        # Сравниваем reason с учетом возможного префикса "zscore_"
-                                        sig_reason_normalized = sig.reason.replace("zscore_", "") if sig.reason.startswith("zscore_") else sig.reason
-                                        hist_reason_normalized = hist_reason.replace("zscore_", "") if hist_reason.startswith("zscore_") else hist_reason
-                                        reason_match = sig_reason_normalized == hist_reason_normalized
-                                        
-                                        if price_match and reason_match:
-                                            signal_already_exists = True
-                                            # Обновляем timestamp существующего сигнала на время из истории
-                                            if not df_ready.empty:
-                                                last_candle_close = float(df_ready['close'].iloc[-1])
-                                                price_match_candle = abs(sig.price - last_candle_close) / last_candle_close <= 0.001 if last_candle_close > 0 else False
-                                                
-                                                if price_match_candle:
-                                                    # Обновляем timestamp на время последней свечи
-                                                    last_candle_ts = df_ready.index[-1]
-                                                    if isinstance(last_candle_ts, pd.Timestamp):
-                                                        if last_candle_ts.tzinfo is None:
-                                                            last_candle_ts = last_candle_ts.tz_localize('UTC')
-                                                        else:
-                                                            last_candle_ts = last_candle_ts.tz_convert('UTC')
-                                                        sig.timestamp = last_candle_ts
-                                                        _log(
-                                                            f"⚡ Updated signal timestamp from history: {name} {hist_action} @ ${hist_price:.2f} - "
-                                                            f"timestamp updated to last candle time",
-                                                            symbol
-                                                        )
-                                            break
-                                    
-                                    # Если сигнала нет в available_signals, добавляем его
-                                    if not signal_already_exists:
-                                        # Определяем имя стратегии по reason и strategy_type
-                                        hist_strategy_type = hist_signal.get("strategy_type", "").lower()
-                                        
-                                        # ВАЖНО: Если reason не начинается с префикса стратегии, добавляем его
-                                        # Это нужно для правильной фильтрации сигналов по стратегиям
-                                        if hist_strategy_type == "zscore" and not hist_reason.startswith("zscore_"):
-                                            # Добавляем префикс "zscore_" к reason для совместимости с фильтрацией
-                                            hist_reason = f"zscore_{hist_reason}"
-                                            hist_signal_obj.reason = hist_reason
-                                        
-                                        strategy_name = hist_strategy_type if hist_strategy_type else "unknown"
-                                        
-                                        # ВАЖНО: Добавляем сигнал в all_signals для правильной фильтрации по стратегиям
-                                        all_signals.append(hist_signal_obj)
-                                        available_signals.append((strategy_name, hist_signal_obj))
-                                        
-                                        _log(
-                                            f"✅ Added fresh signal from history to all_signals and available_signals: {hist_action} @ ${hist_price:.2f} "
-                                            f"({hist_reason}) - age: {age_from_now_minutes:.1f} min [ID: {hist_signal_id or 'none'}] "
-                                            f"[strategy: {hist_strategy_type}]",
-                                            symbol
-                                        )
-                                    
-                                    # Отмечаем, что найден свежий сигнал из истории
-                                    fresh_signals_available = True
-                                    _log(
-                                        f"⚡ Fresh signal detected from history: {hist_action} @ ${hist_price:.2f} ({hist_reason}) - "
-                                        f"age: {age_from_now_minutes:.1f} min",
-                                        symbol
-                                    )
-                                    break
-                    except Exception as e:
-                        # Пропускаем сигналы с ошибками парсинга
-                        continue
-            except Exception as e:
-                # Если не удалось проверить историю - продолжаем с проверкой объектов
-                pass
+            # ПРИМЕЧАНИЕ: Загрузка свежих сигналов из истории теперь выполняется ПЕРЕД диагностикой (строка ~4825)
+            # Это гарантирует, что свежие сигналы из истории будут включены в all_signals и пройдут все проверки
             
             # Если есть свежие сигналы - логируем для информации
             if fresh_signals_available:
@@ -6178,11 +6324,7 @@ def run_live_from_api(
                             fresh_available.sort(key=lambda x: get_timestamp_for_sort(x[1]))
                             sig = fresh_available[-1][1]
                             strategy_name = fresh_available[-1][0]
-                            ts_str = (
-                                sig.timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                                if hasattr(sig.timestamp, 'strftime')
-                                else str(sig.timestamp)
-                            )
+                            ts_str = format_timestamp_msk(sig.timestamp)
                             print(
                                 f"[live] ✅ Priority mode (no position): Selected {strategy_name.upper()} signal: "
                                 f"{sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}]"
@@ -6203,10 +6345,10 @@ def run_live_from_api(
                                     else:
                                         last_candle_ts = last_candle_ts.tz_convert('UTC')
                                     last_candle_time = last_candle_ts.to_pydatetime()
-                                    _log(f"   • Last candle timestamp: {last_candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}", symbol)
+                                    _log(f"   • Last candle timestamp: {format_timestamp_msk(last_candle_time)}", symbol)
                                     
                                     current_time_utc = datetime.now(timezone.utc)
-                                    _log(f"   • Current time UTC: {current_time_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}", symbol)
+                                    _log(f"   • Current time: {format_timestamp_msk(current_time_utc)}", symbol)
                                     _log(f"   • Time diff (current - last candle): {(current_time_utc - last_candle_time).total_seconds():.0f} seconds", symbol)
                             
                             # Логируем детали каждого сигнала
@@ -6248,7 +6390,7 @@ def run_live_from_api(
                                     fresh_status = "✅ FRESH" if is_fresh else "❌ NOT FRESH"
                                     _log(
                                         f"   • {name.upper()}: {s.action.value} @ ${s.price:.2f} | "
-                                        f"Signal TS: {signal_time.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                                        f"Signal TS: {format_timestamp_msk(signal_time)} | "
                                         f"Age: {age_minutes:.1f} min | "
                                         f"Diff from candle: {diff_from_candle:.0f}s" if diff_from_candle is not None else "N/A" + " | "
                                         f"{fresh_status}",

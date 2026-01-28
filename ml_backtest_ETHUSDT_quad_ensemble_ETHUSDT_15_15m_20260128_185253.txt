@@ -1,0 +1,107 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: quad_ensemble_ETHUSDT_15_15m
+Symbol: ETHUSDT
+Date: 2026-01-28 18:52:53
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $996.23
+  Total PnL: $-3.77 (-0.38%)
+  Max Drawdown: $21.04 (2.10%)
+
+TRADE STATISTICS:
+  Total Trades: 11
+  Winning Trades: 5
+  Losing Trades: 6
+  Win Rate: 45.45%
+  Profit Factor: 0.88
+  Sharpe Ratio: -0.56
+
+TRADE DETAILS:
+  Average Win: $5.71
+  Average Loss: $-5.39
+  Best Trade: $17.24
+  Worst Trade: $-12.99
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2025-12-31 17:45:00 @ $2974.60 (SHORT)
+    Exit: 2026-01-07 17:45:00 @ $3150.06 (TIME_LIMIT)
+    PnL: $-11.82 (-58.99%)
+    Confidence: 13.00%
+    Reason: ml_SHORT_сила_слабое_13%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-07 17:45:00 @ $3150.06 (SHORT)
+    Exit: 2026-01-09 20:00:00 @ $3085.51 (OPPOSITE_SIGNAL)
+    PnL: $4.03 (+20.49%)
+    Confidence: 12.40%
+    Reason: ml_SHORT_сила_слабое_12%_TP_2.50%_SL_1.00%
+
+  Trade #3:
+    Entry: 2026-01-09 20:00:00 @ $3085.51 (LONG)
+    Exit: 2026-01-09 20:15:00 @ $3081.93 (OPPOSITE_SIGNAL)
+    PnL: $-0.25 (-1.16%)
+    Confidence: 9.98%
+    Reason: ml_LONG_сила_слабое_9%_TP_2.50%_SL_1.00%
+
+  Trade #4:
+    Entry: 2026-01-09 20:15:00 @ $3081.93 (SHORT)
+    Exit: 2026-01-16 20:15:00 @ $3283.42 (TIME_LIMIT)
+    PnL: $-12.99 (-65.38%)
+    Confidence: 10.82%
+    Reason: ml_SHORT_сила_слабое_10%_TP_2.50%_SL_1.00%
+
+  Trade #5:
+    Entry: 2026-01-16 20:15:00 @ $3283.42 (SHORT)
+    Exit: 2026-01-20 19:00:00 @ $2993.85 (OPPOSITE_SIGNAL)
+    PnL: $17.24 (+88.19%)
+    Confidence: 11.25%
+    Reason: ml_SHORT_сила_слабое_11%_TP_2.50%_SL_1.00%
+
+  Trade #6:
+    Entry: 2026-01-20 19:00:00 @ $2993.85 (LONG)
+    Exit: 2026-01-20 19:45:00 @ $2995.03 (OPPOSITE_SIGNAL)
+    PnL: $0.05 (+0.39%)
+    Confidence: 9.73%
+    Reason: ml_LONG_сила_слабое_9%_TP_2.50%_SL_1.00%
+
+  Trade #7:
+    Entry: 2026-01-20 19:45:00 @ $2995.03 (SHORT)
+    Exit: 2026-01-21 17:30:00 @ $2896.21 (OPPOSITE_SIGNAL)
+    PnL: $6.55 (+32.99%)
+    Confidence: 10.04%
+    Reason: ml_SHORT_сила_слабое_10%_TP_2.50%_SL_1.00%
+
+  Trade #8:
+    Entry: 2026-01-21 17:30:00 @ $2896.21 (LONG)
+    Exit: 2026-01-21 18:15:00 @ $2906.17 (OPPOSITE_SIGNAL)
+    PnL: $0.67 (+3.44%)
+    Confidence: 9.77%
+    Reason: ml_LONG_сила_слабое_9%_TP_2.50%_SL_1.00%
+
+  Trade #9:
+    Entry: 2026-01-21 18:15:00 @ $2906.17 (SHORT)
+    Exit: 2026-01-23 09:30:00 @ $2922.53 (OPPOSITE_SIGNAL)
+    PnL: $-1.15 (-5.63%)
+    Confidence: 11.66%
+    Reason: ml_SHORT_сила_слабое_11%_TP_2.50%_SL_1.00%
+
+  Trade #10:
+    Entry: 2026-01-23 09:30:00 @ $2922.53 (LONG)
+    Exit: 2026-01-23 09:45:00 @ $2919.65 (OPPOSITE_SIGNAL)
+    PnL: $-0.22 (-0.99%)
+    Confidence: 9.77%
+    Reason: ml_LONG_сила_слабое_9%_TP_2.50%_SL_1.00%
+
+  Trade #11:
+    Entry: 2026-01-23 09:45:00 @ $2919.65 (SHORT)
+    Exit: 2026-01-28 15:45:00 @ $3004.80 (END_OF_BACKTEST)
+    PnL: $-5.87 (-29.16%)
+    Confidence: 9.93%
+    Reason: ml_SHORT_сила_слабое_9%_TP_2.50%_SL_1.00%
