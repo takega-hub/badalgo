@@ -415,46 +415,131 @@ def analyze_results(log_file):
     
     if os.path.exists(log_file):
         try:
-            df = pd.read_csv(log_file)
+            # Определяем имена колонок на основе формата лога
+            column_names = [
+                'step', 'type', 'entry', 'sl_initial', 'sl_current',
+                'tp_levels', 'exit', 'pnl_percent', 'net_worth',
+                'exit_reason', 'duration', 'trailing', 'tp_closed', 'partial_closes',
+                'trade_quality', 'rr_ratio'
+            ]
             
-            if len(df) > 1:
-                trades_df = df.iloc[1:].copy()
-                
+            # Читаем файл без заголовков (данные начинаются сразу)
+            df = pd.read_csv(log_file, names=column_names, header=None)
+            
+            # Пропускаем первую строку если она содержит заголовки
+            if len(df) > 0:
+                first_val = str(df.iloc[0]['step'])
+                if first_val == 'step' or first_val.startswith('step'):
+                    trades_df = df.iloc[1:].copy()
+                else:
+                    trades_df = df.copy()
+            else:
+                trades_df = df.copy()
+            
+            if len(trades_df) > 0:
                 print(f"Всего сделок: {len(trades_df)}")
                 
                 # Анализ PnL
                 def parse_pnl(pnl_str):
                     try:
+                        if pd.isna(pnl_str):
+                            return 0.0
                         if isinstance(pnl_str, str):
-                            return float(pnl_str.replace('%', '').strip())
+                            # Убираем % и пробелы
+                            cleaned = pnl_str.replace('%', '').strip()
+                            return float(cleaned)
                         return float(pnl_str)
                     except:
                         return 0.0
                 
-                trades_df['pnl_value'] = trades_df['pnl_percent'].apply(parse_pnl)
+                # Проверяем наличие колонки pnl_percent
+                if 'pnl_percent' in trades_df.columns:
+                    trades_df['pnl_value'] = trades_df['pnl_percent'].apply(parse_pnl)
+                else:
+                    # Пробуем найти колонку с PnL по позиции (обычно 8-я колонка)
+                    if len(trades_df.columns) >= 8:
+                        pnl_col = trades_df.columns[7]  # 8-я колонка (индекс 7)
+                        trades_df['pnl_value'] = trades_df[pnl_col].apply(parse_pnl)
+                        print(f"⚠️ Использована колонка '{pnl_col}' для PnL")
+                    else:
+                        print("❌ Не удалось найти колонку с PnL")
+                        return
                 
                 profitable = (trades_df['pnl_value'] > 0).sum()
                 losing = (trades_df['pnl_value'] < 0).sum()
+                breakeven = (trades_df['pnl_value'] == 0).sum()
                 win_rate = profitable / len(trades_df) * 100 if len(trades_df) > 0 else 0
                 avg_pnl = trades_df['pnl_value'].mean()
                 total_pnl = trades_df['pnl_value'].sum()
                 
-                print(f"Прибыльных: {profitable} ({win_rate:.1f}%)")
-                print(f"Убыточных: {losing}")
-                print(f"Средний PnL: {avg_pnl:.2f}%")
-                print(f"Общий PnL: {total_pnl:.2f}%")
+                print(f"\n📈 БАЗОВАЯ СТАТИСТИКА:")
+                print(f"  ✅ Прибыльных: {profitable} ({win_rate:.1f}%)")
+                print(f"  ❌ Убыточных: {losing} ({losing/len(trades_df)*100:.1f}%)")
+                if breakeven > 0:
+                    print(f"  ⚖️  Безубыточных: {breakeven} ({breakeven/len(trades_df)*100:.1f}%)")
+                print(f"  Средний PnL: {avg_pnl:.2f}%")
+                print(f"  Общий PnL: {total_pnl:.2f}%")
                 
                 # Анализ по типам позиций
-                if 'type' in trades_df.columns:
-                    long_trades = trades_df[trades_df['type'].str.contains('LONG', na=False)]
-                    short_trades = trades_df[trades_df['type'].str.contains('SHORT', na=False)]
+                type_col = 'type' if 'type' in trades_df.columns else trades_df.columns[1] if len(trades_df.columns) > 1 else None
+                if type_col:
+                    long_trades = trades_df[trades_df[type_col].astype(str).str.contains('LONG', na=False)]
+                    short_trades = trades_df[trades_df[type_col].astype(str).str.contains('SHORT', na=False)]
                     
-                    print(f"\n📊 Распределение по типам:")
+                    print(f"\n📊 РАСПРЕДЕЛЕНИЕ ПО ТИПАМ:")
                     print(f"  LONG: {len(long_trades)} ({len(long_trades)/len(trades_df)*100:.1f}%)")
+                    if len(long_trades) > 0:
+                        long_pnl = long_trades['pnl_value'].mean()
+                        long_wr = (long_trades['pnl_value'] > 0).sum() / len(long_trades) * 100
+                        print(f"    Win Rate: {long_wr:.1f}%, Средний PnL: {long_pnl:.2f}%")
+                    
                     print(f"  SHORT: {len(short_trades)} ({len(short_trades)/len(trades_df)*100:.1f}%)")
+                    if len(short_trades) > 0:
+                        short_pnl = short_trades['pnl_value'].mean()
+                        short_wr = (short_trades['pnl_value'] > 0).sum() / len(short_trades) * 100
+                        print(f"    Win Rate: {short_wr:.1f}%, Средний PnL: {short_pnl:.2f}%")
+                
+                # Анализ по причинам закрытия
+                exit_col = 'exit_reason' if 'exit_reason' in trades_df.columns else trades_df.columns[9] if len(trades_df.columns) > 9 else None
+                if exit_col:
+                    exit_reasons = trades_df[exit_col].value_counts()
+                    print(f"\n🚪 ПРИЧИНЫ ЗАКРЫТИЯ:")
+                    for reason, count in exit_reasons.head(10).items():
+                        reason_trades = trades_df[trades_df[exit_col] == reason]
+                        avg_pnl_reason = reason_trades['pnl_value'].mean()
+                        pct = count / len(trades_df) * 100
+                        print(f"  {reason}: {count} ({pct:.1f}%), Средний PnL: {avg_pnl_reason:.2f}%")
+                
+                # Анализ качества сделок
+                quality_col = 'trade_quality' if 'trade_quality' in trades_df.columns else trades_df.columns[14] if len(trades_df.columns) > 14 else None
+                if quality_col:
+                    quality_counts = trades_df[quality_col].value_counts()
+                    print(f"\n⭐ КАЧЕСТВО СДЕЛОК:")
+                    for quality, count in quality_counts.items():
+                        quality_trades = trades_df[trades_df[quality_col] == quality]
+                        avg_pnl_quality = quality_trades['pnl_value'].mean()
+                        pct = count / len(trades_df) * 100
+                        print(f"  {quality}: {count} ({pct:.1f}%), Средний PnL: {avg_pnl_quality:.2f}%")
+                
+                # Анализ RR
+                rr_col = 'rr_ratio' if 'rr_ratio' in trades_df.columns else trades_df.columns[15] if len(trades_df.columns) > 15 else None
+                if rr_col:
+                    try:
+                        trades_df['rr_value'] = pd.to_numeric(trades_df[rr_col], errors='coerce')
+                        avg_rr = trades_df['rr_value'].mean()
+                        median_rr = trades_df['rr_value'].median()
+                        print(f"\n📊 RR СТАТИСТИКА:")
+                        print(f"  Средний RR: {avg_rr:.2f}")
+                        print(f"  Медианный RR: {median_rr:.2f}")
+                    except:
+                        pass
+                
+                print(f"\n✅ Анализ завершен успешно!")
                 
         except Exception as e:
             print(f"❌ Ошибка анализа: {e}")
+            import traceback
+            traceback.print_exc()
     else:
         print(f"❌ Лог-файл не найден: {log_file}")
 

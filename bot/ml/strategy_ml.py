@@ -93,14 +93,23 @@ class MLStrategy:
                     expected_features = self.model.lstm_trainer.scaler.n_features_in_ if hasattr(self.model.lstm_trainer.scaler, 'n_features_in_') else None
                     if expected_features and self.feature_names:
                         # Используем первые expected_features фичей (как при обучении LSTM)
+                        # LSTM обычно использует первые N фичей (например, 50)
                         self.model.lstm_trainer.feature_names = self.feature_names[:expected_features]
-                        print(f"[ml_strategy] Restored LSTM feature_names: {len(self.model.lstm_trainer.feature_names)} features")
+                        if not hasattr(self, '_lstm_feature_names_restored'):
+                            print(f"[ml_strategy] Restored LSTM feature_names: {len(self.model.lstm_trainer.feature_names)} features")
+                            self._lstm_feature_names_restored = True
                     elif self.feature_names:
                         # Если не можем определить из scaler, используем все feature_names
                         self.model.lstm_trainer.feature_names = self.feature_names
+                        if not hasattr(self, '_lstm_feature_names_restored'):
+                            print(f"[ml_strategy] Restored LSTM feature_names: {len(self.model.lstm_trainer.feature_names)} features (from all features)")
+                            self._lstm_feature_names_restored = True
                 elif self.feature_names:
                     # Если scaler недоступен, используем все feature_names
                     self.model.lstm_trainer.feature_names = self.feature_names
+                    if not hasattr(self, '_lstm_feature_names_restored'):
+                        print(f"[ml_strategy] Restored LSTM feature_names: {len(self.model.lstm_trainer.feature_names)} features (scaler unavailable)")
+                        self._lstm_feature_names_restored = True
         
         # Инициализируем feature engineer
         self.feature_engineer = FeatureEngineer()

@@ -546,7 +546,25 @@ def run_ml_backtest(
     print(f"\n📈 Running backtest...")
     
     # Создаем словарь сигналов по времени для быстрого поиска
-    signals_dict = {s.timestamp: s for s in actionable_signals if s.timestamp in df_with_indicators.index}
+    # Используем ближайший сигнал к свече, а не точное совпадение
+    signals_dict = {}
+    for signal in actionable_signals:
+        # Ищем ближайшую свечу к timestamp сигнала
+        if signal.timestamp in df_with_indicators.index:
+            signals_dict[signal.timestamp] = signal
+        else:
+            # Если точного совпадения нет, ищем ближайшую свечу
+            time_diff = (df_with_indicators.index - signal.timestamp).abs()
+            nearest_idx = time_diff.idxmin()
+            nearest_time = df_with_indicators.index[df_with_indicators.index.get_loc(nearest_idx)]
+            # Используем сигнал только если он в пределах 1 свечи (15 минут для 15m интервала)
+            max_diff = pd.Timedelta(minutes=15)
+            if abs(nearest_time - signal.timestamp) <= max_diff:
+                # Если для этой свечи еще нет сигнала, добавляем
+                if nearest_time not in signals_dict:
+                    signals_dict[nearest_time] = signal
+    
+    print(f"📊 Signals matched to candles: {len(signals_dict)}/{len(actionable_signals)}")
     
     # Проходим по всем свечам
     for idx, row in df_with_indicators.iterrows():

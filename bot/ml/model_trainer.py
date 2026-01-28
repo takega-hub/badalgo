@@ -171,7 +171,10 @@ class TripleEnsemble:
         xgb_proba_reordered[:, 2] = xgb_proba[:, 2]  # LONG (2 -> 1)
         
         # Для LightGBM тоже нужно преобразовать
-        lgb_proba = self.lgb_model.predict_proba(X)
+        # Подавляем предупреждение о feature names (не критично для работы модели)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            lgb_proba = self.lgb_model.predict_proba(X)
         lgb_proba_reordered = np.zeros_like(rf_proba)
         lgb_proba_reordered[:, 0] = lgb_proba[:, 0]  # SHORT (0 -> -1)
         lgb_proba_reordered[:, 1] = lgb_proba[:, 1]  # HOLD (1 -> 0)
@@ -251,7 +254,10 @@ class QuadEnsemble:
         xgb_proba_reordered[:, 2] = xgb_proba[:, 2]  # LONG (2 -> 1)
         
         # Для LightGBM тоже нужно преобразовать
-        lgb_proba = self.lgb_model.predict_proba(X)
+        # Подавляем предупреждение о feature names (не критично для работы модели)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            lgb_proba = self.lgb_model.predict_proba(X)
         
         # Проверяем lgb_proba на NaN
         if np.any(np.isnan(lgb_proba)) or not np.all(np.isfinite(lgb_proba)):
@@ -351,7 +357,10 @@ class QuadEnsemble:
                             if len(feature_cols) >= expected_features:
                                 feature_cols = feature_cols[:expected_features]
                                 df_features = df_history[feature_cols].copy()
-                                print(f"[QuadEnsemble] Using first {expected_features} features (feature_names not set)")
+                                # Логируем только один раз
+                                if not hasattr(self, '_feature_names_warning_logged'):
+                                    print(f"[QuadEnsemble] Using first {expected_features} features (feature_names not set)")
+                                    self._feature_names_warning_logged = True
                                 
                                 # Проверяем на NaN
                                 if df_features.isna().any().any():
