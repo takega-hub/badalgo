@@ -22,9 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bot.config import load_settings, ApiSettings
 from bot.exchange.bybit_client import BybitClient
-from bot.ml.strategy_ml import build_ml_signals, MLStrategy
+from bot.ml.strategy_ml import MLStrategy
 from bot.indicators import prepare_with_indicators
-from bot.strategy import Action, Signal
+from bot.strategy import Action, Signal, Bias
 
 
 @dataclass
@@ -399,12 +399,13 @@ class MLBacktestSimulator:
                 max_drawdown = drawdown
                 max_drawdown_pct = drawdown_pct
         
-        # Sharpe Ratio (упрощенный)
+        # Sharpe Ratio (упрощенный, с защитой от почти-нулевой дисперсии)
+        sharpe_ratio = 0.0
         if len(self.trades) > 1:
-            returns = [t.pnl_pct / 100 for t in self.trades]
-            sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252) if np.std(returns) > 0 else 0.0
-        else:
-            sharpe_ratio = 0.0
+            returns = np.array([t.pnl_pct / 100 for t in self.trades], dtype=float)
+            std = float(np.std(returns))
+            if std >= 1e-9:
+                sharpe_ratio = float(np.mean(returns) / std * np.sqrt(252))
         
         # Статистика по сигналам
         long_signals = len([t for t in self.trades if t.action == Action.LONG])
@@ -564,35 +565,55 @@ def run_ml_backtest(
         traceback.print_exc()
         return None
     
-    # Генерируем ML сигналы
-    print(f"\n🤖 Generating ML signals...")
+    # Готовим MLStrategy и фичи (важно: has_position берём из симулятора, а не из прошлых сигналов)
+    print(f"\n🤖 Preparing ML strategy & features...")
     try:
-        ml_signals = build_ml_signals(
-            df_with_indicators,
+        strategy = MLStrategy(
             model_path=model_path,
             confidence_threshold=settings.ml_confidence_threshold,
             min_signal_strength=settings.ml_min_signal_strength,
             stability_filter=settings.ml_stability_filter,
-            leverage=leverage,
-            target_profit_pct_margin=settings.ml_target_profit_pct_margin,
-            max_loss_pct_margin=settings.ml_max_loss_pct_margin,
             min_signals_per_day=settings.ml_min_signals_per_day,
             max_signals_per_day=settings.ml_max_signals_per_day,
         )
-        
-        # Фильтруем только actionable сигналы (LONG/SHORT)
-        actionable_signals = [s for s in ml_signals if s.action in (Action.LONG, Action.SHORT)]
-        
-        print(f"✅ Generated {len(ml_signals)} total signals")
-        print(f"   Actionable (LONG/SHORT): {len(actionable_signals)}")
-        print(f"   LONG: {len([s for s in actionable_signals if s.action == Action.LONG])}")
-        print(f"   SHORT: {len([s for s in actionable_signals if s.action == Action.SHORT])}")
-        
-        if len(actionable_signals) == 0:
-            print(f"⚠️ No actionable signals generated. Cannot run backtest.")
-            return None
+
+        # ВАЖНО: Для MTF-моделей добавляем MTF-фичи независимо от глобального ML_MTF_ENABLED,
+        # чтобы сравнение разных моделей было корректным.
+        filename = Path(model_path).name.lower()
+        is_mtf_model = filename.endswith("_mtf.pkl")
+
+        df_work = df_with_indicators.copy()
+        if "timestamp" in df_work.columns:
+            df_work = df_work.set_index("timestamp")
+        if not isinstance(df_work.index, pd.DatetimeIndex):
+            try:
+                df_work.index = pd.to_datetime(df_work.index)
+            except Exception:
+                pass
+
+        # Базовые фичи 15m
+        df_with_features = strategy.feature_engineer.create_technical_indicators(df_work)
+
+        # MTF-фичи (1h/4h) только для *_mtf.pkl
+        if is_mtf_model:
+            try:
+                ohlcv_agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+                df_1h = df_work.resample("60min").agg(ohlcv_agg).dropna()
+                df_4h = df_work.resample("240min").agg(ohlcv_agg).dropna()
+                higher_timeframes = {}
+                if not df_1h.empty:
+                    higher_timeframes["60"] = df_1h
+                if not df_4h.empty:
+                    higher_timeframes["240"] = df_4h
+                if higher_timeframes:
+                    df_with_features = strategy.feature_engineer.add_mtf_features(df_with_features, higher_timeframes)
+                    print(f"✅ MTF features enabled for this model ({Path(model_path).name})")
+            except Exception as mtf_err:
+                print(f"⚠️  Failed to add MTF features for {Path(model_path).name}: {mtf_err}")
+        else:
+            print(f"ℹ️  15m-only features for this model ({Path(model_path).name})")
     except Exception as e:
-        print(f"❌ Error generating signals: {e}")
+        print(f"❌ Error preparing ML strategy/features: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -606,60 +627,81 @@ def run_ml_backtest(
     
     # Запускаем бэктест
     print(f"\n📈 Running backtest...")
-    
-    # Создаем словарь сигналов по времени для быстрого поиска
-    # Используем ближайший сигнал к свече, а не точное совпадение
-    signals_dict = {}
-    for signal in actionable_signals:
-        # Ищем ближайшую свечу к timestamp сигнала
-        if signal.timestamp in df_with_indicators.index:
-            signals_dict[signal.timestamp] = signal
-        else:
-            # Если точного совпадения нет, ищем ближайшую свечу
-            time_diff = (df_with_indicators.index - signal.timestamp).abs()
-            nearest_idx = time_diff.idxmin()
-            nearest_time = df_with_indicators.index[df_with_indicators.index.get_loc(nearest_idx)]
-            # Используем сигнал только если он в пределах 1 свечи (15 минут для 15m интервала)
-            max_diff = pd.Timedelta(minutes=15)
-            if abs(nearest_time - signal.timestamp) <= max_diff:
-                # Если для этой свечи еще нет сигнала, добавляем
-                if nearest_time not in signals_dict:
-                    signals_dict[nearest_time] = signal
-    
-    print(f"📊 Signals matched to candles: {len(signals_dict)}/{len(actionable_signals)}")
-    
-    # Проходим по всем свечам
-    for idx, row in df_with_indicators.iterrows():
+
+    total_signals = 0
+    long_signals = 0
+    short_signals = 0
+
+    # Проходим по всем свечам (используем df_with_features, чтобы generate_signal работал с готовыми фичами)
+    for idx, row in df_with_features.iterrows():
         current_time = idx
         current_price = row['close']
         high = row['high']
         low = row['low']
-        
-        # Получаем текущий сигнал (если есть)
-        current_signal_action = None
-        if current_time in signals_dict:
-            current_signal_action = signals_dict[current_time].action
-        
-        # Проверяем выход из позиции (включая противоположный сигнал и время)
+
+        # Проверяем выход из позиции (TP/SL/таймлимит) — всегда
         if simulator.current_position is not None:
+            # Генерируем сигнал, чтобы учитывать выход по противоположному сигналу
+            has_position = Bias.LONG if simulator.current_position.action == Action.LONG else Bias.SHORT
+            df_until_now = df_with_features.loc[:idx]
+            if len(df_until_now) >= 200:
+                signal = strategy.generate_signal(
+                    row=row,
+                    df=df_until_now,
+                    has_position=has_position,
+                    current_price=current_price,
+                    leverage=leverage,
+                    target_profit_pct_margin=settings.ml_target_profit_pct_margin,
+                    max_loss_pct_margin=settings.ml_max_loss_pct_margin,
+                )
+                if signal.action in (Action.LONG, Action.SHORT):
+                    total_signals += 1
+                    if signal.action == Action.LONG:
+                        long_signals += 1
+                    else:
+                        short_signals += 1
+                    opposite_signal = signal.action
+                else:
+                    opposite_signal = None
+            else:
+                opposite_signal = None
+
             simulator.check_exit(
                 current_time, 
                 current_price, 
                 high, 
                 low,
-                opposite_signal=current_signal_action,
+                opposite_signal=opposite_signal,
                 max_position_hours=168.0,  # 7 дней максимум
             )
-        
+
         # Проверяем вход в позицию
-        if simulator.current_position is None and current_time in signals_dict:
-            signal = signals_dict[current_time]
-            simulator.open_position(signal, current_time, symbol)
+        if simulator.current_position is None:
+            df_until_now = df_with_features.loc[:idx]
+            if len(df_until_now) >= 200:
+                signal = strategy.generate_signal(
+                    row=row,
+                    df=df_until_now,
+                    has_position=None,
+                    current_price=current_price,
+                    leverage=leverage,
+                    target_profit_pct_margin=settings.ml_target_profit_pct_margin,
+                    max_loss_pct_margin=settings.ml_max_loss_pct_margin,
+                )
+                if signal.action in (Action.LONG, Action.SHORT):
+                    total_signals += 1
+                    if signal.action == Action.LONG:
+                        long_signals += 1
+                    else:
+                        short_signals += 1
+                    simulator.open_position(signal, current_time, symbol)
+
+    print(f"📊 Generated actionable signals during simulation: {total_signals} (LONG={long_signals}, SHORT={short_signals})")
     
     # Закрываем все открытые позиции в конце
     if simulator.current_position is not None:
-        final_price = df_with_indicators['close'].iloc[-1]
-        final_time = df_with_indicators.index[-1]
+        final_price = df_with_features['close'].iloc[-1]
+        final_time = df_with_features.index[-1]
         simulator.close_all_positions(final_time, final_price)
     
     # Рассчитываем метрики

@@ -188,6 +188,8 @@ def main():
         use_atr_threshold=True,
         use_risk_adjusted=True,
         min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
+        max_hold_periods=48,  # Максимум 48 * 15m = 12 часов для качественных сделок (смягчено: было 32)
+        min_profit_pct=1.0,  # Минимальная прибыль 1.0% для классификации как LONG/SHORT (смягчено: было 1.5%)
     )
     
     target_dist = df_with_target['target'].value_counts().to_dict()
@@ -217,6 +219,27 @@ def main():
     print(f"   4. LSTM (this may take longer)")
     print()
     
+    # Вычисляем веса классов для фокуса на прибыльных сделках
+    from sklearn.utils.class_weight import compute_class_weight
+    import numpy as np
+    
+    classes = np.unique(y)
+    base_weights = compute_class_weight('balanced', classes=classes, y=y)
+    
+    # УСИЛЕННЫЕ веса для LONG/SHORT, МИНИМИЗИРУЕМ HOLD
+    class_weight_dict = {}
+    for i, cls in enumerate(classes):
+        if cls == 0:  # HOLD
+            class_weight_dict[cls] = base_weights[i] * 0.1  # Сильно уменьшаем вес HOLD
+        else:  # LONG or SHORT
+            class_weight_dict[cls] = base_weights[i] * 3.0  # Увеличиваем вес LONG/SHORT
+    
+    print(f"   📊 Class weights:")
+    for cls, weight in class_weight_dict.items():
+        label_name = "LONG" if cls == 1 else ("SHORT" if cls == -1 else "HOLD")
+        print(f"      {label_name}: {weight:.3f}")
+    print()
+    
     trainer = ModelTrainer()
     
     try:
@@ -236,6 +259,7 @@ def main():
             lstm_hidden_size=args.lstm_hidden_size,
             lstm_num_layers=args.lstm_num_layers,
             lstm_epochs=args.lstm_epochs,
+            class_weight=class_weight_dict,  # Улучшенные веса классов
         )
         
         print(f"\n📊 QuadEnsemble Results:")

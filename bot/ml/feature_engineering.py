@@ -739,6 +739,8 @@ class FeatureEngineer:
         use_atr_threshold: bool = True,  # Использовать динамический порог на основе ATR
         use_risk_adjusted: bool = True,  # Использовать риск-скорректированную целевую переменную
         min_risk_reward_ratio: float = 2.0,  # Минимальное соотношение риск/прибыль
+        max_hold_periods: int = 48,  # Максимальное время удержания (48 * 15m = 12 часов) для "качественных" сделок (смягчено: было 32)
+        min_profit_pct: float = 1.0,  # Минимальная прибыль в % для классификации как LONG/SHORT (смягчено: было 1.5%)
     ) -> pd.DataFrame:
         """
         Создает целевую переменную для обучения модели.
@@ -789,6 +791,36 @@ class FeatureEngineer:
         # Классифицируем: используем более низкий порог для получения большего количества сигналов
         df["target"] = 0
         
+        # Вычисляем время достижения цели (для фильтрации медленных сделок)
+        # Ищем первый момент когда цена достигла целевой прибыли min_profit_pct
+        time_to_target = np.full(len(df), max_hold_periods + 1, dtype=int)  # По умолчанию превышает лимит
+        
+        for i in range(len(df) - forward_periods):
+            current_price_val = current_price.iloc[i]
+            if pd.notna(current_price_val) and current_price_val > 0:
+                # Для LONG: ищем первый момент когда цена >= current_price * (1 + min_profit_pct/100)
+                target_price_long = current_price_val * (1 + min_profit_pct / 100)
+                # Для SHORT: ищем первый момент когда цена <= current_price * (1 - min_profit_pct/100)
+                target_price_short = current_price_val * (1 - min_profit_pct / 100)
+                
+                # Проверяем в окне до max_hold_periods
+                check_end = min(i + max_hold_periods, len(df))
+                for j in range(i + 1, check_end):
+                    if j < len(df):
+                        high_val = df["high"].iloc[j] if "high" in df.columns else current_price_val
+                        low_val = df["low"].iloc[j] if "low" in df.columns else current_price_val
+                        
+                        # LONG: цена достигла цели
+                        if pd.notna(high_val) and high_val >= target_price_long:
+                            time_to_target[i] = j - i
+                            break
+                        # SHORT: цена достигла цели
+                        if pd.notna(low_val) and low_val <= target_price_short:
+                            time_to_target[i] = j - i
+                            break
+        
+        df["time_to_target"] = time_to_target
+        
         # Вычисляем риск (максимальная просадка до достижения цели)
         if use_risk_adjusted and "atr" in df.columns:
             # Вычисляем максимальную просадку (drawdown) на пути к цели
@@ -824,20 +856,51 @@ class FeatureEngineer:
             df["max_drawdown_long"] = df["max_drawdown_long"].fillna(0)
             df["max_drawdown_short"] = df["max_drawdown_short"].fillna(0)
             
-            # Риск-скорректированная классификация
-            # Для LONG: прибыль должна быть >= min_risk_reward_ratio * риск
-            # Для SHORT: прибыль должна быть >= min_risk_reward_ratio * риск
-            # Заполняем NaN в price_change_pct нулями перед сравнением
+            # УЛУЧШЕННАЯ риск-скорректированная классификация
+            # Для LONG: прибыль должна быть >= min_risk_reward_ratio * риск И >= min_profit_pct
+            # Для SHORT: прибыль должна быть >= min_risk_reward_ratio * риск И >= min_profit_pct
+            # Также проверяем, что цель достигнута в разумные сроки (max_hold_periods)
             price_change_pct_safe = price_change_pct.fillna(0)
-            # Убеждаемся, что max_drawdown не содержит None/NaN перед сравнением
             max_drawdown_long_safe = df["max_drawdown_long"].fillna(0)
             max_drawdown_short_safe = df["max_drawdown_short"].fillna(0)
-            # Используем pd.Series для безопасного сравнения
-            mask_long_risk = (price_change_pct_safe > 0) & (price_change_pct_safe >= max_drawdown_long_safe * min_risk_reward_ratio)
-            mask_short_risk = (price_change_pct_safe < 0) & (price_change_pct_safe.abs() >= max_drawdown_short_safe * min_risk_reward_ratio)
+            
+            # Строгая фильтрация: только сделки с хорошим RR, достаточной прибылью и быстрым достижением цели
+            mask_long_risk = (
+                (price_change_pct_safe > 0) & 
+                (price_change_pct_safe >= max_drawdown_long_safe * min_risk_reward_ratio) &
+                (price_change_pct_safe >= min_profit_pct) &
+                (df["time_to_target"] <= max_hold_periods)
+            )
+            mask_short_risk = (
+                (price_change_pct_safe < 0) & 
+                (price_change_pct_safe.abs() >= max_drawdown_short_safe * min_risk_reward_ratio) &
+                (price_change_pct_safe.abs() >= min_profit_pct) &
+                (df["time_to_target"] <= max_hold_periods)
+            )
             # Заполняем NaN в масках False
             mask_long_risk = mask_long_risk.fillna(False)
             mask_short_risk = mask_short_risk.fillna(False)
+            
+            # FALLBACK: если после фильтрации осталось слишком мало примеров, смягчаем условия
+            long_count = mask_long_risk.sum()
+            short_count = mask_short_risk.sum()
+            total_after_filter = long_count + short_count
+            min_examples_needed = max(100, len(df) * 0.005)  # Минимум 0.5% данных или 100 примеров
+            
+            if total_after_filter < min_examples_needed:
+                # Смягчаем условия: убираем проверку времени, смягчаем RR и минимальную прибыль
+                mask_long_risk = (
+                    (price_change_pct_safe > 0) & 
+                    (price_change_pct_safe >= max_drawdown_long_safe * (min_risk_reward_ratio * 0.7)) &  # Смягчаем RR до 70%
+                    (price_change_pct_safe >= min_profit_pct * 0.6)  # Смягчаем минимальную прибыль до 60%
+                )
+                mask_short_risk = (
+                    (price_change_pct_safe < 0) & 
+                    (price_change_pct_safe.abs() >= max_drawdown_short_safe * (min_risk_reward_ratio * 0.7)) &
+                    (price_change_pct_safe.abs() >= min_profit_pct * 0.6)
+                )
+                mask_long_risk = mask_long_risk.fillna(False)
+                mask_short_risk = mask_short_risk.fillna(False)
         else:
             mask_long_risk = pd.Series([False] * len(df), index=df.index)
             mask_short_risk = pd.Series([False] * len(df), index=df.index)
@@ -871,16 +934,28 @@ class FeatureEngineer:
             # Заполняем NaN перед сравнением
             price_change_pct_clean = price_change_pct.fillna(0)
             effective_threshold_clean = effective_threshold.fillna(threshold_pct)
-            mask_long = price_change_pct_clean > effective_threshold_clean
-            mask_short = price_change_pct_clean < -effective_threshold_clean
+            # Базовые пороги по изменению цены
+            mask_long_base = price_change_pct_clean > effective_threshold_clean
+            mask_short_base = price_change_pct_clean < -effective_threshold_clean
             # Заполняем NaN в масках False
-            mask_long = mask_long.fillna(False)
-            mask_short = mask_short.fillna(False)
+            mask_long_base = mask_long_base.fillna(False)
+            mask_short_base = mask_short_base.fillna(False)
             
-            # Если используется риск-скорректированная классификация, применяем дополнительный фильтр
+            # Если используется риск-скорректированная классификация, применяем строгие фильтры
             if use_risk_adjusted:
-                mask_long = mask_long & mask_long_risk
-                mask_short = mask_short & mask_short_risk
+                mask_long = mask_long_base & mask_long_risk
+                mask_short = mask_short_base & mask_short_risk
+            else:
+                # Без риск-скорректирования, но все равно требуем минимальную прибыль
+                mask_long = mask_long_base & (price_change_pct_clean >= min_profit_pct)
+                mask_short = mask_short_base & (price_change_pct_clean.abs() >= min_profit_pct)
+                
+                # Проверяем время только если есть достаточно примеров
+                long_short_count = (mask_long | mask_short).sum()
+                if long_short_count >= max(100, len(df) * 0.01):
+                    # Есть достаточно примеров - применяем фильтр времени
+                    mask_long = mask_long & (df["time_to_target"] <= max_hold_periods)
+                    mask_short = mask_short & (df["time_to_target"] <= max_hold_periods)
             
             df.loc[mask_long, "target"] = 1  # LONG
             df.loc[mask_short, "target"] = -1  # SHORT
@@ -888,16 +963,28 @@ class FeatureEngineer:
             # Статический порог (оригинальная логика)
             # Заполняем NaN перед сравнением
             price_change_pct_clean = price_change_pct.fillna(0)
-            mask_long = price_change_pct_clean > threshold_pct
-            mask_short = price_change_pct_clean < -threshold_pct
+            # Базовые пороги по изменению цены
+            mask_long_base = price_change_pct_clean > threshold_pct
+            mask_short_base = price_change_pct_clean < -threshold_pct
             # Заполняем NaN в масках False
-            mask_long = mask_long.fillna(False)
-            mask_short = mask_short.fillna(False)
+            mask_long_base = mask_long_base.fillna(False)
+            mask_short_base = mask_short_base.fillna(False)
             
-            # Если используется риск-скорректированная классификация, применяем дополнительный фильтр
+            # Если используется риск-скорректированная классификация, применяем строгие фильтры
             if use_risk_adjusted:
-                mask_long = mask_long & mask_long_risk
-                mask_short = mask_short & mask_short_risk
+                mask_long = mask_long_base & mask_long_risk
+                mask_short = mask_short_base & mask_short_risk
+            else:
+                # Без риск-скорректирования, но все равно требуем минимальную прибыль
+                mask_long = mask_long_base & (price_change_pct_clean >= min_profit_pct)
+                mask_short = mask_short_base & (price_change_pct_clean.abs() >= min_profit_pct)
+                
+                # Проверяем время только если есть достаточно примеров
+                long_short_count = (mask_long | mask_short).sum()
+                if long_short_count >= max(100, len(df) * 0.01):
+                    # Есть достаточно примеров - применяем фильтр времени
+                    mask_long = mask_long & (df["time_to_target"] <= max_hold_periods)
+                    mask_short = mask_short & (df["time_to_target"] <= max_hold_periods)
             
             df.loc[mask_long, "target"] = 1  # LONG
             df.loc[mask_short, "target"] = -1  # SHORT

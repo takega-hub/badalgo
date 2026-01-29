@@ -38,6 +38,10 @@ from bot.mtf_optimized_params import (
     MTF_SHORT_RSI_MAX,
     MTF_MIN_ADX,
     MTF_MIN_ADX_SHORT,
+    MTF_MIN_1H_ADX,
+    MTF_MIN_1H_ADX_SHORT,
+    MTF_DI_RATIO_1H,
+    MTF_OPTIMIZED_PARAMS,
 )
 
 
@@ -155,12 +159,17 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
         self.min_adx = MTF_MIN_ADX  # 30.0 (было 27.0) - УСИЛЕНО для лучших входов
         self.mtf_min_adx_short = MTF_MIN_ADX_SHORT  # 25.0 (было 22.0) - УСИЛЕНО для SHORT
         
-        # Сохраняем оптимизированные параметры для использования в фильтрах (ОБНОВЛЕНО)
-        self.mtf_min_absolute_atr = MTF_MIN_ABSOLUTE_ATR  # 150.0 (было 120.0) - УСИЛЕНО
-        self.mtf_atr_percent_min = MTF_ATR_PERCENT_MIN  # 0.0015 (без изменений)
-        self.mtf_min_absolute_volume = MTF_MIN_ABSOLUTE_VOLUME  # 900.0 (без изменений)
-        self.mtf_min_volume_spike = MTF_MIN_VOLUME_SPIKE  # 1.8 (было 1.6) - УСИЛЕНО
-        self.mtf_min_volume_spike_short = MTF_MIN_VOLUME_SPIKE_SHORT  # 1.3 (без изменений)
+        # Сохраняем оптимизированные параметры для использования в фильтрах (ОБНОВЛЕНО - третья итерация)
+        self.mtf_min_absolute_atr = MTF_MIN_ABSOLUTE_ATR  # 200.0 (было 180.0) - ЕЩЕ БОЛЬШЕ УСИЛЕНО
+        self.mtf_atr_percent_min = MTF_ATR_PERCENT_MIN  # 0.0025 (было 0.0020) - УСИЛЕНО
+        self.mtf_min_absolute_volume = MTF_MIN_ABSOLUTE_VOLUME  # 1300.0 (было 1100.0) - УСИЛЕНО
+        self.mtf_min_volume_spike = MTF_MIN_VOLUME_SPIKE  # 2.2 (было 2.0) - УСИЛЕНО
+        self.mtf_min_volume_spike_short = MTF_MIN_VOLUME_SPIKE_SHORT  # 1.7 (было 1.5) - УСИЛЕНО
+        
+        # MTF фильтры - новые параметры для усиления проверки
+        self.mtf_min_1h_adx = MTF_MIN_1H_ADX  # 28.0
+        self.mtf_min_1h_adx_short = MTF_MIN_1H_ADX_SHORT  # 25.0
+        self.mtf_di_ratio_1h = MTF_DI_RATIO_1H  # 1.20 (было 1.15)
         
         print(f"[MTF_OPTIMIZED] Применены оптимизированные параметры (V18 анализ):")
         print(f"  volatility_ratio: {self.min_volatility_ratio} - {self.max_volatility_ratio}")
@@ -811,15 +820,17 @@ class CryptoTradingEnvV18_MTF(CryptoTradingEnvV17_2_Optimized):
             minus_di_1h = float(row_1h.get('minus_di', 25))
             
             if action_type == 'LONG':
-                # Для LONG: восходящий тренд на 1h (используем оптимизированный min_adx - 5 для 1h)
-                # Новое значение: 30.0 - 5 = 25.0 (более строгий фильтр)
-                min_adx_1h = max(25.0, self.min_adx - 5.0)  # 30 - 5 = 25 (усилено)
-                return (adx_1h >= min_adx_1h and plus_di_1h > minus_di_1h * 1.15)  # Усилено: 1.1 → 1.15
+                # Для LONG: восходящий тренд на 1h (используем оптимизированные параметры)
+                # Новое значение: 28.0 (из MTF_MIN_1H_ADX)
+                min_adx_1h = self.mtf_min_1h_adx  # 28.0 (усилено)
+                di_ratio = self.mtf_di_ratio_1h  # 1.20 (усилено с 1.15)
+                return (adx_1h >= min_adx_1h and plus_di_1h > minus_di_1h * di_ratio)
             else:  # SHORT
-                # Для SHORT: нисходящий тренд на 1h (используем оптимизированный min_adx_short - 2 для 1h)
-                # Новое значение: 25.0 - 2 = 23.0 (более строгий фильтр)
-                min_adx_1h_short = max(23.0, self.mtf_min_adx_short - 2.0)  # 25 - 2 = 23 (усилено)
-                return (adx_1h >= min_adx_1h_short and minus_di_1h > plus_di_1h * 1.15)  # Усилено: 1.1 → 1.15
+                # Для SHORT: нисходящий тренд на 1h (используем оптимизированные параметры)
+                # Новое значение: 25.0 (из MTF_MIN_1H_ADX_SHORT)
+                min_adx_1h_short = self.mtf_min_1h_adx_short  # 25.0 (усилено)
+                di_ratio = self.mtf_di_ratio_1h  # 1.20 (усилено с 1.15)
+                return (adx_1h >= min_adx_1h_short and minus_di_1h > plus_di_1h * di_ratio)
                 
         except Exception as e:
             return True  # При ошибке пропускаем

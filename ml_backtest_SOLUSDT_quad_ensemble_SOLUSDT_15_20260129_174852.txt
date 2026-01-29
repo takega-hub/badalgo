@@ -1,0 +1,79 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: quad_ensemble_SOLUSDT_15
+Symbol: SOLUSDT
+Date: 2026-01-29 17:48:52
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $1060.33
+  Total PnL: $60.33 (+6.03%)
+  Max Drawdown: $11.73 (1.12%)
+
+TRADE STATISTICS:
+  Total Trades: 7
+  Winning Trades: 5
+  Losing Trades: 2
+  Win Rate: 71.43%
+  Profit Factor: 3.59
+  Sharpe Ratio: 10.45
+
+TRADE DETAILS:
+  Average Win: $16.73
+  Average Loss: $-11.66
+  Best Trade: $24.65
+  Worst Trade: $-11.73
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2026-01-01 16:30:00 @ $124.48 (LONG)
+    Exit: 2026-01-01 19:45:00 @ $125.72 (OPPOSITE_SIGNAL)
+    PnL: $8.76 (+9.96%)
+    Confidence: 41.51%
+    Reason: ml_LONG_сила_слабое_41%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-01 19:45:00 @ $125.72 (SHORT)
+    Exit: 2026-01-01 20:45:00 @ $125.34 (OPPOSITE_SIGNAL)
+    PnL: $1.84 (+3.02%)
+    Confidence: 35.75%
+    Reason: ml_SHORT_сила_слабое_35%_TP_2.50%_SL_1.00%
+
+  Trade #3:
+    Entry: 2026-01-01 20:45:00 @ $125.34 (LONG)
+    Exit: 2026-01-02 09:00:00 @ $128.47 (TP)
+    PnL: $24.05 (+25.00%)
+    Confidence: 59.27%
+    Reason: ml_LONG_сила_слабое_59%_TP_2.50%_SL_1.00%
+
+  Trade #4:
+    Entry: 2026-01-02 11:00:00 @ $128.54 (LONG)
+    Exit: 2026-01-02 14:15:00 @ $127.25 (SL)
+    PnL: $-11.59 (-10.00%)
+    Confidence: 22.36%
+    Reason: ml_LONG_сила_слабое_22%_TP_2.50%_SL_1.00%
+
+  Trade #5:
+    Entry: 2026-01-02 14:15:00 @ $127.60 (LONG)
+    Exit: 2026-01-02 16:30:00 @ $130.79 (TP)
+    PnL: $24.35 (+25.00%)
+    Confidence: 25.21%
+    Reason: ml_LONG_сила_слабое_25%_TP_2.50%_SL_1.00%
+
+  Trade #6:
+    Entry: 2026-01-02 18:15:00 @ $131.71 (LONG)
+    Exit: 2026-01-02 18:45:00 @ $130.39 (SL)
+    PnL: $-11.73 (-10.00%)
+    Confidence: 22.59%
+    Reason: ml_LONG_сила_слабое_22%_TP_2.50%_SL_1.00%
+
+  Trade #7:
+    Entry: 2026-01-02 18:45:00 @ $130.73 (LONG)
+    Exit: 2026-01-04 00:00:00 @ $134.00 (TP)
+    PnL: $24.65 (+25.00%)
+    Confidence: 27.27%
+    Reason: ml_LONG_сила_слабое_27%_TP_2.50%_SL_1.00%

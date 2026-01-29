@@ -90,6 +90,8 @@ def main():
             use_atr_threshold=True,  # Использовать динамический порог на основе ATR
             use_risk_adjusted=True,  # Использовать риск-скорректированную целевую переменную
             min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
+            max_hold_periods=48,  # Максимум 48 * 15m = 12 часов для качественных сделок (смягчено: было 32)
+            min_profit_pct=1.0,  # Минимальная прибыль 1.0% для классификации как LONG/SHORT (смягчено: было 1.5%)
         )
         print(f"  Using threshold: {threshold_pct}% (optimized for {symbol})")
         

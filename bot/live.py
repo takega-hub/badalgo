@@ -46,7 +46,7 @@ from bot.config import AppSettings
 from bot.exchange.bybit_client import BybitClient
 from bot.indicators import prepare_with_indicators
 from bot.strategy import Action, Bias, build_signals, enrich_for_strategy
-from bot.web.history import add_signal, add_trade, check_recent_loss_trade
+from bot.web.history import add_signal, add_trade, check_recent_loss_trade, check_strategy_cooldown
 from bot.ml.strategy_ml import build_ml_signals
 from bot.smc_strategy import build_smc_signals
 from bot.ict_strategy import build_ict_signals
@@ -2484,6 +2484,270 @@ def _check_position_strategy_alignment(
         return None
 
 
+def _check_volatility_protection(
+    df_ready: pd.DataFrame,
+    settings: AppSettings,
+    symbol: str,
+    signal_action: Optional[Action] = None,  # Направление сигнала (LONG/SHORT) для проверки направления движения
+) -> Tuple[bool, str]:
+    """
+    Комплексная проверка защитных механизмов от резких движений рынка.
+    
+    Returns:
+        (should_block, reason) - нужно ли блокировать открытие позиции и причина
+    """
+    if df_ready.empty or len(df_ready) < 3:
+        return False, ""
+    
+    if not settings.risk.enable_volatility_protection:
+        return False, ""
+    
+    try:
+        last_row = df_ready.iloc[-1]
+        
+        # Получаем ATR (приоритет: среднее 1H+4H, fallback: 15M)
+        atr_value = last_row.get("atr_avg", None)
+        if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+            atr_value = last_row.get("atr", None)
+        
+        if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+            return False, ""  # Нет данных ATR - пропускаем проверку
+        
+        current_price = last_row.get("close", 0)
+        if current_price <= 0:
+            return False, ""
+        
+        # 1. CIRCUIT BREAKER - проверка резких движений за последние N свечей
+        if settings.risk.enable_circuit_breaker:
+            lookback = min(settings.risk.circuit_breaker_lookback_candles, len(df_ready) - 1)
+            if lookback > 0:
+                max_move = 0
+                for i in range(1, lookback + 1):
+                    if len(df_ready) > i:
+                        prev_row = df_ready.iloc[-1-i]
+                        prev_close = prev_row.get("close", current_price)
+                        move = abs(current_price - prev_close)
+                        move_atr = move / atr_value if atr_value > 0 else 0
+                        max_move = max(max_move, move_atr)
+                
+                if max_move > settings.risk.circuit_breaker_atr_multiplier:
+                    reason = f"circuit_breaker: price moved {max_move:.2f} ATR in last {lookback} candles (threshold: {settings.risk.circuit_breaker_atr_multiplier:.2f} ATR)"
+                    return True, reason
+        
+        # 2. VOLATILITY SPIKE DETECTION - проверка всплеска волатильности
+        if settings.risk.enable_volatility_spike_filter:
+            lookback = min(settings.risk.volatility_spike_lookback, len(df_ready) - 1)
+            if lookback > 0:
+                atr_values = []
+                for i in range(1, lookback + 1):
+                    if len(df_ready) > i:
+                        row = df_ready.iloc[-1-i]
+                        row_atr = row.get("atr_avg") or row.get("atr")
+                        if row_atr and pd.notna(row_atr) and row_atr > 0:
+                            atr_values.append(row_atr)
+                
+                if atr_values:
+                    avg_atr = sum(atr_values) / len(atr_values)
+                    if atr_value > avg_atr * settings.risk.volatility_spike_atr_multiplier:
+                        reason = f"volatility_spike: current ATR {atr_value:.2f} > {settings.risk.volatility_spike_atr_multiplier:.2f}x avg ATR {avg_atr:.2f}"
+                        return True, reason
+        
+        # 3. PRICE VELOCITY FILTER - проверка скорости изменения цены за последнюю свечу
+        if settings.risk.enable_price_velocity_filter and len(df_ready) >= 2:
+            prev_row = df_ready.iloc[-2]
+            prev_close = prev_row.get("close", current_price)
+            candle_move = abs(current_price - prev_close)
+            candle_move_atr = candle_move / atr_value if atr_value > 0 else 0
+            
+            if candle_move_atr > settings.risk.max_price_velocity_atr_per_candle:
+                reason = f"price_velocity: candle moved {candle_move_atr:.2f} ATR (threshold: {settings.risk.max_price_velocity_atr_per_candle:.2f} ATR)"
+                return True, reason
+        
+        # 3.5. DIRECTIONAL MOVEMENT CHECK - проверка резкого движения в направлении сигнала
+        # Если рынок резко движется в направлении сигнала - это опасно (может быть финальный импульс перед разворотом)
+        if settings.risk.enable_directional_movement_check and signal_action and len(df_ready) >= 2:
+            prev_row = df_ready.iloc[-2]
+            prev_close = prev_row.get("close", current_price)
+            
+            if signal_action == Action.LONG:
+                # Для LONG: проверяем резкое движение вверх
+                price_move = current_price - prev_close
+                if price_move > 0:  # Движение вверх
+                    move_atr = price_move / atr_value if atr_value > 0 else 0
+                    if move_atr > settings.risk.directional_movement_atr_threshold:
+                        reason = f"directional_movement_long: price moved {move_atr:.2f} ATR up (threshold: {settings.risk.directional_movement_atr_threshold:.2f} ATR) - waiting for pullback"
+                        return True, reason
+            elif signal_action == Action.SHORT:
+                # Для SHORT: проверяем резкое движение вниз
+                price_move = prev_close - current_price
+                if price_move > 0:  # Движение вниз
+                    move_atr = price_move / atr_value if atr_value > 0 else 0
+                    if move_atr > settings.risk.directional_movement_atr_threshold:
+                        reason = f"directional_movement_short: price moved {move_atr:.2f} ATR down (threshold: {settings.risk.directional_movement_atr_threshold:.2f} ATR) - waiting for pullback"
+                        return True, reason
+        
+        # 4. MULTIPLE CANDLE BODY FILTER - проверка нескольких больших свечей подряд
+        if settings.risk.enable_multiple_candle_filter:
+            large_candles_count = 0
+            check_candles = min(settings.risk.max_large_candles_in_row + 1, len(df_ready))
+            
+            for i in range(check_candles):
+                if len(df_ready) > i:
+                    row = df_ready.iloc[-1-i]
+                    high = row.get("high", 0)
+                    low = row.get("low", 0)
+                    open_price = row.get("open", 0)
+                    close_price = row.get("close", 0)
+                    
+                    if high > 0 and low > 0:
+                        candle_body = abs(close_price - open_price)
+                        candle_body_atr = candle_body / atr_value if atr_value > 0 else 0
+                        
+                        if candle_body_atr > settings.risk.large_candle_body_atr_multiplier:
+                            large_candles_count += 1
+                        else:
+                            break  # Прерываем если нашли маленькую свечу
+            
+            if large_candles_count > settings.risk.max_large_candles_in_row:
+                reason = f"multiple_large_candles: {large_candles_count} large candles in a row (threshold: {settings.risk.max_large_candles_in_row})"
+                return True, reason
+        
+        # 5. VOLUME SPIKE FILTER - проверка всплеска объема
+        if settings.risk.enable_volume_spike_filter:
+            current_volume = last_row.get("volume", 0)
+            vol_sma = last_row.get("vol_sma", 0)
+            
+            if vol_sma > 0 and current_volume > vol_sma * settings.risk.volume_spike_multiplier:
+                reason = f"volume_spike: current volume {current_volume:.0f} > {settings.risk.volume_spike_multiplier:.2f}x SMA {vol_sma:.0f}"
+                return True, reason
+        
+        # 6. VOLATILITY COOLDOWN - пережидание после резких движений
+        # Проверяем, было ли недавно резкое движение, и если да - ждем пока рынок успокоится
+        if settings.risk.enable_volatility_cooldown:
+            cooldown_candles = min(settings.risk.volatility_cooldown_candles, len(df_ready) - 1)
+            if cooldown_candles > 0:
+                # Проверяем последние N свечей на наличие резких движений
+                for i in range(1, cooldown_candles + 1):
+                    if len(df_ready) > i:
+                        row = df_ready.iloc[-1-i]
+                        row_atr = row.get("atr_avg") or row.get("atr")
+                        if row_atr and pd.notna(row_atr) and row_atr > 0:
+                            # Проверяем движение этой свечи
+                            row_open = row.get("open", 0)
+                            row_close = row.get("close", 0)
+                            if row_open > 0 and row_close > 0:
+                                candle_move = abs(row_close - row_open)
+                                candle_move_atr = candle_move / row_atr if row_atr > 0 else 0
+                                
+                                # Если свеча была резкой - блокируем вход
+                                if candle_move_atr > settings.risk.volatility_cooldown_atr_threshold:
+                                    candles_since_spike = i
+                                    reason = f"volatility_cooldown: sharp movement {candle_move_atr:.2f} ATR detected {candles_since_spike} candles ago (waiting {cooldown_candles} candles)"
+                                    return True, reason
+        
+        # 7. MARKET CALM CHECK - проверка на спокойный рынок перед входом
+        # Разрешаем вход только если последние N свечей были спокойными
+        if settings.risk.enable_market_calm_check:
+            required_candles = min(settings.risk.market_calm_required_candles, len(df_ready) - 1)
+            if required_candles > 0:
+                calm_candles_count = 0
+                vol_sma = last_row.get("vol_sma", 0)
+                
+                # Проверяем последние N свечей на "спокойность"
+                for i in range(required_candles):
+                    if len(df_ready) > i:
+                        row = df_ready.iloc[-1-i]
+                        row_atr = row.get("atr_avg") or row.get("atr")
+                        if row_atr and pd.notna(row_atr) and row_atr > 0:
+                            row_open = row.get("open", 0)
+                            row_close = row.get("close", 0)
+                            row_volume = row.get("volume", 0)
+                            row_vol_sma = row.get("vol_sma", vol_sma)
+                            
+                            if row_open > 0 and row_close > 0:
+                                # Проверяем размер тела свечи
+                                candle_body = abs(row_close - row_open)
+                                candle_body_atr = candle_body / row_atr if row_atr > 0 else 0
+                                
+                                # Проверяем объем
+                                volume_ok = True
+                                if row_vol_sma > 0:
+                                    volume_ok = row_volume < row_vol_sma * settings.risk.calm_candle_max_volume_multiplier
+                                
+                                # Свеча считается спокойной если тело < порога И объем нормальный
+                                if candle_body_atr < settings.risk.calm_candle_max_body_atr and volume_ok:
+                                    calm_candles_count += 1
+                                else:
+                                    break  # Прерываем если нашли неспокойную свечу
+                
+                # Если недостаточно спокойных свечей - блокируем вход
+                if calm_candles_count < required_candles:
+                    reason = f"market_not_calm: only {calm_candles_count}/{required_candles} calm candles (need calm market before entry)"
+                    return True, reason
+        
+        return False, ""
+        
+    except Exception as e:
+        print(f"[live] ⚠️ Error checking volatility protection: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, ""  # В случае ошибки разрешаем открытие (fail-open)
+
+
+def _calculate_dynamic_position_size(
+    desired_usd: float,
+    df_ready: pd.DataFrame,
+    settings: AppSettings,
+) -> float:
+    """
+    Рассчитывает динамический размер позиции на основе текущей волатильности.
+    При высокой волатильности уменьшает размер позиции.
+    
+    Returns:
+        Скорректированный размер позиции в USD
+    """
+    if not settings.risk.enable_dynamic_position_sizing or df_ready.empty:
+        return desired_usd
+    
+    try:
+        last_row = df_ready.iloc[-1]
+        
+        # Получаем ATR
+        atr_value = last_row.get("atr_avg", None)
+        if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+            atr_value = last_row.get("atr", None)
+        
+        if atr_value is None or pd.isna(atr_value) or atr_value <= 0:
+            return desired_usd  # Нет данных - используем исходный размер
+        
+        # Рассчитываем средний ATR за период
+        lookback = min(settings.risk.volatility_spike_lookback, len(df_ready) - 1)
+        if lookback > 0:
+            atr_values = []
+            for i in range(1, lookback + 1):
+                if len(df_ready) > i:
+                    row = df_ready.iloc[-1-i]
+                    row_atr = row.get("atr_avg") or row.get("atr")
+                    if row_atr and pd.notna(row_atr) and row_atr > 0:
+                        atr_values.append(row_atr)
+            
+            if atr_values:
+                avg_atr = sum(atr_values) / len(atr_values)
+                
+                # Если текущий ATR > порога - уменьшаем размер позиции
+                if atr_value > avg_atr * settings.risk.high_volatility_atr_multiplier:
+                    reduction_factor = settings.risk.volatility_reduction_factor
+                    adjusted_usd = desired_usd * reduction_factor
+                    print(f"[live] 📉 Dynamic position sizing: reducing size from ${desired_usd:.2f} to ${adjusted_usd:.2f} (volatility: {atr_value:.2f} > {avg_atr * settings.risk.high_volatility_atr_multiplier:.2f})")
+                    return adjusted_usd
+        
+        return desired_usd
+        
+    except Exception as e:
+        print(f"[live] ⚠️ Error calculating dynamic position size: {e}")
+        return desired_usd  # В случае ошибки используем исходный размер
+
+
 def _get_balance(client: BybitClient) -> Optional[float]:
     """Получить доступный баланс USDT."""
     try:
@@ -4894,41 +5158,38 @@ def run_live_from_api(
                     # Обновляем статус после генерации
                     update_worker_status(symbol, current_status="Running", last_action="ML signals generated")
                     
-                    # КРИТИЧЕСКИ ВАЖНО: Обновляем timestamp для всех ML сигналов, если они соответствуют последней свече
-                    # Это гарантирует, что свежие сигналы будут правильно обработаны
+                    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ:
+                    # build_ml_signals может вернуть сигналы по всей истории.
+                    # В live режиме нам нужен сигнал ТОЛЬКО по последней свече, иначе он будет NOT FRESH и не исполнится.
+                    ml_generated_all = [s for s in ml_signals if s.action in (MlAction.LONG, MlAction.SHORT)]
+                    ml_generated: List[Any] = []
                     if not df_ready.empty:
                         last_candle_ts = df_ready.index[-1]
                         if isinstance(last_candle_ts, pd.Timestamp):
-                            if last_candle_ts.tzinfo is None:
-                                last_candle_ts = last_candle_ts.tz_localize('UTC')
-                            else:
-                                last_candle_ts = last_candle_ts.tz_convert('UTC')
-                            last_candle_time = last_candle_ts.to_pydatetime()
-                            
-                            for sig in ml_signals:
-                                try:
-                                    signal_ts = sig.timestamp
-                                    if isinstance(signal_ts, pd.Timestamp):
-                                        if signal_ts.tzinfo is None:
-                                            signal_ts = signal_ts.tz_localize('UTC')
-                                        else:
-                                            signal_ts = signal_ts.tz_convert('UTC')
-                                        signal_ts_py = signal_ts.to_pydatetime()
-                                        
-                                        # Проверяем, соответствует ли timestamp сигнала последней свече (в пределах 1 минуты)
-                                        time_diff_seconds = abs((signal_ts_py - last_candle_time).total_seconds())
-                                        if time_diff_seconds <= 60:  # 1 минута
-                                            # Обновляем timestamp на текущее время UTC
-                                            updated_ts = datetime.now(timezone.utc)
-                                            sig.timestamp = pd.Timestamp(updated_ts).tz_localize('UTC')
-                                            ts_old_msk = format_timestamp_msk(signal_ts_py)
-                                            ts_new_msk = format_timestamp_msk(updated_ts)
-                                            _log(f"⚡ ML signal timestamp updated: {ts_old_msk} -> {ts_new_msk} (matched last candle)", symbol)
-                                except Exception as e:
-                                    _log(f"⚠️ Error updating ML signal timestamp: {e}", symbol)
+                            last_candle_ts_utc = last_candle_ts.tz_localize('UTC') if last_candle_ts.tzinfo is None else last_candle_ts.tz_convert('UTC')
+                            last_candle_time = last_candle_ts_utc.to_pydatetime()
+                        else:
+                            last_candle_time = datetime.now(timezone.utc)
+                        
+                        for sig in ml_generated_all:
+                            try:
+                                sig_ts = sig.timestamp
+                                sig_ts_pd = pd.Timestamp(sig_ts) if not isinstance(sig_ts, pd.Timestamp) else sig_ts
+                                sig_ts_utc = sig_ts_pd.tz_localize('UTC') if sig_ts_pd.tzinfo is None else sig_ts_pd.tz_convert('UTC')
+                                sig_ts_py = sig_ts_utc.to_pydatetime()
+                                
+                                time_diff_seconds = abs((sig_ts_py - last_candle_time).total_seconds())
+                                if time_diff_seconds <= 60:
+                                    updated_ts = datetime.now(timezone.utc)
+                                    # updated_ts уже tz-aware (UTC), поэтому НЕ используем tz_localize
+                                    sig.timestamp = pd.Timestamp(updated_ts)
+                                    ml_generated.append(sig)
+                            except Exception as e:
+                                _log(f"⚠️ Error filtering ML signal for last candle: {e}", symbol)
+                    else:
+                        ml_generated = ml_generated_all
                     
-                    ml_generated = [s for s in ml_signals if s.action in (MlAction.LONG, MlAction.SHORT)]
-                    _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (LONG/SHORT)", symbol)
+                    _log(f"📊 ML strategy: generated {len(ml_signals)} total, {len(ml_generated)} actionable (last candle)", symbol)
                     
                     
                     import re
@@ -4999,7 +5260,8 @@ def run_live_from_api(
                                 if time_diff_seconds <= 60:  # 1 минута
                                     # Обновляем timestamp на текущее время UTC
                                     updated_ts = datetime.now(timezone.utc)
-                                    sig.timestamp = pd.Timestamp(updated_ts).tz_localize('UTC')
+                                    # updated_ts уже tz-aware (UTC), поэтому НЕ используем tz_localize
+                                    sig.timestamp = pd.Timestamp(updated_ts)
                                     # Логируем только для ML сигналов, чтобы не засорять логи
                                     if hasattr(sig, 'reason') and 'ml_' in sig.reason.lower():
                                         _log(f"⚡ Signal timestamp updated: {signal_ts_py.strftime('%Y-%m-%d %H:%M:%S UTC')} -> {updated_ts.strftime('%Y-%m-%d %H:%M:%S UTC')} (matched last candle)", symbol)
@@ -5129,7 +5391,11 @@ def run_live_from_api(
                                     
                                     # Создаем объект Signal с timestamp в UTC (для проверки свежести)
                                     hist_signal_obj = Signal(
-                                        timestamp=pd.Timestamp(hist_ts_py).tz_localize('UTC'),
+                                        timestamp=(
+                                            pd.Timestamp(hist_ts_py).tz_localize('UTC')
+                                            if pd.Timestamp(hist_ts_py).tzinfo is None
+                                            else pd.Timestamp(hist_ts_py).tz_convert('UTC')
+                                        ),
                                         action=hist_action_enum,
                                         reason=hist_reason,
                                         price=hist_price,
@@ -7350,6 +7616,23 @@ def run_live_from_api(
                     _log(f"📈 Opening NEW LONG position", symbol)
                     _log(f"   Signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})", symbol)
                     
+                    # Проверяем таймаут между сделками одной стратегии (1 час после закрытия по SL/TP)
+                    should_block_cooldown, last_trade = check_strategy_cooldown(
+                        strategy_type=strategy_type,
+                        symbol=symbol,
+                        cooldown_hours=1.0,
+                    )
+                    if should_block_cooldown:
+                        if last_trade:
+                            exit_time_str = last_trade.get("exit_time", "unknown")
+                            exit_reason = last_trade.get("exit_reason", "unknown")
+                            print(f"[live] ⛔ Blocking LONG: strategy cooldown active (last trade closed at {exit_time_str}, reason: {exit_reason})")
+                        else:
+                            print(f"[live] ⛔ Blocking LONG: strategy cooldown active")
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
+                    
                     # Проверяем историю убыточных сделок перед открытием
                     if current_settings.risk.enable_loss_cooldown:
                         should_block, last_loss = check_recent_loss_trade(
@@ -7365,6 +7648,20 @@ def run_live_from_api(
                                 print(f"[live] ⛔ Blocking LONG: recent loss trade detected (PnL: {pnl:.2f} USDT, reason: {exit_reason})")
                             else:
                                 print(f"[live] ⛔ Blocking LONG: too many consecutive losses")
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
+                    
+                    # Проверяем защиту от резких движений рынка
+                    if current_settings.risk.enable_volatility_protection and not df_ready.empty:
+                        should_block_vol, vol_reason = _check_volatility_protection(
+                            df_ready=df_ready,
+                            settings=current_settings,
+                            symbol=symbol,
+                            signal_action=sig.action,  # Передаем направление сигнала для проверки направления движения
+                        )
+                        if should_block_vol:
+                            print(f"[live] ⛔ Blocking LONG: {vol_reason}")
                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                 break
                             continue
@@ -7411,6 +7708,12 @@ def run_live_from_api(
                         continue
                     
                     desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                    # Применяем динамический размер позиции при высокой волатильности
+                    desired_usd = _calculate_dynamic_position_size(
+                        desired_usd=desired_usd,
+                        df_ready=df_ready,
+                        settings=current_settings,
+                    )
                     qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
                     
                     if qty <= 0:
@@ -8187,6 +8490,23 @@ def run_live_from_api(
                     _log(f"📉 Opening NEW SHORT position after close", symbol)
                     _log(f"   Signal: {strategy_type.upper()} {sig.action.value} @ ${sig.price:.2f} ({sig.reason}) [{ts_str}] (ID: {signal_id})", symbol)
                     
+                    # Проверяем таймаут между сделками одной стратегии (1 час после закрытия по SL/TP)
+                    should_block_cooldown, last_trade = check_strategy_cooldown(
+                        strategy_type=strategy_type,
+                        symbol=symbol,
+                        cooldown_hours=1.0,
+                    )
+                    if should_block_cooldown:
+                        if last_trade:
+                            exit_time_str = last_trade.get("exit_time", "unknown")
+                            exit_reason = last_trade.get("exit_reason", "unknown")
+                            print(f"[live] ⛔ Blocking SHORT: strategy cooldown active (last trade closed at {exit_time_str}, reason: {exit_reason})")
+                        else:
+                            print(f"[live] ⛔ Blocking SHORT: strategy cooldown active")
+                        if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                            break
+                        continue
+                    
                     # Проверяем историю убыточных сделок перед открытием
                     if current_settings.risk.enable_loss_cooldown:
                         should_block, last_loss = check_recent_loss_trade(
@@ -8202,6 +8522,20 @@ def run_live_from_api(
                                 print(f"[live] ⛔ Blocking SHORT: recent loss trade detected (PnL: {pnl:.2f} USDT, reason: {exit_reason})")
                             else:
                                 print(f"[live] ⛔ Blocking SHORT: too many consecutive losses")
+                            if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
+                                break
+                            continue
+                    
+                    # Проверяем защиту от резких движений рынка
+                    if current_settings.risk.enable_volatility_protection and not df_ready.empty:
+                        should_block_vol, vol_reason = _check_volatility_protection(
+                            df_ready=df_ready,
+                            settings=current_settings,
+                            symbol=symbol,
+                            signal_action=sig.action,  # Передаем направление сигнала для проверки направления движения
+                        )
+                        if should_block_vol:
+                            print(f"[live] ⛔ Blocking SHORT: {vol_reason}")
                             if _wait_with_stop_check(stop_event, current_settings.live_poll_seconds, symbol):
                                 break
                             continue
@@ -8248,6 +8582,12 @@ def run_live_from_api(
                         continue
                     
                     desired_usd = balance * (current_settings.risk.balance_percent_per_trade / 100)
+                    # Применяем динамический размер позиции при высокой волатильности
+                    desired_usd = _calculate_dynamic_position_size(
+                        desired_usd=desired_usd,
+                        df_ready=df_ready,
+                        settings=current_settings,
+                    )
                     qty = _calculate_order_qty(client, sig.price, desired_usd, current_settings)
                     
                     if qty <= 0:

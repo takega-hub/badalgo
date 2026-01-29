@@ -70,6 +70,8 @@ def main():
             use_atr_threshold=True,
             use_risk_adjusted=True,
             min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
+            max_hold_periods=48,  # Максимум 48 * 15m = 12 часов для качественных сделок (смягчено: было 32)
+            min_profit_pct=1.0,  # Минимальная прибыль 1.0% для классификации как LONG/SHORT (смягчено: было 1.5%)
         )
         
         # Анализ распределения классов
@@ -105,9 +107,9 @@ def main():
         class_weight_dict = {}
         for i, cls in enumerate(classes):
             if cls == 0:  # HOLD
-                class_weight_dict[cls] = base_weights[i] * 0.05  # 🔥 В 60 раз меньше! (было 0.3)
+                class_weight_dict[cls] = base_weights[i] * 0.05  # 🔥 Экстремально низкий вес HOLD
             else:  # LONG or SHORT
-                class_weight_dict[cls] = base_weights[i] * 3.0  # 🔥 Очень высокий вес!
+                class_weight_dict[cls] = base_weights[i] * 4.0  # 🔥 Очень высокий вес (увеличено с 3.0 до 4.0)
         
         print(f"\n   🔥 ЭКСТРЕМАЛЬНЫЕ веса классов:")
         for cls, weight in class_weight_dict.items():

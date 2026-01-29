@@ -22,6 +22,100 @@ MAX_TRADE_AGE_DAYS = 30  # Сделки храним дольше для ста�
 _history_lock = threading.Lock()
 
 
+def check_strategy_cooldown(
+    strategy_type: str,
+    symbol: str,
+    cooldown_hours: float = 1.0,
+) -> tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Проверяет, прошёл ли таймаут (cooldown) с момента последнего закрытия сделки по той же стратегии.
+    Таймаут применяется только если сделка закрылась по SL или TP.
+    
+    Args:
+        strategy_type: Тип стратегии (например, "ml", "vbo", "breakout_trend_hybrid", "trend", "flat")
+        symbol: Торговая пара
+        cooldown_hours: Период таймаута в часах (по умолчанию 1 час)
+    
+    Returns:
+        (should_block, last_trade) - нужно ли блокировать открытие позиции и информация о последней закрытой сделке
+    """
+    try:
+        history = _load_history()
+        trades = history.get("trades", [])
+        
+        if not trades:
+            return False, None
+        
+        # Фильтруем сделки по стратегии и символу, только закрытые сделки
+        relevant_trades = [
+            t for t in trades
+            if (t.get("strategy_type", "").lower() == strategy_type.lower() and
+                t.get("symbol", "").upper() == symbol.upper() and
+                t.get("exit_time"))  # Только закрытые сделки
+        ]
+        
+        if not relevant_trades:
+            return False, None
+        
+        # Сортируем по времени выхода (последние сначала)
+        def get_exit_time(trade):
+            exit_time_str = trade.get("exit_time", "")
+            if not exit_time_str:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            try:
+                if isinstance(exit_time_str, str):
+                    if 'T' in exit_time_str:
+                        dt = datetime.fromisoformat(exit_time_str.replace('Z', '+00:00'))
+                    else:
+                        dt = datetime.strptime(exit_time_str, '%Y-%m-%d %H:%M:%S')
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    else:
+                        dt = dt.astimezone(timezone.utc)
+                    return dt
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            return datetime.min.replace(tzinfo=timezone.utc)
+        
+        relevant_trades.sort(key=get_exit_time, reverse=True)
+        
+        # Берем последнюю закрытую сделку
+        last_trade = relevant_trades[0]
+        exit_reason = last_trade.get("exit_reason", "").lower()
+        
+        # Проверяем, закрылась ли сделка по SL или TP
+        is_sl_or_tp = (
+            "stop_loss" in exit_reason or
+            "sl" in exit_reason or
+            "take_profit" in exit_reason or
+            "tp" in exit_reason
+        )
+        
+        if not is_sl_or_tp:
+            # Если сделка закрылась не по SL/TP, таймаут не применяется
+            return False, None
+        
+        # Проверяем, прошёл ли таймаут
+        exit_time = get_exit_time(last_trade)
+        now = datetime.now(timezone.utc)
+        time_diff = (now - exit_time).total_seconds() / 3600  # В часах
+        
+        if time_diff < cooldown_hours:
+            # Таймаут ещё не прошёл
+            return True, last_trade
+        
+        # Таймаут прошёл, можно открывать новую сделку
+        return False, None
+        
+    except Exception as e:
+        print(f"[history] ⚠️ Error checking strategy cooldown: {e}")
+        import traceback
+        traceback.print_exc()
+        # В случае ошибки разрешаем открытие (fail-open)
+        return False, None
+
+
 def check_recent_loss_trade(
     side: str,
     symbol: str,

@@ -133,9 +133,16 @@ class MLStrategy:
         model_filename = Path(model_path).name
         symbol_from_model = "UNKNOWN"
         if "_" in model_filename:
-            parts = model_filename.split("_")
-            if len(parts) >= 2:
-                symbol_from_model = parts[1]  # Например, rf_ETHUSDT_15.pkl -> ETHUSDT
+            parts = model_filename.replace(".pkl", "").split("_")
+            # Форматы:
+            # - rf_ETHUSDT_15_15m.pkl -> ["rf","ETHUSDT","15","15m"]
+            # - ensemble_BTCUSDT_15_mtf.pkl -> ["ensemble","BTCUSDT","15","mtf"]
+            # - triple_ensemble_BTCUSDT_15_15m.pkl -> ["triple","ensemble","BTCUSDT","15","15m"]
+            # - quad_ensemble_BTCUSDT_15_mtf.pkl -> ["quad","ensemble","BTCUSDT","15","mtf"]
+            if len(parts) >= 3 and parts[0] in ("triple", "quad") and parts[1] == "ensemble":
+                symbol_from_model = parts[2]
+            elif len(parts) >= 2:
+                symbol_from_model = parts[1]
         
         # Получаем метаданные модели
         model_metadata = self.model_data.get("metadata", {})
@@ -674,8 +681,11 @@ class MLStrategy:
                 # Извлекаем символ из пути к модели
                 model_filename = Path(self.model_path).name
                 if "_" in model_filename:
-                    parts = model_filename.split("_")
-                    if len(parts) >= 2:
+                    parts = model_filename.replace(".pkl", "").split("_")
+                    if len(parts) >= 3 and parts[0] in ("triple", "quad") and parts[1] == "ensemble":
+                        symbol = parts[2].upper()
+                        self._symbol = symbol
+                    elif len(parts) >= 2:
                         symbol = parts[1].upper()  # Например, rf_ETHUSDT_15.pkl -> ETHUSDT
                         self._symbol = symbol
                     else:
@@ -1283,7 +1293,8 @@ def build_ml_signals(
     try:
         # Определяем, включен ли MTF-режим для ML (по окружению, синхронно с train_* скриптами)
         import os
-        ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "1")
+        # ВАЖНО: по умолчанию MTF выключен (иначе 15m-модели получают чужие фичи)
+        ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "0")
         ml_mtf_enabled = ml_mtf_enabled_env not in ("0", "false", "False", "no")
 
         # Базовые технические индикаторы на 15m
@@ -1346,18 +1357,9 @@ def build_ml_signals(
                 max_loss_pct_margin=max_loss_pct_margin,
             )
             signals.append(signal)
-            
-            # Обновляем позицию
-            # Обновляем состояние позиции на основе сигнала
-            if signal.action == Action.LONG:
-                if position_bias is None or position_bias == Bias.SHORT:
-                    position_bias = Bias.LONG
-                # Если уже LONG - остаемся LONG
-            elif signal.action == Action.SHORT:
-                if position_bias is None or position_bias == Bias.LONG:
-                    position_bias = Bias.SHORT
-                # Если уже SHORT - остаемся SHORT
-            # HOLD - позиция остается как есть
+            # ВАЖНО: build_ml_signals не должен эмулировать позицию по сигналам.
+            # Реальная позиция известна на уровне live/backtest-движка и должна передаваться в generate_signal,
+            # иначе stability_filter начинает "залипать" в одном направлении (например, только SHORT).
         except Exception as e:
             print(f"[ml_strategy] Error processing row {idx}: {e}")
             import traceback

@@ -161,6 +161,8 @@ def main():
             use_atr_threshold=True,
             use_risk_adjusted=True,
             min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
+            max_hold_periods=48,  # Максимум 48 * 15m = 12 часов для качественных сделок (смягчено: было 32)
+            min_profit_pct=1.0,  # Минимальная прибыль 1.0% для классификации как LONG/SHORT (смягчено: было 1.5%)
         )
         
         # Анализ распределения классов
@@ -193,13 +195,13 @@ def main():
         classes = np.unique(y)
         base_weights = compute_class_weight('balanced', classes=classes, y=y)
         
-        # Усиливаем веса для LONG/SHORT, ослабляем для HOLD
+        # УСИЛЕННЫЕ веса для LONG/SHORT, МИНИМИЗИРУЕМ HOLD (фокус на прибыльных сделках)
         class_weight_dict = {}
         for i, cls in enumerate(classes):
             if cls == 0:  # HOLD
-                class_weight_dict[cls] = base_weights[i] * 0.3  # Уменьшаем вес HOLD
+                class_weight_dict[cls] = base_weights[i] * 0.1  # Сильно уменьшаем вес HOLD (было 0.3)
             else:  # LONG or SHORT
-                class_weight_dict[cls] = base_weights[i] * 2.0  # Увеличиваем вес LONG/SHORT
+                class_weight_dict[cls] = base_weights[i] * 3.0  # Увеличиваем вес LONG/SHORT (было 2.0)
         
         safe_print(f"\n   📊 Веса классов:")
         for cls, weight in class_weight_dict.items():

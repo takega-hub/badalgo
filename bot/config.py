@@ -217,6 +217,45 @@ class RiskParams:
     # Защита от входа на границах (ATR анализ)
     enable_atr_entry_filter: bool = True  # Включить фильтр входа по ATR
     max_atr_progress_pct: float = 0.7  # Максимальный процент ATR, который уже пройден (70% = не входить если прошло >70% ATR)
+    
+    # Защита от резких движений рынка (Volatility Protection)
+    enable_volatility_protection: bool = True  # Включить защиту от резких движений
+    # Circuit Breaker - временная остановка торговли при резких движениях
+    enable_circuit_breaker: bool = True  # Включить circuit breaker
+    circuit_breaker_atr_multiplier: float = 1.8  # Если движение > 1.8 ATR за короткий период - блокировать (ужесточено с 2.5)
+    circuit_breaker_lookback_candles: int = 3  # Проверять последние N свечей
+    circuit_breaker_cooldown_minutes: int = 15  # Время блокировки после срабатывания (минуты)
+    # Directional Movement Check - проверка резкого движения в направлении сигнала
+    enable_directional_movement_check: bool = True  # Включить проверку резкого движения в направлении сигнала
+    directional_movement_atr_threshold: float = 1.0  # Если движение в направлении сигнала > 1.0 ATR - блокировать
+    # Volatility Spike Detection - обнаружение всплесков волатильности
+    enable_volatility_spike_filter: bool = True  # Включить фильтр всплесков волатильности
+    volatility_spike_atr_multiplier: float = 1.8  # Если текущий ATR > 1.8x от среднего ATR - блокировать
+    volatility_spike_lookback: int = 20  # Период для расчета среднего ATR
+    # Price Velocity Filter - фильтр по скорости изменения цены
+    enable_price_velocity_filter: bool = True  # Включить фильтр скорости изменения цены
+    max_price_velocity_atr_per_candle: float = 1.2  # Максимальное движение в ATR за одну свечу
+    # Multiple Candle Body Filter - фильтр по нескольким свечам с большим телом подряд
+    enable_multiple_candle_filter: bool = True  # Включить фильтр нескольких больших свечей
+    max_large_candles_in_row: int = 2  # Максимум больших свечей подряд (если больше - блокировать)
+    large_candle_body_atr_multiplier: float = 0.8  # Свеча считается большой если тело > 0.8 ATR
+    # Dynamic Position Sizing - уменьшение размера позиции при высокой волатильности
+    enable_dynamic_position_sizing: bool = True  # Включить динамический размер позиции
+    volatility_reduction_factor: float = 0.5  # При высокой волатильности уменьшать размер до 50%
+    high_volatility_atr_multiplier: float = 1.5  # Высокая волатильность = ATR > 1.5x от среднего
+    # Volume Spike Filter - фильтр по аномальному объему
+    enable_volume_spike_filter: bool = True  # Включить фильтр всплесков объема
+    volume_spike_multiplier: float = 3.0  # Если объем > 3.0x от среднего - блокировать
+    volume_spike_lookback: int = 20  # Период для расчета среднего объема
+    # Market Calm Detection - проверка на спокойный рынок перед входом
+    enable_market_calm_check: bool = True  # Включить проверку спокойного рынка
+    market_calm_required_candles: int = 3  # Требуется N спокойных свечей подряд для входа
+    calm_candle_max_body_atr: float = 0.5  # Свеча считается спокойной если тело < 0.5 ATR
+    calm_candle_max_volume_multiplier: float = 1.5  # Свеча считается спокойной если объем < 1.5x от среднего
+    # Volatility Cooldown - пережидание после резких движений
+    enable_volatility_cooldown: bool = True  # Включить пережидание после резких движений
+    volatility_cooldown_candles: int = 5  # Ждать N свечей после резкого движения перед входом
+    volatility_cooldown_atr_threshold: float = 1.5  # Резкое движение = движение > 1.5 ATR за свечу
 
 
 @dataclass
