@@ -370,9 +370,20 @@ class MultiSymbolManager:
             
             if models_dir.exists():
                 
-                # ВАЖНО: Всегда проверяем предпочтение типа модели из глобальных настроек
-                # и очищаем кэш, если настройка изменилась
-                model_type_preference = getattr(self.settings, 'ml_model_type_for_all', None)
+                # ПРИОРИТЕТ: Сначала проверяем символьно-специфичные настройки, затем глобальные
+                model_type_preference = getattr(symbol_settings, 'ml_model_type', None)
+                ml_mtf_enabled = getattr(symbol_settings, 'ml_mtf_enabled', None)
+                
+                # Если символьно-специфичные настройки не заданы, используем глобальные
+                if model_type_preference is None:
+                    model_type_preference = getattr(self.settings, 'ml_model_type_for_all', None)
+                if ml_mtf_enabled is None:
+                    ml_mtf_enabled = getattr(self.settings, 'ml_mtf_enabled', False)
+                
+                if model_type_preference:
+                    print(f"[MultiSymbol] 📋 Using model type preference for {symbol}: {model_type_preference} (MTF: {ml_mtf_enabled})")
+                else:
+                    print(f"[MultiSymbol] 📋 Auto-selecting model for {symbol} (MTF: {ml_mtf_enabled})")
                 
                 # Формируем ключ кэша с учетом предпочтения типа модели и явно выбранной модели
                 explicit_model_path = getattr(self.settings, 'ml_model_path', None)
@@ -432,65 +443,117 @@ class MultiSymbolManager:
                     
                     # ЕСЛИ явно выбранная модель не найдена или не соответствует символу/типу, ищем автоматически
                     if not found_model:
-                        if model_type_preference:
-                            # Если задан тип модели, ищем только этот тип
-                            pattern = f"{model_type_preference}_{symbol}_*.pkl"
-                            print(f"[MultiSymbol] 🔍 Looking for {model_type_preference.upper()} models matching: {pattern} (user preference: {model_type_preference})")
-                            for model_file in sorted(models_dir.glob(pattern), reverse=True):  # Новые модели первыми
-                                if model_file.is_file():
-                                    found_model = str(model_file)
-                                    print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} model: {found_model}")
-                                    break
+                        # Определяем приоритет типов моделей в зависимости от ml_mtf_enabled
+                        if ml_mtf_enabled:
+                            # Если MTF включен, приоритет: quad_ensemble > triple_ensemble > ensemble > rf > xgb
+                            auto_types = ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]
                         else:
-                            # Автоматический выбор: предпочитаем quad_ensemble > triple_ensemble > ensemble > rf > xgb
-                            # Сначала ищем quad_ensemble
-                            quad_pattern = f"quad_ensemble_{symbol}_*.pkl"
-                            print(f"[MultiSymbol] 🔍 Auto-selection: Looking for QuadEnsemble models matching: {quad_pattern}")
-                            for model_file in sorted(models_dir.glob(quad_pattern), reverse=True):  # Новые модели первыми
-                                if model_file.is_file():
-                                    found_model = str(model_file)
-                                    print(f"[MultiSymbol] ✅ Found QuadEnsemble model: {found_model}")
+                            # Если MTF выключен, приоритет: ensemble > rf > xgb (старый порядок)
+                            auto_types = ["ensemble", "rf", "xgb"]
+                        
+                        if model_type_preference:
+                            # Если задан тип модели, ищем только этот тип с учетом MTF
+                            if ml_mtf_enabled:
+                                # Ищем MTF версию (_mtf.pkl)
+                                pattern = f"{model_type_preference}_{symbol}_*_mtf.pkl"
+                                print(f"[MultiSymbol] 🔍 Looking for {model_type_preference.upper()} MTF models matching: {pattern}")
+                                for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} MTF model: {found_model}")
+                                        break
+                                
+                                # Если MTF не найден, пробуем 15m версию
+                                if not found_model:
+                                    pattern = f"{model_type_preference}_{symbol}_*_15m.pkl"
+                                    print(f"[MultiSymbol] 🔍 MTF not found, looking for {model_type_preference.upper()} 15m models matching: {pattern}")
+                                    for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                        if model_file.is_file():
+                                            found_model = str(model_file)
+                                            print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} 15m model: {found_model}")
+                                            break
+                                
+                                # Если и 15m не найден, пробуем без суффикса (старые модели)
+                                if not found_model:
+                                    pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                                    print(f"[MultiSymbol] 🔍 Looking for {model_type_preference.upper()} models (any suffix) matching: {pattern}")
+                                    for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                        if model_file.is_file():
+                                            found_model = str(model_file)
+                                            print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} model: {found_model}")
+                                            break
+                            else:
+                                # Ищем 15m версию
+                                pattern = f"{model_type_preference}_{symbol}_*_15m.pkl"
+                                print(f"[MultiSymbol] 🔍 Looking for {model_type_preference.upper()} 15m models matching: {pattern}")
+                                for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                    if model_file.is_file():
+                                        found_model = str(model_file)
+                                        print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} 15m model: {found_model}")
+                                        break
+                                
+                                # Если 15m не найден, пробуем без суффикса (старые модели)
+                                if not found_model:
+                                    pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                                    print(f"[MultiSymbol] 🔍 Looking for {model_type_preference.upper()} models (any suffix) matching: {pattern}")
+                                    for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                        if model_file.is_file():
+                                            found_model = str(model_file)
+                                            print(f"[MultiSymbol] ✅ Found {model_type_preference.upper()} model: {found_model}")
+                                            break
+                        else:
+                            # Автоматический выбор с учетом MTF настроек
+                            for model_type in auto_types:
+                                if ml_mtf_enabled:
+                                    # Сначала ищем MTF версию
+                                    pattern = f"{model_type}_{symbol}_*_mtf.pkl"
+                                    print(f"[MultiSymbol] 🔍 Auto-selection: Looking for {model_type.upper()} MTF models matching: {pattern}")
+                                    for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                        if model_file.is_file():
+                                            found_model = str(model_file)
+                                            print(f"[MultiSymbol] ✅ Found {model_type.upper()} MTF model: {found_model}")
+                                            break
+                                    
+                                    # Если MTF не найден, пробуем 15m
+                                    if not found_model:
+                                        pattern = f"{model_type}_{symbol}_*_15m.pkl"
+                                        for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                            if model_file.is_file():
+                                                found_model = str(model_file)
+                                                print(f"[MultiSymbol] ✅ Found {model_type.upper()} 15m model: {found_model}")
+                                                break
+                                    
+                                    # Если и 15m не найден, пробуем без суффикса (старые модели)
+                                    if not found_model:
+                                        pattern = f"{model_type}_{symbol}_*.pkl"
+                                        for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                            # Пропускаем модели с _mtf или _15m суффиксами (уже проверили)
+                                            if model_file.is_file() and "_mtf.pkl" not in model_file.name and "_15m.pkl" not in model_file.name:
+                                                found_model = str(model_file)
+                                                print(f"[MultiSymbol] ✅ Found {model_type.upper()} model (legacy): {found_model}")
+                                                break
+                                else:
+                                    # Ищем только 15m версию или без суффикса
+                                    pattern = f"{model_type}_{symbol}_*_15m.pkl"
+                                    print(f"[MultiSymbol] 🔍 Auto-selection: Looking for {model_type.upper()} 15m models matching: {pattern}")
+                                    for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                        if model_file.is_file():
+                                            found_model = str(model_file)
+                                            print(f"[MultiSymbol] ✅ Found {model_type.upper()} 15m model: {found_model}")
+                                            break
+                                    
+                                    # Если 15m не найден, пробуем без суффикса (старые модели)
+                                    if not found_model:
+                                        pattern = f"{model_type}_{symbol}_*.pkl"
+                                        for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                                            # Пропускаем модели с _mtf суффиксом
+                                            if model_file.is_file() and "_mtf.pkl" not in model_file.name:
+                                                found_model = str(model_file)
+                                                print(f"[MultiSymbol] ✅ Found {model_type.upper()} model (legacy): {found_model}")
+                                                break
+                                
+                                if found_model:
                                     break
-                            
-                            # Если quad_ensemble не найден, пробуем triple_ensemble
-                            if not found_model:
-                                triple_pattern = f"triple_ensemble_{symbol}_*.pkl"
-                                print(f"[MultiSymbol] 🔍 QuadEnsemble not found, looking for TripleEnsemble models matching: {triple_pattern}")
-                                for model_file in sorted(models_dir.glob(triple_pattern), reverse=True):  # Новые модели первыми
-                                    if model_file.is_file():
-                                        found_model = str(model_file)
-                                        print(f"[MultiSymbol] ✅ Found TripleEnsemble model: {found_model}")
-                                        break
-                            
-                            # Если triple_ensemble не найден, пробуем ensemble
-                            if not found_model:
-                                ensemble_pattern = f"ensemble_{symbol}_*.pkl"
-                                print(f"[MultiSymbol] 🔍 TripleEnsemble not found, looking for Ensemble models matching: {ensemble_pattern}")
-                                for model_file in sorted(models_dir.glob(ensemble_pattern), reverse=True):  # Новые модели первыми
-                                    if model_file.is_file():
-                                        found_model = str(model_file)
-                                        print(f"[MultiSymbol] ✅ Found Ensemble model: {found_model}")
-                                        break
-                            
-                            # Если ensemble не найден, пробуем rf_
-                            if not found_model:
-                                rf_pattern = f"rf_{symbol}_*.pkl"
-                                print(f"[MultiSymbol] 🔍 Ensemble not found, looking for RF models matching: {rf_pattern}")
-                                for model_file in sorted(models_dir.glob(rf_pattern), reverse=True):  # Новые модели первыми
-                                    if model_file.is_file():
-                                        found_model = str(model_file)
-                                        print(f"[MultiSymbol] ✅ Found RF model: {found_model}")
-                                        break
-                            
-                            # Если rf_ модель не найдена, пробуем xgb_
-                            if not found_model:
-                                xgb_pattern = f"xgb_{symbol}_*.pkl"
-                                print(f"[MultiSymbol] 🔍 RF model not found, looking for XGB models matching: {xgb_pattern}")
-                                for model_file in sorted(models_dir.glob(xgb_pattern), reverse=True):  # Новые модели первыми
-                                    if model_file.is_file():
-                                        found_model = str(model_file)
-                                        print(f"[MultiSymbol] ✅ Found XGB model: {found_model}")
-                                        break
                     
                     if not found_model:
                         print(f"[MultiSymbol] ❌ No ML model found for {symbol}")

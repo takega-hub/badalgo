@@ -80,17 +80,17 @@ def synchronize_mtf_data(df_list: List[pd.DataFrame]) -> List[pd.DataFrame]:
         print("⚠️ Не удалось определить временную колонку для 15m")
         return df_list
     
-        # Преобразуем в datetime
-        # Проверяем формат: если это число (Unix timestamp в мс), используем unit='ms'
-        if df_15m[time_col_15m].dtype in ['int64', 'float64', 'int32', 'float32']:
-            # Проверяем, это миллисекунды или секунды
-            first_val = df_15m[time_col_15m].iloc[0]
-            if first_val > 1e12:  # Если больше 1e12, это миллисекунды
-                df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m], unit='ms')
-            else:  # Иначе секунды
-                df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m], unit='s')
-        else:
-            df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m])
+    # Преобразуем в datetime
+    # Проверяем формат: если это число (Unix timestamp в мс), используем unit='ms'
+    if df_15m[time_col_15m].dtype in ['int64', 'float64', 'int32', 'float32']:
+        # Проверяем, это миллисекунды или секунды
+        first_val = df_15m[time_col_15m].iloc[0] if len(df_15m) > 0 else 0
+        if first_val > 1e12:  # Если больше 1e12, это миллисекунды
+            df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m], unit='ms')
+        else:  # Иначе секунды
+            df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m], unit='s')
+    elif not pd.api.types.is_datetime64_any_dtype(df_15m[time_col_15m]):
+        df_15m[time_col_15m] = pd.to_datetime(df_15m[time_col_15m])
     
     # Синхронизируем остальные таймфреймы
     synchronized = [df_15m]

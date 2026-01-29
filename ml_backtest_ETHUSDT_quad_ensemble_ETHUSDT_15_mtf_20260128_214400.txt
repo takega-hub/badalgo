@@ -1,0 +1,37 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: quad_ensemble_ETHUSDT_15_mtf
+Symbol: ETHUSDT
+Date: 2026-01-28 21:44:00
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $993.01
+  Total PnL: $-6.99 (-0.70%)
+  Max Drawdown: $6.99 (0.70%)
+
+TRADE STATISTICS:
+  Total Trades: 1
+  Winning Trades: 0
+  Losing Trades: 1
+  Win Rate: 0.00%
+  Profit Factor: 0.00
+  Sharpe Ratio: 0.00
+
+TRADE DETAILS:
+  Average Win: $0.00
+  Average Loss: $-6.99
+  Best Trade: $-6.99
+  Worst Trade: $-6.99
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2026-01-01 20:00:00 @ $2991.24 (SHORT)
+    Exit: 2026-01-08 20:00:00 @ $3095.37 (TIME_LIMIT)
+    PnL: $-6.99 (-34.81%)
+    Confidence: 55.73%
+    Reason: ml_SHORT_сила_слабое_55%_TP_2.50%_SL_1.00%

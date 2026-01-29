@@ -1,0 +1,44 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: ensemble_BTCUSDT_15_15m
+Symbol: BTCUSDT
+Date: 2026-01-28 20:38:47
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $980.72
+  Total PnL: $-19.28 (-1.93%)
+  Max Drawdown: $19.28 (1.93%)
+
+TRADE STATISTICS:
+  Total Trades: 2
+  Winning Trades: 0
+  Losing Trades: 2
+  Win Rate: 0.00%
+  Profit Factor: 0.00
+  Sharpe Ratio: -83.92
+
+TRADE DETAILS:
+  Average Win: $0.00
+  Average Loss: $-9.64
+  Best Trade: $-7.86
+  Worst Trade: $-11.42
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2025-12-31 21:00:00 @ $87710.20 (SHORT)
+    Exit: 2026-01-07 21:00:00 @ $91145.80 (TIME_LIMIT)
+    PnL: $-7.86 (-39.17%)
+    Confidence: 59.41%
+    Reason: ml_SHORT_сила_слабое_59%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-08 00:45:00 @ $91358.80 (SHORT)
+    Exit: 2026-01-15 00:45:00 @ $96607.10 (TIME_LIMIT)
+    PnL: $-11.42 (-57.45%)
+    Confidence: 59.46%
+    Reason: ml_SHORT_сила_слабое_59%_TP_2.50%_SL_1.00%

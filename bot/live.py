@@ -4627,10 +4627,50 @@ def run_live_from_api(
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="VBO signals generated")
                         from bot.strategy import Action as StrategyActionVbo
-                        vbo_generated = [
-                            s for s in vbo_signals
-                            if s.action in (StrategyActionVbo.LONG, StrategyActionVbo.SHORT)
-                        ]
+                        
+                        # Фильтруем сигналы: только LONG/SHORT и только для последней свечи (в live режиме)
+                        vbo_generated = []
+                        if not df_ready.empty:
+                            last_candle_ts = df_ready.index[-1]
+                            if isinstance(last_candle_ts, pd.Timestamp):
+                                if last_candle_ts.tzinfo is None:
+                                    last_candle_ts_utc = last_candle_ts.tz_localize('UTC')
+                                else:
+                                    last_candle_ts_utc = last_candle_ts.tz_convert('UTC')
+                                last_candle_time = last_candle_ts_utc.to_pydatetime()
+                                
+                                for s in vbo_signals:
+                                    if s.action not in (StrategyActionVbo.LONG, StrategyActionVbo.SHORT):
+                                        continue
+                                    
+                                    # Проверяем, соответствует ли timestamp сигнала последней свече
+                                    sig_ts = s.timestamp
+                                    if isinstance(sig_ts, pd.Timestamp):
+                                        if sig_ts.tzinfo is None:
+                                            sig_ts_utc = sig_ts.tz_localize('UTC')
+                                        else:
+                                            sig_ts_utc = sig_ts.tz_convert('UTC')
+                                        sig_time = sig_ts_utc.to_pydatetime()
+                                    elif isinstance(sig_ts, datetime):
+                                        if sig_ts.tzinfo is None:
+                                            sig_time = sig_ts.replace(tzinfo=timezone.utc)
+                                        else:
+                                            sig_time = sig_ts
+                                    else:
+                                        continue
+                                    
+                                    # Оставляем только сигналы для последней свечи (в пределах 60 секунд)
+                                    time_diff_seconds = abs((sig_time - last_candle_time).total_seconds())
+                                    if time_diff_seconds <= 60:
+                                        # Обновляем timestamp на текущее время для свежести
+                                        s.timestamp = pd.Timestamp(datetime.now(timezone.utc), tz='UTC')
+                                        vbo_generated.append(s)
+                        else:
+                            # Если DataFrame пустой, используем старую логику
+                            vbo_generated = [
+                                s for s in vbo_signals
+                                if s.action in (StrategyActionVbo.LONG, StrategyActionVbo.SHORT)
+                            ]
                         
                         if vbo_generated:
                             _log(f"📊 VBO strategy: generated {len(vbo_generated)} actionable signals (total: {len(vbo_signals)})", symbol)
@@ -4687,10 +4727,50 @@ def run_live_from_api(
                         # Обновляем статус после генерации
                         update_worker_status(symbol, current_status="Running", last_action="BREAKOUT_TREND_HYBRID signals generated")
                         from bot.strategy import Action as StrategyActionHybrid
-                        hybrid_generated = [
-                            s for s in hybrid_signals
-                            if s.action in (StrategyActionHybrid.LONG, StrategyActionHybrid.SHORT)
-                        ]
+                        
+                        # Фильтруем сигналы: только LONG/SHORT и только для последней свечи (в live режиме)
+                        hybrid_generated = []
+                        if not df_ready.empty:
+                            last_candle_ts = df_ready.index[-1]
+                            if isinstance(last_candle_ts, pd.Timestamp):
+                                if last_candle_ts.tzinfo is None:
+                                    last_candle_ts_utc = last_candle_ts.tz_localize('UTC')
+                                else:
+                                    last_candle_ts_utc = last_candle_ts.tz_convert('UTC')
+                                last_candle_time = last_candle_ts_utc.to_pydatetime()
+                                
+                                for s in hybrid_signals:
+                                    if s.action not in (StrategyActionHybrid.LONG, StrategyActionHybrid.SHORT):
+                                        continue
+                                    
+                                    # Проверяем, соответствует ли timestamp сигнала последней свече
+                                    sig_ts = s.timestamp
+                                    if isinstance(sig_ts, pd.Timestamp):
+                                        if sig_ts.tzinfo is None:
+                                            sig_ts_utc = sig_ts.tz_localize('UTC')
+                                        else:
+                                            sig_ts_utc = sig_ts.tz_convert('UTC')
+                                        sig_time = sig_ts_utc.to_pydatetime()
+                                    elif isinstance(sig_ts, datetime):
+                                        if sig_ts.tzinfo is None:
+                                            sig_time = sig_ts.replace(tzinfo=timezone.utc)
+                                        else:
+                                            sig_time = sig_ts
+                                    else:
+                                        continue
+                                    
+                                    # Оставляем только сигналы для последней свечи (в пределах 60 секунд)
+                                    time_diff_seconds = abs((sig_time - last_candle_time).total_seconds())
+                                    if time_diff_seconds <= 60:
+                                        # Обновляем timestamp на текущее время для свежести
+                                        s.timestamp = pd.Timestamp(datetime.now(timezone.utc), tz='UTC')
+                                        hybrid_generated.append(s)
+                        else:
+                            # Если DataFrame пустой, используем старую логику
+                            hybrid_generated = [
+                                s for s in hybrid_signals
+                                if s.action in (StrategyActionHybrid.LONG, StrategyActionHybrid.SHORT)
+                            ]
                         
                         if hybrid_generated:
                             _log(f"🔗 BREAKOUT_TREND_HYBRID strategy: generated {len(hybrid_generated)} actionable signals (total: {len(hybrid_signals)})", symbol)
@@ -4805,6 +4885,11 @@ def run_live_from_api(
                         current_settings.ml_confidence_threshold,
                         current_settings.ml_min_signal_strength,
                         current_settings.ml_stability_filter,
+                        leverage=current_settings.leverage,
+                        target_profit_pct_margin=current_settings.ml_target_profit_pct_margin,
+                        max_loss_pct_margin=current_settings.ml_max_loss_pct_margin,
+                        min_signals_per_day=current_settings.ml_min_signals_per_day,
+                        max_signals_per_day=current_settings.ml_max_signals_per_day,
                     )
                     # Обновляем статус после генерации
                     update_worker_status(symbol, current_status="Running", last_action="ML signals generated")
@@ -5005,6 +5090,25 @@ def run_live_from_api(
                                     hist_reason = hist_signal.get("reason", "")
                                     hist_signal_id = hist_signal.get("signal_id")
                                     
+                                    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем confidence для ML сигналов при загрузке из истории
+                                    # Это предотвращает использование слабых сигналов, которые могли быть сохранены ранее
+                                    if "ml_" in hist_reason.lower() and "сила_слабое" in hist_reason:
+                                        import re
+                                        confidence_match = re.search(r'сила_слабое_(\d+)%', hist_reason)
+                                        if confidence_match:
+                                            confidence_pct = int(confidence_match.group(1))
+                                            min_strength_map = {
+                                                "слабое": 0,
+                                                "умеренное": 60,
+                                                "среднее": 70,
+                                                "сильное": 80,
+                                                "очень_сильное": 90
+                                            }
+                                            min_strength_pct = min_strength_map.get(current_settings.ml_min_signal_strength, 70)
+                                            if confidence_pct < min_strength_pct:
+                                                _log(f"⛔ Skipping weak ML signal from history: {hist_reason} (confidence: {confidence_pct}% < min: {min_strength_pct}%)", symbol)
+                                                continue
+                                    
                                     # ВАЖНО: Проверяем, был ли этот сигнал уже исполнен
                                     # Используем signal_id из истории для проверки
                                     if hist_signal_id and hist_signal_id in processed_signals:
@@ -5171,10 +5275,9 @@ def run_live_from_api(
                 s for s in all_signals
                 if s.reason.startswith("range_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
             ]
-            ml_signals_only = [
-                s for s in all_signals
-                if s.reason.startswith("ml_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
-            ]
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ml_signals_only должен формироваться из ml_actionable,
+            # а не из all_signals, чтобы исключить слабые сигналы, отфильтрованные по confidence
+            ml_signals_only = ml_actionable.copy() if ml_actionable else []
             momentum_signals_only = [
                 s for s in all_signals
                 if s.reason.startswith("momentum_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
@@ -5330,9 +5433,12 @@ def run_live_from_api(
                 # Берем самый последний сигнал (самый свежий по timestamp)
                 ml_sig = fresh_ml_signals[-1]
                 # Если есть несколько сигналов с одинаковым timestamp, выбираем тот, который был добавлен последним
-            elif ml_signals_only:
-                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Если нет свежих ML сигналов, но есть сигналы вообще - используем последний
-                ml_sig = ml_signals_only[-1]
+            elif ml_actionable:
+                # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем ml_actionable вместо ml_signals_only,
+                # чтобы гарантировать, что используются только сигналы, прошедшие фильтр по confidence
+                # Сортируем по timestamp и берем последний
+                ml_actionable_sorted = sorted(ml_actionable, key=get_timestamp_for_sort)
+                ml_sig = ml_actionable_sorted[-1] if ml_actionable_sorted else None
                 # Убираем логи о fallback сигналах - это нормальная ситуация
             
             # SMC сигнал

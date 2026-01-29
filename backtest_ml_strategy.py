@@ -111,21 +111,79 @@ class MLBacktestSimulator:
         if signal.action == Action.HOLD:
             return False
         
+        def _as_float_or_none(v: Any) -> Optional[float]:
+            try:
+                if v is None:
+                    return None
+                fv = float(v)
+                if not np.isfinite(fv):
+                    return None
+                return fv
+            except Exception:
+                return None
+
+        def _pct_to_frac(pct: Optional[float]) -> Optional[float]:
+            """
+            В indicators_info ML tp_pct/sl_pct хранятся в ПРОЦЕНТАХ (например 1.80 означает 1.80%).
+            В некоторых местах могут оказаться доли (0.018). Поддерживаем оба формата:
+            - если значение >= 1.0 -> считаем, что это проценты и делим на 100
+            - если 0 < значение < 1.0 -> считаем, что это уже доля
+            """
+            if pct is None:
+                return None
+            if pct <= 0:
+                return None
+            # ИСПРАВЛЕНО: >= 1.0 вместо > 1.0, чтобы 1.0% правильно обрабатывался
+            return (pct / 100.0) if pct >= 1.0 else pct
+
         # Рассчитываем размер позиции на основе риска
-        stop_loss = signal.stop_loss or signal.indicators_info.get('stop_loss') if signal.indicators_info else None
-        take_profit = signal.take_profit or signal.indicators_info.get('take_profit') if signal.indicators_info else None
+        stop_loss = _as_float_or_none(signal.stop_loss) or (_as_float_or_none(signal.indicators_info.get('stop_loss')) if signal.indicators_info else None)
+        take_profit = _as_float_or_none(signal.take_profit) or (_as_float_or_none(signal.indicators_info.get('take_profit')) if signal.indicators_info else None)
         
         if stop_loss is None or take_profit is None:
             # Если SL/TP не указаны, используем значения по умолчанию из indicators_info
             if signal.indicators_info:
-                tp_pct = signal.indicators_info.get('tp_pct', 0.025)  # 2.5% по умолчанию
-                sl_pct = signal.indicators_info.get('sl_pct', 0.01)   # 1% по умолчанию
-                stop_loss = signal.price * (1 - sl_pct) if signal.action == Action.LONG else signal.price * (1 + sl_pct)
-                take_profit = signal.price * (1 + tp_pct) if signal.action == Action.LONG else signal.price * (1 - tp_pct)
+                tp_pct_raw = _as_float_or_none(signal.indicators_info.get('tp_pct'))
+                sl_pct_raw = _as_float_or_none(signal.indicators_info.get('sl_pct'))
+                tp_frac = _pct_to_frac(tp_pct_raw) if tp_pct_raw is not None else 0.025  # 2.5% по умолчанию
+                sl_frac = _pct_to_frac(sl_pct_raw) if sl_pct_raw is not None else 0.01   # 1% по умолчанию
+
+                # Sanity: ограничим экстремальные значения (защита от кривых данных)
+                tp_frac = float(np.clip(tp_frac, 0.001, 0.10))  # 0.1% .. 10%
+                sl_frac = float(np.clip(sl_frac, 0.001, 0.10))  # 0.1% .. 10%
+
+                stop_loss = signal.price * (1 - sl_frac) if signal.action == Action.LONG else signal.price * (1 + sl_frac)
+                take_profit = signal.price * (1 + tp_frac) if signal.action == Action.LONG else signal.price * (1 - tp_frac)
+                
+                # Отладочный вывод для первых нескольких сигналов
+                if not hasattr(self, '_debug_signals_count'):
+                    self._debug_signals_count = 0
+                if self._debug_signals_count < 3:
+                    print(f"[DEBUG] Signal #{self._debug_signals_count + 1}: {signal.action.value} @ ${signal.price:.2f}")
+                    print(f"  tp_pct_raw={tp_pct_raw}, sl_pct_raw={sl_pct_raw}")
+                    print(f"  tp_frac={tp_frac:.4f} ({tp_frac*100:.2f}%), sl_frac={sl_frac:.4f} ({sl_frac*100:.2f}%)")
+                    print(f"  TP=${take_profit:.2f} ({abs(take_profit-signal.price)/signal.price*100:.2f}% from price)")
+                    print(f"  SL=${stop_loss:.2f} ({abs(stop_loss-signal.price)/signal.price*100:.2f}% from price)")
+                    self._debug_signals_count += 1
             else:
                 # Используем фиксированные значения
                 stop_loss = signal.price * 0.99 if signal.action == Action.LONG else signal.price * 1.01
                 take_profit = signal.price * 1.02 if signal.action == Action.LONG else signal.price * 0.98
+
+        # Финальная sanity-проверка, что SL/TP по правильную сторону цены
+        stop_loss = _as_float_or_none(stop_loss)
+        take_profit = _as_float_or_none(take_profit)
+        if stop_loss is None or take_profit is None:
+            return False
+        if signal.action == Action.LONG:
+            if not (stop_loss < signal.price and take_profit > signal.price):
+                # fallback на консервативные значения
+                stop_loss = signal.price * 0.99
+                take_profit = signal.price * 1.02
+        else:
+            if not (stop_loss > signal.price and take_profit < signal.price):
+                stop_loss = signal.price * 1.01
+                take_profit = signal.price * 0.98
         
         # Рассчитываем риск на сделку
         if signal.action == Action.LONG:
@@ -256,7 +314,9 @@ class MLBacktestSimulator:
         pnl_usd = pos.size_usd * pnl_pct
         
         # Вычитаем комиссию (вход + выход)
-        commission_cost = pos.size_usd * self.commission * 2
+        # Комиссия считается от NOTIONAL, а не от маржи. В бэктесте pos.size_usd трактуем как маржу,
+        # поэтому умножаем на leverage для приближённого notional.
+        commission_cost = (pos.size_usd * self.leverage) * self.commission * 2
         pnl_usd -= commission_cost
         
         pos.pnl = pnl_usd
@@ -516,6 +576,8 @@ def run_ml_backtest(
             leverage=leverage,
             target_profit_pct_margin=settings.ml_target_profit_pct_margin,
             max_loss_pct_margin=settings.ml_max_loss_pct_margin,
+            min_signals_per_day=settings.ml_min_signals_per_day,
+            max_signals_per_day=settings.ml_max_signals_per_day,
         )
         
         # Фильтруем только actionable сигналы (LONG/SHORT)

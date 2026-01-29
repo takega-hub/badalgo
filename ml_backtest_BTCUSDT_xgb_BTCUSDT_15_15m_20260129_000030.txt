@@ -1,0 +1,44 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: xgb_BTCUSDT_15_15m
+Symbol: BTCUSDT
+Date: 2026-01-29 00:00:30
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $980.90
+  Total PnL: $-19.10 (-1.91%)
+  Max Drawdown: $19.10 (1.91%)
+
+TRADE STATISTICS:
+  Total Trades: 2
+  Winning Trades: 0
+  Losing Trades: 2
+  Win Rate: 0.00%
+  Profit Factor: 0.00
+  Sharpe Ratio: -79.24
+
+TRADE DETAILS:
+  Average Win: $0.00
+  Average Loss: $-9.55
+  Best Trade: $-7.68
+  Worst Trade: $-11.43
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2026-01-01 00:15:00 @ $87723.90 (SHORT)
+    Exit: 2026-01-08 00:15:00 @ $91081.20 (TIME_LIMIT)
+    PnL: $-7.68 (-38.27%)
+    Confidence: 96.80%
+    Reason: ml_SHORT_сила_очень_сильное_96%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-08 00:45:00 @ $91358.80 (SHORT)
+    Exit: 2026-01-15 00:45:00 @ $96607.10 (TIME_LIMIT)
+    PnL: $-11.43 (-57.45%)
+    Confidence: 96.58%
+    Reason: ml_SHORT_сила_очень_сильное_96%_TP_2.50%_SL_1.00%

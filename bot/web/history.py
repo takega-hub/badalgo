@@ -652,6 +652,7 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
             "momentum": "momentum_",
             "liquidity": "liquidity_",
             "amt_of": "amt_of_",
+            "breakout_trend_hybrid": "breakout_trend_hybrid_",
         }
         
         prefix = strategy_prefix_map.get(strategy_type.lower(), "")
@@ -737,6 +738,8 @@ def add_signal(action: str, reason: str, price: float, timestamp: Any = None, sy
             strategy_type = "zscore"
         elif reason_lower.startswith("vbo_"):
             strategy_type = "vbo"
+        elif reason_lower.startswith("breakout_trend_hybrid_"):
+            strategy_type = "breakout_trend_hybrid"
         else:
             strategy_type = "unknown"  # Оставляем unknown, если не удалось определить
     
@@ -1093,6 +1096,8 @@ def get_signals(limit: int = 100, symbol_filter: Optional[str] = None, include_s
                 sig["strategy_type"] = "zscore"
             elif reason.startswith("vbo_"):
                 sig["strategy_type"] = "vbo"
+            elif reason.startswith("breakout_trend_hybrid_"):
+                sig["strategy_type"] = "breakout_trend_hybrid"
     
     # Сортируем по timestamp по убыванию (от новых к старым)
     signals_sorted = sorted(unique_signals, key=get_timestamp, reverse=True)

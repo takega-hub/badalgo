@@ -634,12 +634,31 @@ def _generate_trend_signal_df(
     # Forward-fill simple NaNs then validate
     df = df.ffill()
 
-    # Data validation: avoid NaN/inf-only DataFrames
-    if df.replace([np.inf, -np.inf], np.nan).dropna().empty:
+    # Data validation: check only essential OHLCV columns for validity
+    # Don't check all columns as technical indicators may have NaN values
+    essential_cols = ['open', 'high', 'low', 'close', 'volume']
+    available_essential_cols = [col for col in essential_cols if col in df.columns]
+    
+    if not available_essential_cols:
         # Логируем только если не в режиме бэктеста
         if not state.get('backtest_mode', False):
-            print(f"[generate_trend_signal] DEBUG: DataFrame is empty after NaN/inf removal")
-        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "nan_in_data"}
+            print(f"[generate_trend_signal] DEBUG: No essential columns found in DataFrame")
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "missing_essential_columns"}
+    
+    # Check if essential columns have valid data (no NaN/inf in essential columns)
+    df_essential = df[available_essential_cols].replace([np.inf, -np.inf], np.nan)
+    if df_essential.dropna(subset=available_essential_cols).empty:
+        # Логируем только если не в режиме бэктеста
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: Essential columns are empty after NaN/inf removal. Rows: {len(df)}, Essential cols: {available_essential_cols}")
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "nan_in_essential_data"}
+    
+    # Additional check: ensure the last row has valid close price
+    if pd.isna(df['close'].iloc[-1]) or not np.isfinite(df['close'].iloc[-1]):
+        # Логируем только если не в режиме бэктеста
+        if not state.get('backtest_mode', False):
+            print(f"[generate_trend_signal] DEBUG: Last close price is NaN or inf")
+        return {"signal": None, "stop_loss": None, "indicators_info": indicators_info, "reason": "invalid_close_price"}
 
     if not _ensure_history(df, min_history):
         # Логируем только если не в режиме бэктеста

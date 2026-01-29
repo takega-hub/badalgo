@@ -1,0 +1,58 @@
+================================================================================
+ML STRATEGY BACKTEST RESULTS
+================================================================================
+
+Model: xgb_SOLUSDT_15_15m
+Symbol: SOLUSDT
+Date: 2026-01-28 19:57:46
+Days Back: 30
+
+FINANCIAL METRICS:
+  Initial Balance: $1000.00
+  Final Balance: $993.18
+  Total PnL: $-6.82 (-0.68%)
+  Max Drawdown: $31.50 (3.15%)
+
+TRADE STATISTICS:
+  Total Trades: 4
+  Winning Trades: 2
+  Losing Trades: 2
+  Win Rate: 50.00%
+  Profit Factor: 0.78
+  Sharpe Ratio: -1.66
+
+TRADE DETAILS:
+  Average Win: $12.34
+  Average Loss: $-15.75
+  Best Trade: $18.57
+  Worst Trade: $-17.67
+
+DETAILED TRADES:
+
+  Trade #1:
+    Entry: 2025-12-31 22:15:00 @ $125.11 (SHORT)
+    Exit: 2026-01-07 22:15:00 @ $136.15 (TIME_LIMIT)
+    PnL: $-17.67 (-88.24%)
+    Confidence: 96.87%
+    Reason: ml_SHORT_сила_очень_сильное_96%_TP_2.50%_SL_1.00%
+
+  Trade #2:
+    Entry: 2026-01-07 22:30:00 @ $136.31 (SHORT)
+    Exit: 2026-01-14 22:30:00 @ $145.89 (TIME_LIMIT)
+    PnL: $-13.83 (-70.28%)
+    Confidence: 96.75%
+    Reason: ml_SHORT_сила_очень_сильное_96%_TP_2.50%_SL_1.00%
+
+  Trade #3:
+    Entry: 2026-01-15 04:15:00 @ $143.98 (SHORT)
+    Exit: 2026-01-22 04:15:00 @ $130.16 (TIME_LIMIT)
+    PnL: $18.57 (+95.99%)
+    Confidence: 94.35%
+    Reason: ml_SHORT_сила_очень_сильное_94%_TP_2.50%_SL_1.00%
+
+  Trade #4:
+    Entry: 2026-01-22 04:45:00 @ $130.25 (SHORT)
+    Exit: 2026-01-28 16:45:00 @ $126.20 (END_OF_BACKTEST)
+    PnL: $6.11 (+31.09%)
+    Confidence: 98.21%
+    Reason: ml_SHORT_сила_очень_сильное_98%_TP_2.50%_SL_1.00%

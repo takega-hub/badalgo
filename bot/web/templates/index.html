@@ -2121,6 +2121,7 @@
                             'vbo': '🟣 VBO (Volatility Breakout)',
                             'amt_of': '⚫ AMT & Order Flow Scalper',
                             'hybrid': '🔄 Hybrid',
+                            'breakout_trend_hybrid': '🟠 BREAKOUT_TREND_HYBRID',
                             'unknown': 'Unknown'
                         };
                         strategyDisplay = strategyMap[strategyType.toLowerCase()] || strategyType.toUpperCase();
@@ -2148,7 +2149,7 @@
                             // Форматируем reason для лучшей читаемости
                             let formattedReason = entryReason;
                             // Убираем префиксы стратегий для краткости
-                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|zscore_|vbo_|amt_of_)/, '');
+                            formattedReason = formattedReason.replace(/^(ml_|trend_|range_|momentum_|liquidity_|smc_|ict_|zscore_|vbo_|amt_of_|breakout_trend_hybrid_)/, '');
                             // Заменяем подчеркивания на пробелы
                             formattedReason = formattedReason.replace(/_/g, ' ');
                             // Улучшаем читаемость специфичных паттернов
@@ -3042,37 +3043,53 @@
                 let html = '<div class="table-wrapper"><table><thead><tr><th>Time</th><th>Pair</th><th>Strategy</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>PnL</th><th>Order ID</th></tr></thead><tbody>';
                 sortedTrades.forEach(trade => {
                     const strategyType = (trade.strategy_type || 'unknown').toLowerCase();
+                    // Fallback: если strategy_type не заполнен, пытаемся определить по entry_reason
+                    // (это помогает для старых записей и для случаев, когда strategy_type не был сохранён)
+                    let resolvedStrategyType = strategyType;
+                    if (resolvedStrategyType === 'unknown' || !resolvedStrategyType) {
+                        const entryReason = (trade.entry_reason || '').toLowerCase();
+                        if (entryReason.startsWith('ml_')) resolvedStrategyType = 'ml';
+                        else if (entryReason.startsWith('smc_')) resolvedStrategyType = 'smc';
+                        else if (entryReason.startsWith('ict_')) resolvedStrategyType = 'ict';
+                        else if (entryReason.startsWith('trend_')) resolvedStrategyType = 'trend';
+                        else if (entryReason.startsWith('range_') || entryReason.startsWith('flat_')) resolvedStrategyType = 'flat';
+                        else if (entryReason.startsWith('momentum_')) resolvedStrategyType = 'momentum';
+                        else if (entryReason.startsWith('liquidity_')) resolvedStrategyType = 'liquidity';
+                        else if (entryReason.startsWith('zscore_')) resolvedStrategyType = 'zscore';
+                        else if (entryReason.startsWith('vbo_')) resolvedStrategyType = 'vbo';
+                        else if (entryReason.startsWith('breakout_trend_hybrid_')) resolvedStrategyType = 'breakout_trend_hybrid';
+                    }
                     // Форматируем название стратегии для отображения
                     let strategyDisplay = 'UNKNOWN';
                     let strategyColor = '#aaa';
-                    if (strategyType === 'trend') {
+                    if (resolvedStrategyType === 'trend') {
                         strategyDisplay = 'TREND';
                         strategyColor = '#00ff88';
-                    } else if (strategyType === 'flat') {
+                    } else if (resolvedStrategyType === 'flat') {
                         strategyDisplay = 'FLAT';
                         strategyColor = '#ffaa00';
-                    } else if (strategyType === 'ml') {
+                    } else if (resolvedStrategyType === 'ml') {
                         strategyDisplay = 'ML';
                         strategyColor = '#9933ff';
-                    } else if (strategyType === 'momentum') {
+                    } else if (resolvedStrategyType === 'momentum') {
                         strategyDisplay = 'MOMENTUM';
                         strategyColor = '#00d4ff';
-                    } else if (strategyType === 'smc') {
+                    } else if (resolvedStrategyType === 'smc') {
                         strategyDisplay = 'SMC';
                         strategyColor = '#9d4edd';
-                    } else if (strategyType === 'ict') {
+                    } else if (resolvedStrategyType === 'ict') {
                         strategyDisplay = 'ICT';
                         strategyColor = '#ff6b6b';
                         strategyColor = '#ff9500';
-                    } else if (strategyType === 'zscore') {
+                    } else if (resolvedStrategyType === 'zscore') {
                         strategyDisplay = 'Z-SCORE';
                         strategyColor = '#00ffaa';
-                    } else if (strategyType === 'vbo') {
+                    } else if (resolvedStrategyType === 'vbo') {
                         strategyDisplay = 'VBO';
                         strategyColor = '#ff00ff';
-                    } else if (strategyType === 'hybrid') {
+                    } else if (resolvedStrategyType === 'hybrid' || resolvedStrategyType === 'breakout_trend_hybrid') {
                         strategyDisplay = 'HYBRID';
-                        strategyColor = '#00d4ff';
+                        strategyColor = '#ff8800';
                     }
                     
                     // Форматируем время входа (показываем время выхода, так как это момент закрытия сделки)
@@ -3339,6 +3356,7 @@
                         'ict': '<span style="color: #ff6b6b;">ICT</span>',
                         'zscore': '<span style="color: #00ffaa;">Z-SCORE</span>',
                         'vbo': '<span style="color: #ff00ff;">VBO</span>',
+                        'breakout_trend_hybrid': '<span style="color: #ff8800;">BREAKOUT_TREND_HYBRID</span>',
                         'unknown': '<span style="color: #aaa;">UNKNOWN</span>'
                     };
                     return types[type] || types['unknown'];
@@ -3371,6 +3389,7 @@
                         else if (reason.startsWith('ict_')) strategyType = 'ict';
                         else if (reason.startsWith('zscore_')) strategyType = 'zscore';
                         else if (reason.startsWith('vbo_')) strategyType = 'vbo';
+                        else if (reason.startsWith('breakout_trend_hybrid_')) strategyType = 'breakout_trend_hybrid';
                     }
                     html += `<tr>
                         <td>${mskTime}</td>

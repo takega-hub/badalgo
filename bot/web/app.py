@@ -2220,6 +2220,8 @@ def api_ml_test():
             leverage=settings.leverage,
             target_profit_pct_margin=settings.ml_target_profit_pct_margin,
             max_loss_pct_margin=settings.ml_max_loss_pct_margin,
+            min_signals_per_day=settings.ml_min_signals_per_day,
+            max_signals_per_day=settings.ml_max_signals_per_day,
         )
         
         # Подсчитываем статистику
@@ -4220,6 +4222,8 @@ def api_chart_data():
                             leverage=settings.leverage,
                             target_profit_pct_margin=settings.ml_target_profit_pct_margin,
                             max_loss_pct_margin=settings.ml_max_loss_pct_margin,
+                            min_signals_per_day=settings.ml_min_signals_per_day,
+                            max_signals_per_day=settings.ml_max_signals_per_day,
                         )
                         # Добавляем только LONG и SHORT сигналы (HOLD не показываем)
                         for sig in ml_signals:

@@ -179,8 +179,8 @@ class RiskParams:
     max_position_usd: float = 200.0
     # Защита от повторных убыточных сделок
     enable_loss_cooldown: bool = True  # Включить защиту от повторных убыточных сделок
-    loss_cooldown_minutes: int = 60  # Период "охлаждения" в минутах после убыточной сделки
-    max_consecutive_losses: int = 2  # Максимальное количество убыточных сделок подряд, после которого блокируем
+    loss_cooldown_minutes: int = 120  # Период "охлаждения" в минутах после убыточной сделки (оптимизировано: было 60)
+    max_consecutive_losses: int = 3  # Максимальное количество убыточных сделок подряд, после которого блокируем (оптимизировано: было 2)
     base_order_usd: float = 50.0
     add_order_usd: float = 50.0
     stop_loss_pct: float = 0.01  # 1% stop from entry
@@ -190,8 +190,8 @@ class RiskParams:
     
     # Trailing Stop Loss
     enable_trailing_stop: bool = True  # Включить trailing stop loss
-    trailing_stop_activation_pct: float = 0.005  # Активировать trailing stop при прибыли 0.5%
-    trailing_stop_distance_pct: float = 0.003  # Расстояние trailing stop от максимума (0.3%)
+    trailing_stop_activation_pct: float = 0.003  # Активировать trailing stop при прибыли 0.3% (оптимизировано: было 0.5%)
+    trailing_stop_distance_pct: float = 0.002  # Расстояние trailing stop от максимума (0.2%) (оптимизировано: было 0.3%)
     
     # Частичное закрытие позиции
     enable_partial_close: bool = True  # Включить частичное закрытие
@@ -234,10 +234,12 @@ class SymbolStrategySettings:
     enable_amt_of_strategy: bool = False  # AMT & Order Flow Scalper (Absorption Squeeze)
     enable_breakout_trend_hybrid_strategy: bool = False  # BREAKOUT_TREND_HYBRID (VBO + TREND)
     strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "breakout_trend_hybrid", "hybrid", "confluence"
+    ml_model_type: Optional[str] = None  # Тип ML модели для этого символа: "rf", "xgb", "ensemble", "triple_ensemble", "quad_ensemble" (None = использовать глобальные настройки)
+    ml_mtf_enabled: Optional[bool] = None  # Использовать MTF модели для этого символа (None = использовать глобальные настройки)
     
     def to_dict(self) -> Dict:
         """Преобразует настройки в словарь"""
-        return {
+        result = {
             "enable_trend_strategy": self.enable_trend_strategy,
             "enable_flat_strategy": self.enable_flat_strategy,
             "enable_ml_strategy": self.enable_ml_strategy,
@@ -251,6 +253,12 @@ class SymbolStrategySettings:
             "enable_breakout_trend_hybrid_strategy": self.enable_breakout_trend_hybrid_strategy,
             "strategy_priority": self.strategy_priority,
         }
+        # Добавляем ML настройки только если они заданы
+        if self.ml_model_type is not None:
+            result["ml_model_type"] = self.ml_model_type
+        if self.ml_mtf_enabled is not None:
+            result["ml_mtf_enabled"] = self.ml_mtf_enabled
+        return result
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'SymbolStrategySettings':
@@ -268,6 +276,8 @@ class SymbolStrategySettings:
             enable_amt_of_strategy=data.get("enable_amt_of_strategy", False),
             enable_breakout_trend_hybrid_strategy=data.get("enable_breakout_trend_hybrid_strategy", False),
             strategy_priority=data.get("strategy_priority", "trend"),
+            ml_model_type=data.get("ml_model_type", None),
+            ml_mtf_enabled=data.get("ml_mtf_enabled", None),
         )
 
 
@@ -297,8 +307,12 @@ class AppSettings:
     ml_confidence_threshold: float = 0.5  # Минимальная уверенность ML модели для открытия позиции (0-1)
     ml_min_signal_strength: str = "слабое"  # Минимальная сила сигнала: "слабое", "умеренное", "среднее", "сильное", "очень_сильное"
     ml_stability_filter: bool = True  # Фильтр стабильности: игнорировать слабые сигналы при смене направления
-    ml_target_profit_pct_margin: float = 25.0  # Целевая прибыль от маржи в % (20-30%)
-    ml_max_loss_pct_margin: float = 10.0  # Максимальный убыток от маржи в % (обычно 50% от прибыли)
+    ml_target_profit_pct_margin: float = 18.0  # Целевая прибыль от маржи в % (оптимизировано: было 20.0%, теперь 1.8% от цены)
+    ml_max_loss_pct_margin: float = 10.0  # Максимальный убыток от маржи в % (оптимизировано: было 8.0%, теперь 1.0% от цены, RR=1.8:1)
+    ml_min_signals_per_day: int = 1  # Целевой минимум сигналов в день (для статистики и оценки работы стратегии)
+    ml_max_signals_per_day: int = 10  # Целевой максимум сигналов в день (для статистики и оценки работы стратегии)
+    # ПРИМЕЧАНИЕ: Это не жесткие ограничения, а целевые показатели для оценки качества стратегии
+    # Реальная фильтрация происходит через пороги уверенности и качество сигналов
     # Выбор активных стратегий (можно использовать несколько одновременно)
     enable_trend_strategy: bool = True  # Трендовая стратегия (старая)
     enable_flat_strategy: bool = True   # Флэтовая стратегия (старая)

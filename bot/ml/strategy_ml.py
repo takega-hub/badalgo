@@ -46,7 +46,7 @@ class MLStrategy:
     ML-стратегия, использующая обученную модель для предсказания движения цены.
     """
     
-    def __init__(self, model_path: str, confidence_threshold: float = 0.5, min_signal_strength: str = "слабое", stability_filter: bool = True, use_dynamic_threshold: bool = True):
+    def __init__(self, model_path: str, confidence_threshold: float = 0.5, min_signal_strength: str = "слабое", stability_filter: bool = True, use_dynamic_threshold: bool = True, min_signals_per_day: int = 1, max_signals_per_day: int = 10):
         """
         Инициализирует ML-стратегию.
         
@@ -56,6 +56,8 @@ class MLStrategy:
             min_signal_strength: Минимальная сила сигнала ("слабое", "умеренное", "среднее", "сильное", "очень_сильное")
             stability_filter: Фильтр стабильности - требовать более высокую уверенность для смены направления
             use_dynamic_threshold: Использовать динамические пороги на основе рыночных условий
+            min_signals_per_day: Минимальное количество сигналов в день (гарантирует хотя бы 1 сигнал)
+            max_signals_per_day: Максимальное количество сигналов в день (ограничивает избыточную торговлю)
         """
         self.model_path = Path(model_path)
         self.confidence_threshold = confidence_threshold
@@ -83,6 +85,12 @@ class MLStrategy:
         self.max_signal_history = 20  # Храним последние 20 сигналов
         self.min_bars_between_opposite_signals = 4  # Минимум баров между противоположными сигналами
         self.min_confidence_difference = 0.15  # Минимальная разница уверенности между LONG и SHORT (15%)
+        
+        # Отслеживание сигналов в день для ограничения количества
+        # Хранит количество сигналов по датам: {date_str: count}
+        self.daily_signals_count = {}
+        self.min_signals_per_day = min_signals_per_day
+        self.max_signals_per_day = max_signals_per_day
         
         # Загружаем модель
         self.model_data = self._load_model()
@@ -704,15 +712,29 @@ class MLStrategy:
             confidence_pct = int(confidence * 100) if np.isfinite(confidence) else 0
             profit_pct = int(target_profit_pct_margin)
             
+            # Проверяем количество сигналов за сегодня
+            from datetime import datetime, timezone
+            current_date = datetime.now(timezone.utc).date()
+            date_str = current_date.isoformat()
+            
+            # Получаем количество сигналов за сегодня (для статистики и оценки работы стратегии)
+            signals_today = self.daily_signals_count.get(date_str, 0)
+            
+            # ПРИМЕЧАНИЕ: Не блокируем сигналы жестким лимитом
+            # Цель: естественным образом получать 1-10 качественных сигналов в день через правильные пороги
+            # Максимум сигналов используется только как защита от ошибок (например, 100+ сигналов)
+            if prediction != 0 and signals_today >= 100:  # Только защита от ошибок (100+ сигналов - явная ошибка)
+                return Signal(row.name, Action.HOLD, f"ml_защита_от_ошибок_слишком_много_сигналов_{signals_today}", current_price)
+            
             # Проверяем минимальную силу сигнала (только для LONG/SHORT, не для HOLD)
-            # Повышаем пороги для фильтрации слабых сигналов
+            # Пороги настроены так, чтобы естественным образом получать 1-10 качественных сигналов в день
             if self.is_ensemble:
-                # Для ансамблей используем более высокие пороги для избирательности
-                # Минимум 0.5% для волатильных, 0.7% для стабильных символов
+                # Для ансамблей используем сниженные пороги для получения достаточного количества сигналов
+                # Цель: 1-10 сигналов в день естественным образом
                 if is_volatile_symbol:
-                    min_strength = 0.005  # 0.5% для волатильных символов (повышено с 0.1%)
+                    min_strength = 0.003  # 0.3% для волатильных символов (снижено: было 0.5%)
                 else:
-                    min_strength = 0.007  # 0.7% для стабильных символов (повышено с 0.5%)
+                    min_strength = 0.004  # 0.4% для стабильных символов (снижено: было 0.7%)
             else:
                 # Для одиночных моделей используем стандартные пороги
                 if is_volatile_symbol:
@@ -1047,12 +1069,13 @@ class MLStrategy:
             # Возвращаем только LONG, SHORT или HOLD
             # Уже проверили min_strength_threshold выше, теперь проверяем confidence_threshold
             if prediction == 1:  # LONG
-                # Повышаем пороги для ансамблей для избирательности
+                # Настраиваем пороги для ансамблей для получения 1-10 качественных сигналов в день
                 if self.is_ensemble:
-                    # Для ансамблей используем более высокие пороги (20-30% от стандартного) вместо 0.1-0.5%
-                    threshold_mult = 0.20 if is_volatile_symbol else 0.30  # 20-30% от стандартного (повышено)
-                    # Для ансамблей также повышаем dynamic_threshold
-                    dynamic_threshold = self.confidence_threshold * 0.30  # 30% от стандартного (повышено с 1%)
+                    # Для ансамблей используем сниженные пороги (15-20% от стандартного) для достаточного количества сигналов
+                    # Цель: естественным образом получать 1-10 сигналов в день
+                    threshold_mult = 0.15 if is_volatile_symbol else 0.20  # 15-20% от стандартного (снижено: было 25-35%)
+                    # Для ансамблей также снижаем dynamic_threshold
+                    dynamic_threshold = self.confidence_threshold * 0.20  # 20% от стандартного (снижено: было 30%)
                 else:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
@@ -1090,6 +1113,13 @@ class MLStrategy:
                 if len(self.signal_history) > self.max_signal_history:
                     self.signal_history.pop(0)
                 
+                # Обновляем счетчик сигналов за день
+                self.daily_signals_count[date_str] = signals_today + 1
+                # Очищаем старые даты (старше 7 дней) для экономии памяти
+                from datetime import timedelta
+                cutoff_date = (current_date - timedelta(days=7)).isoformat()
+                self.daily_signals_count = {k: v for k, v in self.daily_signals_count.items() if k >= cutoff_date}
+                
                 # Собираем информацию о показателях для ML
                 indicators_info = {
                     "strategy": "ML",
@@ -1111,12 +1141,13 @@ class MLStrategy:
                 return Signal(row.name, Action.LONG, reason, current_price, indicators_info=indicators_info)
             
             elif prediction == -1:  # SHORT
-                # Повышаем пороги для ансамблей для избирательности
+                # Настраиваем пороги для ансамблей для получения 1-10 качественных сигналов в день
                 if self.is_ensemble:
-                    # Для ансамблей используем более высокие пороги (20-30% от стандартного) вместо 0.1-0.5%
-                    threshold_mult = 0.20 if is_volatile_symbol else 0.30  # 20-30% от стандартного (повышено)
-                    # Для ансамблей также повышаем dynamic_threshold
-                    dynamic_threshold = self.confidence_threshold * 0.30  # 30% от стандартного (повышено с 1%)
+                    # Для ансамблей используем сниженные пороги (15-20% от стандартного) для достаточного количества сигналов
+                    # Цель: естественным образом получать 1-10 сигналов в день
+                    threshold_mult = 0.15 if is_volatile_symbol else 0.20  # 15-20% от стандартного (снижено: было 25-35%)
+                    # Для ансамблей также снижаем dynamic_threshold
+                    dynamic_threshold = self.confidence_threshold * 0.20  # 20% от стандартного (снижено: было 30%)
                 else:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
@@ -1153,6 +1184,13 @@ class MLStrategy:
                 self.signal_history.append((row.name, signal_action, confidence))
                 if len(self.signal_history) > self.max_signal_history:
                     self.signal_history.pop(0)
+                
+                # Обновляем счетчик сигналов за день
+                self.daily_signals_count[date_str] = signals_today + 1
+                # Очищаем старые даты (старше 7 дней) для экономии памяти
+                from datetime import timedelta
+                cutoff_date = (current_date - timedelta(days=7)).isoformat()
+                self.daily_signals_count = {k: v for k, v in self.daily_signals_count.items() if k >= cutoff_date}
                 
                 # Собираем информацию о показателях для ML
                 indicators_info = {
@@ -1198,6 +1236,8 @@ def build_ml_signals(
     leverage: int = 10,
     target_profit_pct_margin: float = 25.0,
     max_loss_pct_margin: float = 10.0,
+    min_signals_per_day: int = 1,
+    max_signals_per_day: int = 10,
 ) -> list[Signal]:
     """
     Строит сигналы на основе ML-модели для всего DataFrame.
@@ -1212,7 +1252,7 @@ def build_ml_signals(
     Returns:
         Список Signal объектов
     """
-    strategy = MLStrategy(model_path, confidence_threshold, min_signal_strength, stability_filter)
+    strategy = MLStrategy(model_path, confidence_threshold, min_signal_strength, stability_filter, min_signals_per_day=min_signals_per_day, max_signals_per_day=max_signals_per_day)
     signals: list[Signal] = []
     position_bias: Optional[Bias] = None
     

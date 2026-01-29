@@ -11,7 +11,9 @@
     "enable_vbo_strategy": true,
     "enable_amt_of_strategy": true,
     "enable_breakout_trend_hybrid_strategy": true,
-    "strategy_priority": "ict"
+    "strategy_priority": "ict",
+    "ml_model_type": "quad_ensemble",
+    "ml_mtf_enabled": true
   },
   "ETHUSDT": {
     "enable_trend_strategy": true,
@@ -25,7 +27,9 @@
     "enable_vbo_strategy": true,
     "enable_amt_of_strategy": true,
     "enable_breakout_trend_hybrid_strategy": false,
-    "strategy_priority": "ict"
+    "strategy_priority": "ict",
+    "ml_model_type": "triple_ensemble",
+    "ml_mtf_enabled": true
   },
   "SOLUSDT": {
     "enable_trend_strategy": true,
@@ -39,6 +43,8 @@
     "enable_vbo_strategy": true,
     "enable_amt_of_strategy": true,
     "enable_breakout_trend_hybrid_strategy": false,
-    "strategy_priority": "ict"
+    "strategy_priority": "ict",
+    "ml_model_type": "quad_ensemble",
+    "ml_mtf_enabled": false
   }
 }
