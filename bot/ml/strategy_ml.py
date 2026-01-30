@@ -1152,9 +1152,12 @@ class MLStrategy:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
                 
+                # ВАЖНО: Если уверенность < 0.5 (50%), это слабый сигнал, который требует проверки порогов.
+                # Если уверенность >= 0.5, мы считаем сигнал достаточно сильным.
                 effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
                 # Для ансамблей effective_threshold теперь выше, что фильтрует слабые сигналы
-                if confidence < effective_threshold:
+                # ВАЖНО: Если уверенность >= 0.5 (50%), мы считаем сигнал сильным и игнорируем низкие пороги ансамбля
+                if confidence < 0.5 and confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%_мин_{int(effective_threshold*100)}%", current_price)
                 
@@ -1224,9 +1227,12 @@ class MLStrategy:
                     # Для одиночных моделей используем стандартные пороги
                     threshold_mult = 0.70 if is_volatile_symbol else 0.85
                 
+                # ВАЖНО: Если уверенность < 0.5 (50%), это слабый сигнал, который требует проверки порогов.
+                # Если уверенность >= 0.5, мы считаем сигнал достаточно сильным.
                 effective_threshold = max(dynamic_threshold * threshold_mult, min_strength)
                 # Для ансамблей effective_threshold теперь выше, что фильтрует слабые сигналы
-                if confidence < effective_threshold:
+                # ВАЖНО: Если уверенность >= 0.5 (50%), мы считаем сигнал сильным и игнорируем низкие пороги ансамбля
+                if confidence < 0.5 and confidence < effective_threshold:
                     # Модель не уверена - HOLD
                     return Signal(row.name, Action.HOLD, f"ml_не_проходит_порог_уверенности_{strength}_{confidence_pct}%_мин_{int(effective_threshold*100)}%", current_price)
                 

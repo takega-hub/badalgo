@@ -2600,6 +2600,21 @@ def api_ml_model_select():
             if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                 symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
                 symbol_settings.ml_model_path = str(model_path)
+                
+                # Пытаемся определить тип модели из имени файла и обновить ml_model_type
+                try:
+                    filename = Path(model_path).name
+                    parts = filename.split('_')
+                    if parts:
+                        model_type = parts[0].lower()
+                        if model_type in ["rf", "xgb", "ensemble", "triple", "quad"]:
+                            if model_type == "triple": model_type = "triple_ensemble"
+                            if model_type == "quad": model_type = "quad_ensemble"
+                            symbol_settings.ml_model_type = model_type
+                            print(f"[web] Auto-updated ml_model_type for {symbol} to {model_type}")
+                except Exception as e:
+                    print(f"[web] Warning: Could not auto-determine model type from path: {e}")
+                
                 settings.set_strategy_settings_for_symbol(symbol, symbol_settings)
                 
                 # Сохраняем в JSON файл

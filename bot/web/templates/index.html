@@ -5496,6 +5496,9 @@
                     statusDiv.textContent = `✅ Model selected successfully for ${symbol || 'all'}!`;
                     statusDiv.style.color = '#00ff88';
                     
+                    // Обновляем сохраненный путь к модели в атрибуте, чтобы он не затерся при сохранении стратегий
+                    modelSelect.dataset.currentSymbolModelPath = modelPath;
+                    
                     // Обновляем информацию о модели и список выбранных моделей для всех пар
                     // Используем небольшую задержку, чтобы дать серверу время обновить настройки
                     setTimeout(() => {

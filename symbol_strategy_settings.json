@@ -12,8 +12,9 @@
     "enable_amt_of_strategy": true,
     "enable_breakout_trend_hybrid_strategy": true,
     "strategy_priority": "ict",
-    "ml_model_type": "quad_ensemble",
-    "ml_mtf_enabled": true
+    "ml_model_type": "rf",
+    "ml_mtf_enabled": true,
+    "ml_model_path": "test_model_path_btc.pkl"
   },
   "ETHUSDT": {
     "enable_trend_strategy": true,
