@@ -391,6 +391,7 @@ def _save_settings_to_env(settings: AppSettings):
             f.write(f"ML_CONFIDENCE_THRESHOLD={env_dict['ML_CONFIDENCE_THRESHOLD']}\n")
             f.write(f"ML_MIN_SIGNAL_STRENGTH={env_dict['ML_MIN_SIGNAL_STRENGTH']}\n")
             f.write(f"ML_STABILITY_FILTER={env_dict['ML_STABILITY_FILTER']}\n")
+            f.write(f"ML_MTF_ENABLED={env_dict['ML_MTF_ENABLED']}\n")
             if 'ML_MODEL_TYPE_FOR_ALL' in env_dict:
                 f.write(f"ML_MODEL_TYPE_FOR_ALL={env_dict['ML_MODEL_TYPE_FOR_ALL']}\n")
             
