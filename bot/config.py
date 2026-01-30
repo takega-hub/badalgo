@@ -275,6 +275,7 @@ class SymbolStrategySettings:
     strategy_priority: str = "trend"  # "trend", "flat", "ml", "momentum", "smc", "ict", "zscore", "vbo", "amt_of", "breakout_trend_hybrid", "hybrid", "confluence"
     ml_model_type: Optional[str] = None  # Тип ML модели для этого символа: "rf", "xgb", "ensemble", "triple_ensemble", "quad_ensemble" (None = использовать глобальные настройки)
     ml_mtf_enabled: Optional[bool] = None  # Использовать MTF модели для этого символа (None = использовать глобальные настройки)
+    ml_model_path: Optional[str] = None  # Конкретный путь к модели для этого символа
     
     def to_dict(self) -> Dict:
         """Преобразует настройки в словарь"""
@@ -297,6 +298,8 @@ class SymbolStrategySettings:
             result["ml_model_type"] = self.ml_model_type
         if self.ml_mtf_enabled is not None:
             result["ml_mtf_enabled"] = self.ml_mtf_enabled
+        if self.ml_model_path is not None:
+            result["ml_model_path"] = self.ml_model_path
         return result
     
     @classmethod
@@ -317,6 +320,7 @@ class SymbolStrategySettings:
             strategy_priority=data.get("strategy_priority", "trend"),
             ml_model_type=data.get("ml_model_type", None),
             ml_mtf_enabled=data.get("ml_mtf_enabled", None),
+            ml_model_path=data.get("ml_model_path", None),
         )
 
 

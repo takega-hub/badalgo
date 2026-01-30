@@ -1952,17 +1952,29 @@ def api_ml_model_info():
     if not settings:
         return jsonify({"error": "Settings not loaded"}), 500
     
-    if not settings.ml_model_path:
-        # Пытаемся найти модель автоматически для текущего символа
-        model_path = _find_model_for_symbol(settings.symbol)
-        if model_path:
-            settings.ml_model_path = model_path
-            print(f"[web] Auto-found ML model for {settings.symbol}: {model_path}")
-        else:
-            return jsonify({"error": "No ML model configured"}), 404
+    # Получаем символ из параметров запроса или используем текущий
+    symbol = request.args.get('symbol', settings.symbol)
+    symbol = symbol.upper() if symbol else settings.symbol
     
-    if not settings.ml_model_path:
-        return jsonify({"error": "No ML model configured"}), 404
+    # Получаем настройки для конкретного символа
+    symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
+    
+    # Определяем путь к модели: сначала индивидуальный, потом глобальный
+    model_path = getattr(symbol_settings, 'ml_model_path', None)
+    if not model_path:
+        model_path = settings.ml_model_path
+    
+    if not model_path:
+        # Пытаемся найти модель автоматически для указанного символа
+        model_path = _find_model_for_symbol(symbol)
+        if model_path:
+            # Не сохраняем в настройки, просто используем для информации
+            print(f"[web] Auto-found ML model for info ({symbol}): {model_path}")
+        else:
+            return jsonify({"error": f"No ML model configured for {symbol}"}), 404
+    
+    if not model_path:
+        return jsonify({"error": f"No ML model configured for {symbol}"}), 404
     
     # Отложенный импорт для избежания deadlock при многопоточности
     try:
@@ -2343,8 +2355,15 @@ def api_ml_models_all_pairs():
             # Ищем модель для символа
             found_model = None
             
-            # Если для символа задан конкретный тип модели, ищем его
-            if model_type_preference:
+            # 1. Сначала проверяем, есть ли явно заданный путь к модели для этого символа
+            if hasattr(symbol_settings, 'ml_model_path') and symbol_settings.ml_model_path:
+                model_path_obj = Path(symbol_settings.ml_model_path)
+                if model_path_obj.exists():
+                    found_model = str(model_path_obj)
+                    print(f"[web] Using explicit ML model for {symbol} from symbol settings: {found_model}")
+            
+            # 2. Если для символа задан конкретный тип модели, ищем его
+            if not found_model and model_type_preference:
                 # Ищем модель указанного типа
                 pattern = f"{model_type_preference}_{symbol}_*.pkl"
                 for model_file in sorted(models_dir.glob(pattern), reverse=True):
@@ -2352,7 +2371,7 @@ def api_ml_models_all_pairs():
                         found_model = str(model_file)
                         break
             
-            # Если модель не найдена по предпочтению, пробуем автоматический выбор
+            # 3. Если модель не найдена по предпочтению, пробуем автоматический выбор
             if not found_model:
                 # Автоматический выбор:
                 # Если включен MTF-режим, сначала пробуем quad_ensemble / triple_ensemble,
@@ -2562,6 +2581,7 @@ def api_ml_model_select():
     
     data = request.json or {}
     model_path = data.get("model_path")
+    symbol = data.get("symbol")  # Получаем символ из запроса
     
     if not model_path:
         return jsonify({"error": "model_path is required"}), 400
@@ -2573,11 +2593,25 @@ def api_ml_model_select():
         return jsonify({"error": f"Model file not found: {model_path}"}), 404
     
     try:
-        # Обновляем настройки
-        settings.ml_model_path = str(model_path)
-        
-        # Сохраняем в .env
-        _save_settings_to_env(settings)
+        # Если символ указан, сохраняем индивидуально для него
+        if symbol:
+            symbol = symbol.upper()
+            if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
+                symbol_settings.ml_model_path = str(model_path)
+                settings.set_strategy_settings_for_symbol(symbol, symbol_settings)
+                
+                # Сохраняем в JSON файл
+                save_symbol_strategy_settings(settings)
+                print(f"[web] ML model selected for {symbol}: {model_path}")
+            else:
+                return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
+        else:
+            # Иначе обновляем глобальные настройки (для обратной совместимости)
+            settings.ml_model_path = str(model_path)
+            # Сохраняем в .env
+            _save_settings_to_env(settings)
+            print(f"[web] Global ML model selected: {model_path}")
         
         # Обновляем в shared_settings
         from bot.shared_settings import set_settings
@@ -2585,8 +2619,9 @@ def api_ml_model_select():
         
         return jsonify({
             "success": True,
-            "message": f"Model selected: {model_file.name}",
+            "message": f"Model selected for {symbol or 'all'}: {model_file.name}",
             "model_path": str(model_path),
+            "symbol": symbol
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -4140,12 +4175,25 @@ def api_chart_data():
                     
                     # Определяем, какую модель использовать для данного символа на графике
                     models_dir = Path(__file__).parent.parent.parent / "ml_models"
-                    model_type_preference = getattr(settings, "ml_model_type_for_all", None)
-                    ml_mtf_enabled = getattr(settings, "ml_mtf_enabled", False)
+                    
+                    # Получаем настройки для конкретного символа
+                    symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
+                    
+                    # Приоритет: настройки символа > глобальные настройки
+                    model_type_preference = symbol_settings.ml_model_type if symbol_settings.ml_model_type else getattr(settings, "ml_model_type_for_all", None)
+                    ml_mtf_enabled = symbol_settings.ml_mtf_enabled if symbol_settings.ml_mtf_enabled is not None else getattr(settings, "ml_mtf_enabled", False)
+                    
                     model_path_for_chart = None
                     
-                    # 1) Пытаемся использовать явно выбранную модель, если она подходит символу и (при наличии) типу
-                    if settings.ml_model_path:
+                    # 1) Пытаемся использовать явно выбранную модель для этого символа
+                    if hasattr(symbol_settings, 'ml_model_path') and symbol_settings.ml_model_path:
+                        model_path_obj = Path(symbol_settings.ml_model_path)
+                        if model_path_obj.exists():
+                            model_path_for_chart = str(model_path_obj)
+                            print(f"[web] Using explicit ML model for chart {symbol} from symbol settings: {model_path_for_chart}")
+                    
+                    # 2) Пытаемся использовать глобально выбранную модель, если она подходит символу
+                    if not model_path_for_chart and settings.ml_model_path:
                         model_path_obj = Path(settings.ml_model_path)
                         if model_path_obj.exists():
                             filename = model_path_obj.name
@@ -4156,15 +4204,12 @@ def api_chart_data():
                                     if model_type_preference:
                                         if model_type_from_filename == model_type_preference.lower():
                                             model_path_for_chart = str(model_path_obj)
-                                            print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart} (matches type: {model_type_preference})")
-                                        else:
-                                            # Убрано verbose сообщение о несовпадении модели - это нормальное поведение
-                                            pass
+                                            print(f"[web] Using global explicit ML model for chart {symbol}: {model_path_for_chart} (matches type: {model_type_preference})")
                                     else:
                                         model_path_for_chart = str(model_path_obj)
-                                        print(f"[web] Using explicit ML model for chart {symbol}: {model_path_for_chart}")
+                                        print(f"[web] Using global explicit ML model for chart {symbol}: {model_path_for_chart}")
                     
-                    # 2) Если явная модель не подходит, ищем по предпочтению или авто
+                    # 3) Если явная модель не подходит, ищем по предпочтению или авто
                     if not model_path_for_chart and models_dir.exists():
                         if model_type_preference:
                             pattern = f"{model_type_preference}_{symbol}_*.pkl"

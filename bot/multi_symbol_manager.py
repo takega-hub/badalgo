@@ -370,9 +370,12 @@ class MultiSymbolManager:
             
             if models_dir.exists():
                 
+                # Получаем индивидуальные настройки стратегий для этого символа
+                specific_settings = symbol_settings.get_strategy_settings_for_symbol(symbol)
+                
                 # ПРИОРИТЕТ: Сначала проверяем символьно-специфичные настройки, затем глобальные
-                model_type_preference = getattr(symbol_settings, 'ml_model_type', None)
-                ml_mtf_enabled = getattr(symbol_settings, 'ml_mtf_enabled', None)
+                model_type_preference = specific_settings.ml_model_type
+                ml_mtf_enabled = specific_settings.ml_mtf_enabled
                 
                 # Если символьно-специфичные настройки не заданы, используем глобальные
                 if model_type_preference is None:
@@ -386,7 +389,8 @@ class MultiSymbolManager:
                     print(f"[MultiSymbol] 📋 Auto-selecting model for {symbol} (MTF: {ml_mtf_enabled})")
                 
                 # Формируем ключ кэша с учетом предпочтения типа модели и явно выбранной модели
-                explicit_model_path = getattr(self.settings, 'ml_model_path', None)
+                # Учитываем как индивидуальный путь, так и глобальный
+                explicit_model_path = specific_settings.ml_model_path or getattr(self.settings, 'ml_model_path', None)
                 cache_key = f"{symbol}_{model_type_preference or 'auto'}_{explicit_model_path or 'none'}"
                 if not hasattr(self, '_model_cache_keys'):
                     self._model_cache_keys = {}
@@ -401,11 +405,18 @@ class MultiSymbolManager:
                     # Ищем модель для символа с учетом предпочтения типа модели
                     found_model = None
                     
-                    # СНАЧАЛА: Проверяем, есть ли явно выбранная модель в settings.ml_model_path
+                    # СНАЧАЛА: Проверяем, есть ли явно заданный путь к модели в настройках символа
+                    if specific_settings.ml_model_path:
+                        explicit_model_path = pathlib.Path(specific_settings.ml_model_path)
+                        if explicit_model_path.exists():
+                            found_model = str(explicit_model_path)
+                            print(f"[MultiSymbol] ✅ Using symbol-specific ML model for {symbol}: {found_model}")
+
+                    # ЗАТЕМ: Проверяем, есть ли явно выбранная модель в settings.ml_model_path
                     # и соответствует ли она текущему символу И типу модели (если ml_model_type_for_all задан)
                     # ВАЖНО: Если для символа задан конкретный тип модели (model_type_preference),
                     # мы игнорируем глобально выбранную модель, так как она скорее всего от другого символа.
-                    if self.settings.ml_model_path and not getattr(symbol_settings, 'ml_model_type', None):
+                    if not found_model and self.settings.ml_model_path and not specific_settings.ml_model_type:
                         explicit_model_path = pathlib.Path(self.settings.ml_model_path)
                         if explicit_model_path.exists():
                             # Извлекаем символ и тип модели из имени файла

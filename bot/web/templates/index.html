@@ -5120,7 +5120,10 @@
         
         async function loadMLModelInfo() {
             try {
-                const response = await fetch('/api/ml/model/info');
+                const primarySymbolSelect = document.getElementById('primary-symbol-select');
+                const symbol = primarySymbolSelect ? primarySymbolSelect.value : (typeof currentSymbol !== 'undefined' && currentSymbol ? currentSymbol : 'BTCUSDT');
+                
+                const response = await fetch(`/api/ml/model/info?symbol=${encodeURIComponent(symbol)}`);
                 const mlInfoDiv = document.getElementById('ml-model-info');
                 if (!mlInfoDiv) return;
                 
@@ -5403,8 +5406,11 @@
                     modelSelect.appendChild(optgroup);
                 });
                 
-                // Получаем текущую модель из API
-                fetch('/api/ml/model/info')
+                // Получаем текущую модель из API для текущего символа
+                const primarySymbolSelect = document.getElementById('primary-symbol-select');
+                const symbol = primarySymbolSelect ? primarySymbolSelect.value : (typeof currentSymbol !== 'undefined' && currentSymbol ? currentSymbol : 'BTCUSDT');
+                
+                fetch(`/api/ml/model/info?symbol=${encodeURIComponent(symbol)}`)
                     .then(response => response.json())
                     .then(modelInfo => {
                         if (modelInfo.metadata && modelInfo.current_model_path) {
@@ -5435,6 +5441,7 @@
             try {
                 const modelSelect = document.getElementById('ml-model-select');
                 const statusDiv = document.getElementById('select-model-status');
+                const primarySymbolSelect = document.getElementById('primary-symbol-select');
                 
                 if (!modelSelect || !statusDiv) {
                     alert('Error: Could not find model selection elements');
@@ -5442,13 +5449,15 @@
                 }
                 
                 const modelPath = modelSelect.value;
+                const symbol = primarySymbolSelect ? primarySymbolSelect.value : null;
+                
                 if (!modelPath) {
                     statusDiv.textContent = 'Please select a model first';
                     statusDiv.style.color = '#ff4444';
                     return;
                 }
                 
-                statusDiv.textContent = 'Selecting model...';
+                statusDiv.textContent = `Selecting model for ${symbol || 'all'}...`;
                 statusDiv.style.color = '#aaa';
                 
                 const response = await fetch('/api/ml/model/select', {
@@ -5456,13 +5465,16 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ model_path: modelPath })
+                    body: JSON.stringify({
+                        model_path: modelPath,
+                        symbol: symbol
+                    })
                 });
                 
                 const result = await response.json();
                 
                 if (response.ok && result.success) {
-                    statusDiv.textContent = '✅ Model selected successfully!';
+                    statusDiv.textContent = `✅ Model selected successfully for ${symbol || 'all'}!`;
                     statusDiv.style.color = '#00ff88';
                     
                     // Обновляем информацию о модели и список выбранных моделей для всех пар
