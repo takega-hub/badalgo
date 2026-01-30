@@ -978,28 +978,6 @@
             <div class="card" style="grid-column: 1 / -1; margin-top: 20px;">
                 <h2>ML Model Management</h2>
                 
-                <!-- Выбор типа модели для всех пар -->
-                <div style="margin-bottom: 30px; padding: 20px; background: #1a2a2a; border: 1px solid #00d4ff; border-radius: 8px;">
-                    <h3 style="color: #00d4ff; margin-top: 0; margin-bottom: 15px;">🔧 Model Type for All Pairs</h3>
-                    <p style="color: #aaa; margin-bottom: 15px; font-size: 0.9em;">
-                        Select the model type to use for all trading pairs (BTCUSDT, ETHUSDT, SOLUSDT). 
-                        This setting will be applied automatically when models are loaded for each pair.
-                    </p>
-                    <label style="display: block; margin-bottom: 10px;">
-                        <span style="display: block; margin-bottom: 5px; color: #aaa; font-weight: bold;">Model Type for All Pairs:</span>
-                        <select id="ml-model-type-for-all" style="width: 100%; max-width: 400px; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
-                            <option value="">Auto (Ensemble > RF > XGB)</option>
-                            <option value="ensemble">🎯 Ensemble (RF + XGBoost) - Recommended</option>
-                            <option value="triple_ensemble">🚀 TripleEnsemble (RF + XGBoost + LightGBM)</option>
-                            <option value="quad_ensemble">🌟 QuadEnsemble (RF + XGBoost + LightGBM + LSTM)</option>
-                            <option value="rf">Random Forest</option>
-                            <option value="xgb">XGBoost</option>
-                        </select>
-                    </label>
-                    <button class="btn success" onclick="saveMLModelTypeForAll()" style="margin-top: 10px;">Save Model Type for All Pairs</button>
-                    <div id="model-type-status" style="margin-top: 10px; color: #aaa;"></div>
-                </div>
-                
                 <!-- Выбор модели для текущей пары -->
                 <div style="margin-bottom: 20px; padding-top: 20px; border-top: 1px solid #444;">
                     <h3 style="color: #e0e0e0; margin-bottom: 15px;">Select Model for Current Pair</h3>
@@ -5049,12 +5027,6 @@
                 
                 let html = '';
                 
-                // Показываем предпочтение типа модели
-                html += `<div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-radius: 4px;">`;
-                html += `<span style="color: #aaa;">Model Type Preference: </span>`;
-                html += `<span style="color: #00d4ff; font-weight: bold;">${modelTypePreference === "auto" ? "Auto (Ensemble > RF > XGB)" : modelTypePreference.toUpperCase()}</span>`;
-                html += `</div>`;
-                
                 // Показываем информацию о моделях для каждой пары
                 const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
                 for (const symbol of symbols) {
@@ -5525,84 +5497,6 @@
         }
         window.selectMLModel = selectMLModel;
         
-        async function saveMLModelTypeForAll() {
-            try {
-                const modelTypeSelect = document.getElementById('ml-model-type-for-all');
-                const statusDiv = document.getElementById('model-type-status');
-                
-                if (!modelTypeSelect) {
-                    console.error('ml-model-type-for-all select not found');
-                    return;
-                }
-                
-                const modelType = modelTypeSelect.value || "";
-                
-                // Сохраняем через API
-                const response = await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        app: {
-                            ml_model_type_for_all: modelType || null
-                        }
-                    })
-                });
-                
-                // Проверяем Content-Type перед парсингом JSON
-                const contentType = response.headers.get('content-type');
-                if (!contentType || !contentType.includes('application/json')) {
-                    const text = await response.text();
-                    throw new Error(`Server returned non-JSON response (${response.status}): ${text.substring(0, 100)}`);
-                }
-                
-                const data = await response.json();
-                
-                if (response.ok && data.success) {
-                    if (statusDiv) {
-                        let displayType = modelType || 'Auto';
-                        // Преобразуем техническое название в понятное
-                        const typeMap = {
-                            'ensemble': 'Ensemble (RF + XGBoost)',
-                            'triple_ensemble': 'TripleEnsemble (RF + XGBoost + LightGBM)',
-                            'quad_ensemble': 'QuadEnsemble (RF + XGBoost + LightGBM + LSTM)',
-                            'rf': 'Random Forest',
-                            'xgb': 'XGBoost'
-                        };
-                        displayType = typeMap[modelType] || displayType;
-                        statusDiv.innerHTML = `<span style="color: #00ff88;">✔ Model type for all pairs saved successfully! (${displayType})</span>`;
-                    }
-                    console.log('Model type for all pairs saved:', modelType || 'Auto');
-                    
-                    // Обновляем значение из ответа сервера, если оно есть
-                    if (data.settings && data.settings.ml_model_type_for_all !== undefined) {
-                        modelTypeSelect.value = data.settings.ml_model_type_for_all || "";
-                    }
-                    
-                    // Перезагружаем настройки через 1 секунду
-                    setTimeout(() => {
-                        if (typeof loadSettings !== 'undefined') {
-                            loadSettings();
-                        }
-                    }, 1000);
-                } else {
-                    const errorMsg = data.error || data.message || 'Failed to save model type';
-                    if (statusDiv) {
-                        statusDiv.innerHTML = `<span style="color: #ff4444;">Error: ${errorMsg}</span>`;
-                    }
-                    console.error('Error saving model type:', errorMsg);
-                }
-            } catch (error) {
-                console.error('Error saving model type for all pairs:', error);
-                const statusDiv = document.getElementById('model-type-status');
-                if (statusDiv) {
-                    statusDiv.innerHTML = `<span style="color: #ff4444;">Error: ${error.message}</span>`;
-                }
-            }
-        }
-        
-        window.saveMLModelTypeForAll = saveMLModelTypeForAll;
         
         function createProgressBar(progress, message, error = null) {
             const color = error ? '#ff4444' : (progress >= 100 ? '#00ff88' : '#8a2be2');
