@@ -1423,6 +1423,7 @@ def api_update_settings():
             "ENABLE_LIQUIDITY_SWEEP_STRATEGY",
             "STRATEGY_PRIORITY",  # Приоритет стратегии
             "ML_CONFIDENCE_THRESHOLD", "ML_MIN_SIGNAL_STRENGTH", "ML_STABILITY_FILTER",
+            "ML_MTF_ENABLED",
             # Strategy Parameters
             "ADX_THRESHOLD", "ADX_LENGTH", "DI_LENGTH", "BREAKOUT_LOOKBACK", "BREAKOUT_VOLUME_MULT",
             "SMA_LENGTH", "PULLBACK_TOLERANCE", "VOLUME_SPIKE_MULT", "CONSOLIDATION_BARS", "CONSOLIDATION_RANGE_PCT",
@@ -2589,6 +2590,11 @@ def api_ml_model_select():
     from pathlib import Path
     model_file = Path(model_path)
     
+    # Если путь относительный, пробуем найти его в ml_models
+    if not model_file.is_absolute():
+        model_file = project_root / "ml_models" / model_path
+        model_path = str(model_file)
+    
     if not model_file.exists():
         return jsonify({"error": f"Model file not found: {model_path}"}), 404
     
@@ -2654,6 +2660,103 @@ def api_ml_model_select():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ml/models/comparison")
+@login_required
+def api_ml_models_comparison():
+    """Получить результаты последнего сравнения моделей."""
+    try:
+        import pandas as pd
+        from pathlib import Path
+        
+        # Ищем все файлы сравнения
+        comparison_files = list(project_root.glob("ml_models_comparison_*.csv"))
+        if not comparison_files:
+            return jsonify({"success": False, "error": "No comparison files found. Run comparison first."})
+        
+        # Берем самый свежий файл
+        latest_file = max(comparison_files, key=lambda x: x.stat().st_mtime)
+        
+        # Читаем CSV
+        df = pd.read_csv(latest_file)
+        
+        # Преобразуем в список словарей
+        results = df.to_dict(orient="records")
+        
+        return jsonify({
+            "success": True,
+            "file": latest_file.name,
+            "timestamp": datetime.fromtimestamp(latest_file.stat().st_mtime).isoformat(),
+            "results": results
+        })
+    except Exception as e:
+        print(f"[web] Error loading comparison: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route("/api/ml/models/compare", methods=["POST"])
+@login_required
+def api_ml_models_compare():
+    """Запустить сравнение моделей."""
+    try:
+        data = request.json or {}
+        days = data.get("days", 30)
+        workers = data.get("workers", 4)
+        
+        # Проверяем, не запущен ли уже процесс
+        if training_statuses.get("comparison", {}).get("is_running"):
+            return jsonify({"error": "Comparison is already running"}), 400
+        
+        def run_comparison():
+            try:
+                import subprocess
+                import sys
+                
+                training_statuses["comparison"] = {
+                    "is_running": True,
+                    "progress": 10,
+                    "message": "Starting models comparison backtest..."
+                }
+                
+                print(f"[web] 🚀 Starting models comparison (days={days}, workers={workers})...")
+                
+                # Запускаем скрипт
+                cmd = [sys.executable, "compare_ml_models.py", "--days", str(days), "--workers", str(workers), "--output", "csv"]
+                subprocess.run(cmd, check=True, cwd=str(project_root))
+                
+                training_statuses["comparison"] = {
+                    "is_running": False,
+                    "progress": 100,
+                    "message": "Comparison completed successfully!"
+                }
+                print(f"[web] ✅ Models comparison completed!")
+            except Exception as e:
+                print(f"[web] ❌ Comparison error: {e}")
+                training_statuses["comparison"] = {
+                    "is_running": False,
+                    "progress": 0,
+                    "message": f"Error: {str(e)}",
+                    "error": str(e)
+                }
+        
+        import threading
+        thread = threading.Thread(target=run_comparison, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Comparison started in background. This may take several minutes."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ml/models/compare/status")
+@login_required
+def api_ml_models_compare_status():
+    """Получить статус сравнения моделей."""
+    return jsonify({
+        "success": True,
+        "status": training_statuses.get("comparison", {"is_running": False, "progress": 0, "message": "Not started"})
+    })
 
 
 @app.route("/api/ml/model/retrain", methods=["POST"])
@@ -2978,17 +3081,28 @@ def api_ml_model_retrain_all():
 
         def run_retrain_script():
             try:
+                import time
+                init_training_status("retrain_all", mode=mode)
+                update_training_status("retrain_all", 10, f"Запуск {mode_display} переобучения всех моделей...", mode=mode)
+                
                 print(f"[web] 🚀 Запуск {mode_display} переобучения всех моделей...")
-                import sys
-                import os
+                
+                # Симуляция прогресса для информативности
+                update_training_status("retrain_all", 20, "Сбор данных для всех пар...", mode=mode)
+                time.sleep(1)
+                update_training_status("retrain_all", 40, "Обучение моделей (это может занять время)...", mode=mode)
                 
                 # Запускаем скрипт через текущий интерпретатор (venv)
-                # Передаем --mode если скрипт это поддерживает, или просто запускаем нужный файл
-                subprocess.run([sys.executable, script_name], check=True)
+                subprocess.run([sys.executable, script_name], check=True, cwd=str(project_root))
+                
+                update_training_status("retrain_all", 100, f"{mode_display} переобучение всех моделей завершено!", mode=mode)
                 print(f"[web] ✅ {mode_display} переобучение завершено!")
                 
             except Exception as e:
+                error_msg = str(e)
                 print(f"[web] ❌ Ошибка при выполнении {script_name}: {e}")
+                current_prog = training_statuses["retrain_all"].get(mode, {}).get("progress", 0)
+                update_training_status("retrain_all", current_prog, f"Ошибка: {error_msg}", mode=mode, error=error_msg)
         
         # Запускаем в отдельном потоке
         import threading
@@ -3012,7 +3126,8 @@ training_statuses = {
     "retrain_all": {"optimal": None, "aggressive": None},
     "lstm_single": {},  # {symbol: status}
     "quad_single": {},  # {symbol: status}
-    "quad_all": None
+    "quad_all": None,
+    "comparison": {"is_running": False, "progress": 0, "message": "Not started"}
 }
 
 def get_training_status_key(operation, symbol=None, mode=None):

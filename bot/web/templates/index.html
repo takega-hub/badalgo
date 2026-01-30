@@ -990,6 +990,34 @@
                 <div id="ml-model-info" style="margin-bottom: 20px;">
                     <div class="loading">Loading model info...</div>
                 </div>
+
+                <!-- Сравнение ML моделей -->
+                <div style="margin-top: 30px; padding: 20px; background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; border-radius: 8px;">
+                    <h3 style="color: #00d4ff; margin-top: 0; margin-bottom: 15px;">🚀 ML Models Comparison (Backtest Results)</h3>
+                    <p style="color: #aaa; margin-bottom: 20px; font-size: 0.9em;">
+                        Сравните производительность всех обученных моделей на исторических данных.
+                        Результаты бэктеста помогут выбрать наиболее стабильную и прибыльную модель для каждой пары.
+                    </p>
+                    
+                    <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 20px; flex-wrap: wrap;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="display: inline-block; margin-right: 10px; color: #aaa;">Days back:</label>
+                            <input type="number" id="compare-days" value="30" min="1" max="90" style="width: 80px; padding: 8px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #fff;">
+                        </div>
+                        <button class="btn" onclick="runModelsComparison()" id="run-compare-btn" style="background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%); color: #000; font-weight: bold;">
+                            🚀 Run Comparison Backtest
+                        </button>
+                        <button class="btn" onclick="loadModelsComparison()" style="background: #333; color: #fff;">
+                            🔄 Refresh Results
+                        </button>
+                    </div>
+                    
+                    <div id="compare-status" style="margin-bottom: 15px; color: #aaa; display: none;"></div>
+                    
+                    <div id="comparison-results-container" style="overflow-x: auto;">
+                        <div class="loading">Loading comparison results...</div>
+                    </div>
+                </div>
                 
                 <!-- Переобучение модели -->
                 <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #444;">
@@ -5143,7 +5171,7 @@
                 
                 // Определяем тип модели для отображения
                 const modelType = metadata.model_type || 'Unknown';
-                const modelTypeDisplay = modelType.includes('Ensemble') ? modelType : 
+                const modelTypeDisplay = modelType.includes('Ensemble') ? modelType :
                     (modelType === 'rf' || modelType === 'random_forest' ? 'Random Forest' :
                     (modelType === 'xgb' || modelType === 'xgboost' ? 'XGBoost' : modelType));
                 
@@ -5321,6 +5349,174 @@
                 }
             }
         }
+
+        async function loadModelsComparison() {
+            try {
+                const response = await fetch('/api/ml/models/comparison');
+                const data = await response.json();
+                
+                const container = document.getElementById('comparison-results-container');
+                if (!container) return;
+                
+                if (!data.success) {
+                    container.innerHTML = `<p style="color: #aaa; padding: 20px;">${data.error || 'No comparison data available'}</p>`;
+                    return;
+                }
+                
+                const results = data.results || [];
+                if (results.length === 0) {
+                    container.innerHTML = '<p style="color: #aaa; padding: 20px;">No models compared yet</p>';
+                    return;
+                }
+                
+                let html = `
+                    <p style="color: #888; font-size: 0.8em; margin-bottom: 10px;">
+                        Last comparison: ${new Date(data.timestamp).toLocaleString()} (File: ${data.file})
+                    </p>
+                    <table class="table-wrapper">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Model Type</th>
+                                <th>Suffix</th>
+                                <th>Trades</th>
+                                <th>Win Rate</th>
+                                <th>PnL %</th>
+                                <th>Profit Factor</th>
+                                <th>Max DD %</th>
+                                <th>Score</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                results.forEach(row => {
+                    const pnlClass = row.total_pnl_pct >= 0 ? 'positive' : 'negative';
+                    const scoreColor = row.composite_score > 50 ? '#00ff88' : (row.composite_score > 20 ? '#ffaa00' : '#ff4444');
+                    
+                    html += `
+                        <tr>
+                            <td style="font-weight: bold;">${row.symbol}</td>
+                            <td>${row.model_type}</td>
+                            <td><span style="color: #888;">${row.mode_suffix || '-'}</span></td>
+                            <td>${row.total_trades}</td>
+                            <td style="color: ${row.win_rate_pct >= 50 ? '#00ff88' : '#ff4444'}">${row.win_rate_pct.toFixed(1)}%</td>
+                            <td class="${pnlClass}">${row.total_pnl_pct >= 0 ? '+' : ''}${row.total_pnl_pct.toFixed(1)}%</td>
+                            <td>${row.profit_factor.toFixed(2)}</td>
+                            <td style="color: #ff4444;">${row.max_drawdown_pct.toFixed(1)}%</td>
+                            <td style="color: ${scoreColor}; font-weight: bold;">${row.composite_score.toFixed(1)}</td>
+                            <td>
+                                <button class="btn success" onclick="selectModelForSymbol('${row.symbol}', '${row.model_filename}')" style="padding: 4px 8px; font-size: 0.8em; margin: 0;">
+                                    Select
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error loading comparison:', error);
+            }
+        }
+
+        async function runModelsComparison() {
+            const days = document.getElementById('compare-days').value;
+            const btn = document.getElementById('run-compare-btn');
+            const statusDiv = document.getElementById('compare-status');
+            
+            if (!confirm(`Запустить бэктест-сравнение всех моделей за последние ${days} дней? Это может занять несколько минут.`)) {
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Running...';
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '🔄 Comparison started in background...';
+            
+            try {
+                const response = await fetch('/api/ml/models/compare', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ days: parseInt(days), workers: 4 })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    // Начинаем отслеживание статуса
+                    trackComparisonProgress();
+                } else {
+                    alert('Error: ' + data.error);
+                    btn.disabled = false;
+                    btn.textContent = '🚀 Run Comparison Backtest';
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+                btn.disabled = false;
+                btn.textContent = '🚀 Run Comparison Backtest';
+            }
+        }
+
+        function trackComparisonProgress() {
+            const statusDiv = document.getElementById('compare-status');
+            const btn = document.getElementById('run-compare-btn');
+            
+            const interval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/ml/models/compare/status');
+                    const data = await response.json();
+                    const status = data.status;
+                    
+                    if (status.is_running) {
+                        statusDiv.innerHTML = `⏳ ${status.message} (${status.progress}%)`;
+                    } else {
+                        clearInterval(interval);
+                        statusDiv.innerHTML = status.error ? `❌ ${status.message}` : `✅ ${status.message}`;
+                        btn.disabled = false;
+                        btn.textContent = '🚀 Run Comparison Backtest';
+                        if (!status.error) {
+                            loadModelsComparison();
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error tracking progress:', e);
+                }
+            }, 3000);
+        }
+
+        async function selectModelForSymbol(symbol, filename) {
+            if (!confirm(`Выбрать модель ${filename} для пары ${symbol}?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/ml/model/select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        model_path: filename // Backend теперь умеет искать в ml_models
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    alert(`✅ Модель ${filename} успешно выбрана для ${symbol}`);
+                    loadAllPairsModelsInfo();
+                    loadMLModelInfo();
+                } else {
+                    alert('❌ Ошибка: ' + data.error);
+                }
+            } catch (error) {
+                alert('❌ Ошибка: ' + error.message);
+            }
+        }
+
+        window.runModelsComparison = runModelsComparison;
+        window.loadModelsComparison = loadModelsComparison;
+        window.selectModelForSymbol = selectModelForSymbol;
         
         
         
@@ -5456,7 +5652,7 @@
                 
                 const result = await response.json();
                 if (response.ok && result.success) {
-                    startProgressTracking('lstm_single', symbol, null, 'retrain-status', ['train-lstm-btn']);
+                    startProgressTracking('lstm_single', symbol, null, 'retrain-status', ['train-lstm-btn', 'retrain-optimal-btn', 'retrain-aggressive-btn', 'train-quad-single-btn']);
                 } else {
                     statusDiv.innerHTML = createProgressBar(0, `Ошибка: ${result.error || 'Неизвестная ошибка'}`, result.error);
                     if (btn) btn.disabled = false;
@@ -5501,7 +5697,7 @@
                 
                 const result = await response.json();
                 if (response.ok && result.success) {
-                    startProgressTracking('quad_single', symbol, null, 'retrain-status', ['train-quad-single-btn']);
+                    startProgressTracking('quad_single', symbol, null, 'retrain-status', ['train-quad-single-btn', 'retrain-optimal-btn', 'retrain-aggressive-btn', 'train-lstm-btn']);
                 } else {
                     statusDiv.innerHTML = createProgressBar(0, `Ошибка: ${result.error || 'Неизвестная ошибка'}`, result.error);
                     if (btn) btn.disabled = false;
@@ -5548,9 +5744,7 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    if (statusDiv) {
-                        statusDiv.innerHTML = `<span style="color: #00ff88;">✅ ${modeName} model retraining started! The models will be updated when training completes.</span>`;
-                    }
+                    startProgressTracking('retrain_all', null, mode, 'retrain-all-status', ['retrain-all-optimal-btn', 'retrain-all-aggressive-btn', 'train-quad-ensemble-btn']);
                 } else {
                     throw new Error(data.error || 'Failed to start retraining');
                 }

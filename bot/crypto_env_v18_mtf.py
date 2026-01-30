@@ -43,6 +43,7 @@ from bot.mtf_optimized_params import (
     MTF_DI_RATIO_1H,
     MTF_TREND_CONFLICT_MULTIPLIER,
     MTF_REQUIRE_4H_CONFIRMATION,
+    MTF_TREND_CONFLICT_STRICT,
     MTF_OPTIMIZED_PARAMS,
 )
 
@@ -112,40 +113,41 @@ class CryptoTradingEnvV18_MTF(gym.Env):
         self._mtf_index_cache = {}
         
         # Применение оптимизированных параметров V18
-        self.min_volatility_ratio = MTF_MIN_VOLATILITY_RATIO
-        self.max_volatility_ratio = MTF_MAX_VOLATILITY_RATIO
-        self.trailing_activation_atr = MTF_TRAILING_ACTIVATION_ATR
-        self.trailing_distance_atr = MTF_TRAILING_DISTANCE_ATR
-        self.tp_levels = MTF_TP_LEVELS
+        self.min_volatility_ratio = MTF_OPTIMIZED_PARAMS['min_volatility_ratio']
+        self.max_volatility_ratio = MTF_OPTIMIZED_PARAMS['max_volatility_ratio']
+        self.trailing_activation_atr = MTF_OPTIMIZED_PARAMS['trailing_activation_atr']
+        self.trailing_distance_atr = MTF_OPTIMIZED_PARAMS['trailing_distance_atr']
+        self.tp_levels = MTF_OPTIMIZED_PARAMS['tp_levels']
         
         self.long_config = {
             'min_trend_strength': 0.50,
-            'min_rsi_norm': MTF_LONG_RSI_MIN,
-            'max_rsi_norm': MTF_LONG_RSI_MAX,
+            'min_rsi_norm': MTF_OPTIMIZED_PARAMS['long_rsi_min'],
+            'max_rsi_norm': MTF_OPTIMIZED_PARAMS['long_rsi_max'],
             'trailing_distance_atr': 0.35,
             'position_size_multiplier': 1.0,
         }
         
         self.short_config = {
             'min_trend_strength': 0.55,
-            'min_rsi_norm': MTF_SHORT_RSI_MIN,
-            'max_rsi_norm': MTF_SHORT_RSI_MAX,
+            'min_rsi_norm': MTF_OPTIMIZED_PARAMS['short_rsi_min'],
+            'max_rsi_norm': MTF_OPTIMIZED_PARAMS['short_rsi_max'],
             'trailing_distance_atr': 0.40,
             'position_size_multiplier': 0.7,
         }
         
-        self.min_adx = MTF_MIN_ADX
-        self.mtf_min_adx_short = MTF_MIN_ADX_SHORT
-        self.mtf_min_absolute_atr = MTF_MIN_ABSOLUTE_ATR
-        self.mtf_atr_percent_min = MTF_ATR_PERCENT_MIN
-        self.mtf_min_absolute_volume = MTF_MIN_ABSOLUTE_VOLUME
-        self.mtf_min_volume_spike = MTF_MIN_VOLUME_SPIKE
-        self.mtf_min_volume_spike_short = MTF_MIN_VOLUME_SPIKE_SHORT
-        self.mtf_min_1h_adx = MTF_MIN_1H_ADX
-        self.mtf_min_1h_adx_short = MTF_MIN_1H_ADX_SHORT
-        self.mtf_di_ratio_1h = MTF_DI_RATIO_1H
-        self.mtf_trend_conflict_multiplier = MTF_TREND_CONFLICT_MULTIPLIER
-        self.mtf_require_4h_confirmation = MTF_REQUIRE_4H_CONFIRMATION
+        self.min_adx = MTF_OPTIMIZED_PARAMS['min_adx']
+        self.mtf_min_adx_short = MTF_OPTIMIZED_PARAMS['min_adx_short']
+        self.mtf_min_absolute_atr = MTF_OPTIMIZED_PARAMS['min_absolute_atr']
+        self.mtf_atr_percent_min = MTF_OPTIMIZED_PARAMS['atr_percent_min']
+        self.mtf_min_absolute_volume = MTF_OPTIMIZED_PARAMS['min_absolute_volume']
+        self.mtf_min_volume_spike = MTF_OPTIMIZED_PARAMS['min_volume_spike']
+        self.mtf_min_volume_spike_short = MTF_OPTIMIZED_PARAMS['min_volume_spike_short']
+        self.mtf_min_1h_adx = MTF_OPTIMIZED_PARAMS['min_1h_adx']
+        self.mtf_min_1h_adx_short = MTF_OPTIMIZED_PARAMS['min_1h_adx_short']
+        self.mtf_di_ratio_1h = MTF_OPTIMIZED_PARAMS['di_ratio_1h']
+        self.mtf_trend_conflict_multiplier = MTF_OPTIMIZED_PARAMS['trend_conflict_multiplier']
+        self.mtf_require_4h_confirmation = MTF_OPTIMIZED_PARAMS['require_4h_confirmation']
+        self.mtf_trend_conflict_strict = MTF_OPTIMIZED_PARAMS['trend_conflict_strict']
         
         # Масштабирование признаков
         self.obs_scaling = {
@@ -888,7 +890,7 @@ class CryptoTradingEnvV18_MTF(gym.Env):
 
     def _check_4h_trend(self, ts: pd.Timestamp, side: str) -> bool:
         """Тренд 4h"""
-        if self.df_4h is None: return True
+        if self.df_4h is None or not self.mtf_require_4h_confirmation: return True
         idx = self._find_nearest_idx(self.df_4h, ts)
         row = self.df_4h.iloc[idx]
         pdi, mdi = float(row.get('plus_di', 25)), float(row.get('minus_di', 25))
@@ -897,17 +899,19 @@ class CryptoTradingEnvV18_MTF(gym.Env):
     def _check_trend_conflict(self, ts: pd.Timestamp, side: str) -> bool:
         """Конфликт трендов"""
         if not self.mtf_enabled: return False
+        if not self.mtf_trend_conflict_strict: return False
         idx1 = self._find_nearest_idx(self.df_1h, ts)
         idx4 = self._find_nearest_idx(self.df_4h, ts)
         r1, r4 = self.df_1h.iloc[idx1], self.df_4h.iloc[idx4]
         p1, m1, a1 = float(r1.get('plus_di', 25)), float(r1.get('minus_di', 25)), float(r1.get('adx', 0))
         p4, m4, a4 = float(r4.get('plus_di', 25)), float(r4.get('minus_di', 25)), float(r4.get('adx', 0))
         
+        multiplier = self.mtf_trend_conflict_multiplier
         if side == 'LONG':
-            against1, against4 = m1 > p1 * 1.05, m4 > p4 * 1.05
+            against1, against4 = m1 > p1 * multiplier, m4 > p4 * multiplier
             neut1, neut4 = abs(p1-m1) < 2 or a1 < 20, abs(p4-m4) < 2 or a4 < 20
         else:
-            against1, against4 = p1 > m1 * 1.05, p4 > m4 * 1.05
+            against1, against4 = p1 > m1 * multiplier, p4 > m4 * multiplier
             neut1, neut4 = abs(p1-m1) < 2 or a1 < 20, abs(p4-m4) < 2 or a4 < 20
             
         return (against1 and against4) or (against1 and neut4) or (against4 and neut1) or (neut1 and neut4)
