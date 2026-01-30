@@ -2593,8 +2593,9 @@ def api_ml_model_select():
         return jsonify({"error": f"Model file not found: {model_path}"}), 404
     
     try:
+        print(f"[web] api_ml_model_select: symbol={symbol}, model_path={model_path}")
         # Если символ указан, сохраняем индивидуально для него
-        if symbol:
+        if symbol and symbol.upper() != "ALL":
             symbol = symbol.upper()
             if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                 symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
@@ -2604,18 +2605,31 @@ def api_ml_model_select():
                 # Сохраняем в JSON файл
                 save_symbol_strategy_settings(settings)
                 print(f"[web] ML model selected for {symbol}: {model_path}")
+                
+                # Также обновляем глобальный путь, если это основной символ
+                if symbol == settings.primary_symbol:
+                    settings.ml_model_path = str(model_path)
+                    _save_settings_to_env(settings)
             else:
                 return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
         else:
-            # Иначе обновляем глобальные настройки (для обратной совместимости)
+            # Иначе обновляем глобальные настройки
             settings.ml_model_path = str(model_path)
             # Сохраняем в .env
             _save_settings_to_env(settings)
             print(f"[web] Global ML model selected: {model_path}")
         
+        # Перезагружаем настройки из файлов, чтобы гарантировать актуальность
+        from bot.config import load_settings
+        settings = load_settings()
+        
         # Обновляем в shared_settings
         from bot.shared_settings import set_settings
         set_settings(settings)
+        
+        # Обновляем MultiSymbolManager если он есть
+        if multi_symbol_manager:
+            multi_symbol_manager.update_settings(settings)
         
         return jsonify({
             "success": True,

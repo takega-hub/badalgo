@@ -4139,6 +4139,16 @@
                     const symbolMtfCheckbox = document.getElementById('symbol-ml-mtf-enabled');
                     if (symbolModelTypeSelect) symbolModelTypeSelect.value = settings.ml_model_type || '';
                     if (symbolMtfCheckbox) symbolMtfCheckbox.checked = settings.ml_mtf_enabled === true;
+                    
+                    // Сохраняем путь к модели в атрибуте селектора моделей
+                    const modelSelect = document.getElementById('ml-model-select');
+                    if (modelSelect) {
+                        modelSelect.dataset.currentSymbolModelPath = settings.ml_model_path || '';
+                        // Если мы настраиваем этот символ, обновляем выбранную модель в списке
+                        if (settings.ml_model_path) {
+                            modelSelect.value = settings.ml_model_path;
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Error loading strategy settings for symbol:', error);
@@ -4893,7 +4903,8 @@
                     enable_amt_of_strategy: amtOfCheckbox ? amtOfCheckbox.checked : false,
                     strategy_priority: selectedPriority,
                     ml_model_type: symbolModelTypeSelect ? (symbolModelTypeSelect.value || null) : null,
-                    ml_mtf_enabled: symbolMtfCheckbox ? symbolMtfCheckbox.checked : null
+                    ml_mtf_enabled: symbolMtfCheckbox ? symbolMtfCheckbox.checked : null,
+                    ml_model_path: document.getElementById('ml-model-select')?.dataset.currentSymbolModelPath || null
                 };
                 
                 const response = await fetch(`/api/settings/symbol/${selectedSymbol}`, {
@@ -5449,7 +5460,15 @@
                 }
                 
                 const modelPath = modelSelect.value;
-                const symbol = primarySymbolSelect ? primarySymbolSelect.value : null;
+                
+                // Пытаемся получить символ из селектора стратегий (он более специфичен для этой вкладки)
+                const strategySymbolSelect = document.getElementById('strategy-symbol-select');
+                let symbol = strategySymbolSelect ? strategySymbolSelect.value : null;
+                
+                // Если не нашли, берем из глобального селектора
+                if (!symbol) {
+                    symbol = primarySymbolSelect ? primarySymbolSelect.value : null;
+                }
                 
                 if (!modelPath) {
                     statusDiv.textContent = 'Please select a model first';
