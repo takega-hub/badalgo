@@ -142,8 +142,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Настройка секретного ключа для сессий (можно задать через переменную окружения)
-from datetime import datetime as dt
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'change-this-secret-key-in-production-' + hashlib.sha256(str(dt.now()).encode()).hexdigest()[:32])
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'crypto-bot-secret-key-12345')
 
 # Отключаем логирование HTTP-запросов от werkzeug
 import logging
@@ -2576,6 +2575,7 @@ def api_ml_models_list():
 @login_required
 def api_ml_model_select():
     """Выбрать активную ML модель."""
+    global settings
     if not settings:
         return jsonify({"error": "Settings not loaded"}), 500
     
