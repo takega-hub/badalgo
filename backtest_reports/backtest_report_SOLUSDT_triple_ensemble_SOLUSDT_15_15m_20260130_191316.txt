@@ -1,0 +1,180 @@
+================================================================================
+ML STRATEGY BACKTEST DETAILED REPORT
+================================================================================
+
+Model: triple_ensemble_SOLUSDT_15_15m
+Symbol: SOLUSDT
+Date: 2026-01-30 19:13:16
+Days Back: 7
+
+SUMMARY METRICS:
+----------------------------------------
+Total PnL: $1357.14 (+135.71%)
+Win Rate: 90.00%
+Profit Factor: 5.48
+Max Drawdown: 12.40%
+Sharpe Ratio: 11.83
+Total Trades: 20
+
+DETAILED TRADES:
+----------------------------------------
+
+Trade #1:
+  Entry: 2026-01-25 18:15:00 @ $121.39 (SHORT)
+  Exit: 2026-01-25 19:45:00 @ $117.85 (OPPOSITE_SIGNAL)
+  PnL: $279.62 (+29.16%)
+  Confidence: 43.97%
+  SL: $123.13, TP: $117.06
+  Reason: ml_SHORT_сила_слабое_43%_TP_3.57%_SL_1.43%
+
+Trade #2:
+  Entry: 2026-01-25 19:45:00 @ $117.85 (LONG)
+  Exit: 2026-01-26 01:45:00 @ $122.30 (TP)
+  PnL: $467.83 (+37.76%)
+  Confidence: 44.57%
+  SL: $116.08, TP: $122.27
+  Reason: ml_LONG_сила_слабое_44%_TP_3.75%_SL_1.50%
+
+Trade #3:
+  Entry: 2026-01-26 02:00:00 @ $121.37 (LONG)
+  Exit: 2026-01-26 02:15:00 @ $122.33 (OPPOSITE_SIGNAL)
+  PnL: $117.25 (+7.91%)
+  Confidence: 47.52%
+  SL: $120.12, TP: $124.49
+  Reason: ml_LONG_сила_слабое_47%_TP_2.57%_SL_1.03%
+
+Trade #4:
+  Entry: 2026-01-26 02:15:00 @ $122.33 (SHORT)
+  Exit: 2026-01-26 02:30:00 @ $121.93 (OPPOSITE_SIGNAL)
+  PnL: $38.60 (+3.27%)
+  Confidence: 55.33%
+  SL: $123.60, TP: $119.14
+  Reason: ml_SHORT_сила_слабое_55%_TP_2.61%_SL_1.04%
+
+Trade #5:
+  Entry: 2026-01-26 02:30:00 @ $121.93 (LONG)
+  Exit: 2026-01-26 04:15:00 @ $123.27 (OPPOSITE_SIGNAL)
+  PnL: $186.33 (+10.99%)
+  Confidence: 49.82%
+  SL: $120.69, TP: $125.05
+  Reason: ml_LONG_сила_слабое_49%_TP_2.56%_SL_1.02%
+
+Trade #6:
+  Entry: 2026-01-26 04:15:00 @ $123.27 (SHORT)
+  Exit: 2026-01-26 04:30:00 @ $122.50 (OPPOSITE_SIGNAL)
+  PnL: $21.09 (+6.25%)
+  Confidence: 69.82%
+  SL: $135.60, TP: $120.35
+  Reason: ml_SHORT_сила_умеренное_69%_TP_2.37%_SL_0.95%
+
+Trade #7:
+  Entry: 2026-01-26 04:30:00 @ $122.50 (LONG)
+  Exit: 2026-01-26 07:45:00 @ $122.84 (OPPOSITE_SIGNAL)
+  PnL: $6.65 (+2.78%)
+  Confidence: 45.46%
+  SL: $110.25, TP: $125.48
+  Reason: ml_LONG_сила_слабое_45%_TP_2.43%_SL_0.97%
+
+Trade #8:
+  Entry: 2026-01-26 07:45:00 @ $122.84 (SHORT)
+  Exit: 2026-01-26 08:00:00 @ $122.31 (OPPOSITE_SIGNAL)
+  PnL: $13.19 (+4.31%)
+  Confidence: 46.85%
+  SL: $135.12, TP: $120.35
+  Reason: ml_SHORT_сила_слабое_46%_TP_2.03%_SL_0.81%
+
+Trade #9:
+  Entry: 2026-01-26 08:00:00 @ $122.31 (LONG)
+  Exit: 2026-01-26 08:15:00 @ $123.09 (OPPOSITE_SIGNAL)
+  PnL: $22.06 (+6.38%)
+  Confidence: 47.18%
+  SL: $110.08, TP: $124.85
+  Reason: ml_LONG_сила_слабое_47%_TP_2.08%_SL_0.83%
+
+Trade #10:
+  Entry: 2026-01-26 08:15:00 @ $123.09 (SHORT)
+  Exit: 2026-01-26 08:45:00 @ $122.66 (OPPOSITE_SIGNAL)
+  PnL: $9.87 (+3.49%)
+  Confidence: 51.91%
+  SL: $135.40, TP: $120.27
+  Reason: ml_SHORT_сила_слабое_51%_TP_2.29%_SL_0.92%
+
+Trade #11:
+  Entry: 2026-01-26 08:45:00 @ $122.66 (LONG)
+  Exit: 2026-01-26 14:45:00 @ $123.71 (OPPOSITE_SIGNAL)
+  PnL: $31.83 (+8.56%)
+  Confidence: 47.43%
+  SL: $110.39, TP: $125.44
+  Reason: ml_LONG_сила_слабое_47%_TP_2.27%_SL_0.91%
+
+Trade #12:
+  Entry: 2026-01-26 14:45:00 @ $123.71 (SHORT)
+  Exit: 2026-01-26 15:15:00 @ $125.10 (SL)
+  PnL: $-272.10 (-11.20%)
+  Confidence: 41.24%
+  SL: $125.10, TP: $120.26
+  Reason: ml_SHORT_сила_слабое_41%_TP_2.79%_SL_1.12%
+
+Trade #13:
+  Entry: 2026-01-26 15:15:00 @ $124.11 (SHORT)
+  Exit: 2026-01-26 15:30:00 @ $123.20 (OPPOSITE_SIGNAL)
+  PnL: $117.87 (+7.33%)
+  Confidence: 48.86%
+  SL: $125.79, TP: $119.93
+  Reason: ml_SHORT_сила_слабое_48%_TP_3.37%_SL_1.35%
+
+Trade #14:
+  Entry: 2026-01-26 15:30:00 @ $123.20 (LONG)
+  Exit: 2026-01-26 16:45:00 @ $124.25 (OPPOSITE_SIGNAL)
+  PnL: $149.39 (+8.52%)
+  Confidence: 68.48%
+  SL: $121.48, TP: $127.50
+  Reason: ml_LONG_сила_умеренное_68%_TP_3.49%_SL_1.40%
+
+Trade #15:
+  Entry: 2026-01-26 16:45:00 @ $124.25 (SHORT)
+  Exit: 2026-01-26 17:00:00 @ $123.92 (OPPOSITE_SIGNAL)
+  PnL: $31.88 (+2.66%)
+  Confidence: 42.59%
+  SL: $125.95, TP: $120.00
+  Reason: ml_SHORT_сила_слабое_42%_TP_3.42%_SL_1.37%
+
+Trade #16:
+  Entry: 2026-01-26 17:00:00 @ $123.92 (LONG)
+  Exit: 2026-01-26 17:45:00 @ $124.20 (OPPOSITE_SIGNAL)
+  PnL: $23.54 (+2.26%)
+  Confidence: 45.25%
+  SL: $122.27, TP: $128.03
+  Reason: ml_LONG_сила_слабое_45%_TP_3.32%_SL_1.33%
+
+Trade #17:
+  Entry: 2026-01-26 17:45:00 @ $124.20 (SHORT)
+  Exit: 2026-01-26 19:15:00 @ $124.22 (OPPOSITE_SIGNAL)
+  PnL: $-30.55 (-0.16%)
+  Confidence: 38.21%
+  SL: $125.75, TP: $120.32
+  Reason: ml_SHORT_сила_слабое_38%_TP_3.12%_SL_1.25%
+
+Trade #18:
+  Entry: 2026-01-26 19:15:00 @ $124.22 (LONG)
+  Exit: 2026-01-26 19:30:00 @ $124.48 (OPPOSITE_SIGNAL)
+  PnL: $19.78 (+2.09%)
+  Confidence: 45.19%
+  SL: $122.92, TP: $127.49
+  Reason: ml_LONG_сила_слабое_45%_TP_2.63%_SL_1.05%
+
+Trade #19:
+  Entry: 2026-01-26 19:30:00 @ $124.48 (SHORT)
+  Exit: 2026-01-26 19:45:00 @ $124.23 (OPPOSITE_SIGNAL)
+  PnL: $18.06 (+2.01%)
+  Confidence: 46.27%
+  SL: $125.74, TP: $121.34
+  Reason: ml_SHORT_сила_слабое_46%_TP_2.52%_SL_1.01%
+
+Trade #20:
+  Entry: 2026-01-26 19:45:00 @ $124.23 (LONG)
+  Exit: 2026-01-27 20:15:00 @ $127.27 (TP)
+  PnL: $104.95 (+24.50%)
+  Confidence: 35.35%
+  SL: $111.81, TP: $127.27
+  Reason: ml_LONG_сила_слабое_35%_TP_2.45%_SL_0.98%

@@ -1,0 +1,68 @@
+================================================================================
+ML STRATEGY BACKTEST DETAILED REPORT
+================================================================================
+
+Model: rf_BTCUSDT_15_15m
+Symbol: BTCUSDT
+Date: 2026-01-30 19:08:08
+Days Back: 7
+
+SUMMARY METRICS:
+----------------------------------------
+Total PnL: $837.86 (+83.79%)
+Win Rate: 100.00%
+Profit Factor: 0.00
+Max Drawdown: 0.00%
+Sharpe Ratio: 27.67
+Total Trades: 6
+
+DETAILED TRADES:
+----------------------------------------
+
+Trade #1:
+  Entry: 2026-01-25 18:15:00 @ $87482.20 (SHORT)
+  Exit: 2026-01-25 19:30:00 @ $86658.00 (OPPOSITE_SIGNAL)
+  PnL: $82.21 (+9.42%)
+  Confidence: 48.10%
+  SL: $88733.20, TP: $84674.02
+  Reason: ml_SHORT_сила_слабое_48%_TP_3.21%_SL_1.43%
+
+Trade #2:
+  Entry: 2026-01-25 19:30:00 @ $86658.00 (LONG)
+  Exit: 2026-01-26 10:00:00 @ $87808.50 (OPPOSITE_SIGNAL)
+  PnL: $130.69 (+13.28%)
+  Confidence: 49.41%
+  SL: $85358.13, TP: $89587.04
+  Reason: ml_LONG_сила_слабое_49%_TP_3.38%_SL_1.50%
+
+Trade #3:
+  Entry: 2026-01-26 10:00:00 @ $87808.50 (SHORT)
+  Exit: 2026-01-26 15:30:00 @ $87428.90 (OPPOSITE_SIGNAL)
+  PnL: $7.58 (+4.32%)
+  Confidence: 45.61%
+  SL: $96589.35, TP: $85964.52
+  Reason: ml_SHORT_сила_слабое_45%_TP_2.10%_SL_0.93%
+
+Trade #4:
+  Entry: 2026-01-26 15:30:00 @ $87428.90 (LONG)
+  Exit: 2026-01-27 03:30:00 @ $88759.40 (OPPOSITE_SIGNAL)
+  PnL: $171.09 (+15.22%)
+  Confidence: 47.03%
+  SL: $86117.47, TP: $90384.00
+  Reason: ml_LONG_сила_слабое_47%_TP_3.38%_SL_1.50%
+
+Trade #5:
+  Entry: 2026-01-27 03:30:00 @ $88759.40 (SHORT)
+  Exit: 2026-01-27 14:45:00 @ $87701.70 (OPPOSITE_SIGNAL)
+  PnL: $29.83 (+11.92%)
+  Confidence: 45.32%
+  SL: $97635.34, TP: $86930.96
+  Reason: ml_SHORT_сила_слабое_45%_TP_2.06%_SL_0.91%
+
+Trade #6:
+  Entry: 2026-01-27 14:45:00 @ $87701.70 (LONG)
+  Exit: 2026-01-28 13:30:00 @ $90376.60 (TP)
+  PnL: $416.47 (+30.50%)
+  Confidence: 48.22%
+  SL: $86508.96, TP: $90376.60
+  Reason: ml_LONG_сила_слабое_48%_TP_3.05%_SL_1.36%

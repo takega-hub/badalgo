@@ -1,0 +1,60 @@
+================================================================================
+ML STRATEGY BACKTEST DETAILED REPORT
+================================================================================
+
+Model: rf_BTCUSDT_15_mtf
+Symbol: BTCUSDT
+Date: 2026-01-30 19:08:11
+Days Back: 7
+
+SUMMARY METRICS:
+----------------------------------------
+Total PnL: $519.30 (+51.93%)
+Win Rate: 80.00%
+Profit Factor: 105.79
+Max Drawdown: 0.39%
+Sharpe Ratio: 25.23
+Total Trades: 5
+
+DETAILED TRADES:
+----------------------------------------
+
+Trade #1:
+  Entry: 2026-01-25 18:15:00 @ $87482.20 (SHORT)
+  Exit: 2026-01-25 19:45:00 @ $86453.10 (OPPOSITE_SIGNAL)
+  PnL: $105.64 (+11.76%)
+  Confidence: 40.26%
+  SL: $88733.20, TP: $84674.02
+  Reason: ml_SHORT_сила_слабое_40%_TP_3.21%_SL_1.43%
+
+Trade #2:
+  Entry: 2026-01-25 19:45:00 @ $86453.10 (LONG)
+  Exit: 2026-01-26 06:15:00 @ $87901.00 (OPPOSITE_SIGNAL)
+  PnL: $171.90 (+16.75%)
+  Confidence: 45.76%
+  SL: $85156.30, TP: $89375.21
+  Reason: ml_LONG_сила_слабое_45%_TP_3.38%_SL_1.50%
+
+Trade #3:
+  Entry: 2026-01-26 06:15:00 @ $87901.00 (SHORT)
+  Exit: 2026-01-27 17:00:00 @ $87966.00 (OPPOSITE_SIGNAL)
+  PnL: $-4.96 (-0.74%)
+  Confidence: 46.36%
+  SL: $96691.10, TP: $86309.99
+  Reason: ml_SHORT_сила_слабое_46%_TP_1.81%_SL_0.80%
+
+Trade #4:
+  Entry: 2026-01-27 17:00:00 @ $87966.00 (LONG)
+  Exit: 2026-01-27 22:30:00 @ $89281.10 (OPPOSITE_SIGNAL)
+  PnL: $174.98 (+14.95%)
+  Confidence: 49.20%
+  SL: $86646.51, TP: $90939.25
+  Reason: ml_LONG_сила_слабое_49%_TP_3.38%_SL_1.50%
+
+Trade #5:
+  Entry: 2026-01-27 22:30:00 @ $89281.10 (SHORT)
+  Exit: 2026-01-29 14:45:00 @ $86961.80 (TP)
+  PnL: $71.73 (+25.98%)
+  Confidence: 47.14%
+  SL: $98209.21, TP: $87450.84
+  Reason: ml_SHORT_сила_слабое_47%_TP_2.05%_SL_0.91%
