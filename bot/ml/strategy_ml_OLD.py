@@ -94,8 +94,6 @@ class MLStrategy:
         
         # Загружаем модель
         self.model_data = self._load_model()
-        if "model" not in self.model_data:
-            raise KeyError(f"Model data is missing 'model' key. Available keys: {list(self.model_data.keys())}")
         self.model = self.model_data["model"]
         self.scaler = self.model_data["scaler"]
         self.feature_names = self.model_data["feature_names"]
@@ -164,23 +162,10 @@ class MLStrategy:
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model file not found: {self.model_path}")
         
-        try:
-            with open(self.model_path, "rb") as f:
-                model_data = pickle.load(f)
-            
-            # Проверяем, что загруженные данные являются словарем
-            if not isinstance(model_data, dict):
-                raise TypeError(f"Expected dict from model file, got {type(model_data)}")
-            
-            # Проверяем наличие необходимых ключей
-            required_keys = ["model", "scaler", "feature_names"]
-            missing_keys = [key for key in required_keys if key not in model_data]
-            if missing_keys:
-                raise KeyError(f"Missing required keys in model data: {missing_keys}. Available keys: {list(model_data.keys())}")
-            
-            return model_data
-        except Exception as e:
-            raise Exception(f"Failed to load model from {self.model_path}: {str(e)}") from e
+        with open(self.model_path, "rb") as f:
+            model_data = pickle.load(f)
+        
+        return model_data
     
     def prepare_features(self, df: pd.DataFrame, skip_feature_creation: bool = False) -> np.ndarray:
         """

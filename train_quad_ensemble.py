@@ -12,6 +12,12 @@ from pathlib import Path
 os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning'
 warnings.filterwarnings('ignore')
 
+# Настройка кодировки для Windows
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # Добавляем корневую директорию в путь
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -20,13 +26,30 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-    print("❌ ERROR: PyTorch is not installed!")
+    print("ERROR: PyTorch is not installed!")
     print("   Install with: pip install torch>=2.0.0")
 
 from bot.config import load_settings
 from bot.ml.data_collector import DataCollector
 from bot.ml.feature_engineering import FeatureEngineer
 from bot.ml.model_trainer import ModelTrainer, LIGHTGBM_AVAILABLE, LSTM_AVAILABLE
+
+
+def safe_print(*args, **kwargs):
+    """Безопасный вывод для Windows."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Заменяем эмодзи на текстовые метки
+        text = ' '.join(str(arg) for arg in args)
+        text = text.replace('🚀', '[START]')
+        text = text.replace('📊', '[INFO]')
+        text = text.replace('✅', '[OK]')
+        text = text.replace('❌', '[ERROR]')
+        text = text.replace('⚠️', '[WARNING]')
+        text = text.replace('🎉', '[SUCCESS]')
+        text = text.replace('💡', '[TIP]')
+        print(text, **kwargs)
 
 
 def main():
@@ -81,27 +104,27 @@ def main():
         return
     
     if not LIGHTGBM_AVAILABLE:
-        print("❌ ERROR: LightGBM is not installed!")
-        print("   Install with: pip install lightgbm>=4.0.0")
+        safe_print("ERROR: LightGBM is not installed!")
+        safe_print("   Install with: pip install lightgbm>=4.0.0")
         return
     
     if not LSTM_AVAILABLE:
-        print("❌ ERROR: LSTM module is not available!")
-        print("   Check that bot.ml.lstm_model can be imported")
+        safe_print("ERROR: LSTM module is not available!")
+        safe_print("   Check that bot.ml.lstm_model can be imported")
         return
     
-    print("=" * 80)
-    print("🚀 QuadEnsemble ML Model Training (RF + XGBoost + LightGBM + LSTM)")
-    print("=" * 80)
-    print(f"Symbol: {args.symbol}")
-    print(f"Days: {args.days}")
-    print(f"Interval: {args.interval}")
-    print(f"\n📊 Model Parameters:")
-    print(f"  RandomForest: {args.rf_n_estimators} trees, max_depth={args.rf_max_depth}")
-    print(f"  XGBoost: {args.xgb_n_estimators} trees, max_depth={args.xgb_max_depth}, lr={args.xgb_learning_rate}")
-    print(f"  LightGBM: {args.lgb_n_estimators} trees, max_depth={args.lgb_max_depth}, lr={args.lgb_learning_rate}")
-    print(f"  LSTM: seq_len={args.lstm_sequence_length}, hidden={args.lstm_hidden_size}, layers={args.lstm_num_layers}, epochs={args.lstm_epochs}")
-    print("=" * 80)
+    safe_print("=" * 80)
+    safe_print("QuadEnsemble ML Model Training (RF + XGBoost + LightGBM + LSTM)")
+    safe_print("=" * 80)
+    safe_print(f"Symbol: {args.symbol}")
+    safe_print(f"Days: {args.days}")
+    safe_print(f"Interval: {args.interval}")
+    safe_print(f"\nModel Parameters:")
+    safe_print(f"  RandomForest: {args.rf_n_estimators} trees, max_depth={args.rf_max_depth}")
+    safe_print(f"  XGBoost: {args.xgb_n_estimators} trees, max_depth={args.xgb_max_depth}, lr={args.xgb_learning_rate}")
+    safe_print(f"  LightGBM: {args.lgb_n_estimators} trees, max_depth={args.lgb_max_depth}, lr={args.lgb_learning_rate}")
+    safe_print(f"  LSTM: seq_len={args.lstm_sequence_length}, hidden={args.lstm_hidden_size}, layers={args.lstm_num_layers}, epochs={args.lstm_epochs}")
+    safe_print("=" * 80)
     
     # Загружаем настройки
     settings = load_settings()
@@ -113,9 +136,9 @@ def main():
     
     # === Шаг 1: Сбор данных ===
     if ml_mtf_enabled:
-        print(f"\n[Step 1] Collecting historical data (15m, 1h, 4h) for {args.symbol}...")
+        safe_print(f"\n[Step 1] Collecting historical data (15m, 1h, 4h) for {args.symbol}...")
     else:
-        print(f"\n[Step 1] Collecting historical data (15m only) for {args.symbol}...")
+        safe_print(f"\n[Step 1] Collecting historical data (15m only) for {args.symbol}...")
     collector = DataCollector(settings.api)
     
     # Базовый интервал (ожидаем '15m')
@@ -135,10 +158,10 @@ def main():
         df_raw_4h = mtf_data.get("240")
         
         if df_raw_15m is None or df_raw_15m.empty:
-            print(f"❌ No 15m data collected for {args.symbol}. Skipping.")
+            safe_print(f"ERROR: No 15m data collected for {args.symbol}. Skipping.")
             return
         
-        print(f"✅ Collected {len(df_raw_15m)} candles on 15m timeframe")
+        safe_print(f"OK: Collected {len(df_raw_15m)} candles on 15m timeframe")
     else:
         # Старый режим: собираем только 15m данные
         df_raw_15m = collector.collect_klines(
@@ -149,12 +172,12 @@ def main():
             limit=200,
         )
         if df_raw_15m.empty:
-            print(f"❌ No 15m data collected for {args.symbol}. Skipping.")
+            safe_print(f"ERROR: No 15m data collected for {args.symbol}. Skipping.")
             return
-        print(f"✅ Collected {len(df_raw_15m)} candles on 15m timeframe (no higher TF)")
+        safe_print(f"OK: Collected {len(df_raw_15m)} candles on 15m timeframe (no higher TF)")
     
     # === Шаг 2: Feature Engineering (включая MTF при необходимости) ===
-    print(f"\n[Step 2] Creating features{' (including higher timeframes)' if ml_mtf_enabled else ' (15m only)'}...")
+    safe_print(f"\n[Step 2] Creating features{' (including higher timeframes)' if ml_mtf_enabled else ' (15m only)'}...")
     feature_engineer = FeatureEngineer()
     
     # Создаем технические индикаторы на базовом ТФ (15m)
@@ -172,52 +195,52 @@ def main():
         
         if higher_timeframes:
             df_features = feature_engineer.add_mtf_features(df_features, higher_timeframes)
-            print(f"✅ Created {len(feature_engineer.get_feature_names())} features (with MTF)")
+            safe_print(f"OK: Created {len(feature_engineer.get_feature_names())} features (with MTF)")
         else:
-            print("⚠️ Could not collect 1h/4h data — training on 15m features only.")
-            print(f"✅ Created {len(feature_engineer.get_feature_names())} features")
+            safe_print("WARNING: Could not collect 1h/4h data — training on 15m features only.")
+            safe_print(f"OK: Created {len(feature_engineer.get_feature_names())} features")
     else:
-        print(f"✅ Created {len(feature_engineer.get_feature_names())} features (15m only)")
+        safe_print(f"OK: Created {len(feature_engineer.get_feature_names())} features (15m only)")
     
     # Создаем целевую переменную
-    print(f"\n[Step 3] Creating target variable...")
+    safe_print(f"\n[Step 3] Creating target variable...")
     df_with_target = feature_engineer.create_target_variable(
         df_features,
         forward_periods=5,  # 5 * 15m = 75 минут
         threshold_pct=1.0,  # 1.0% порог
         use_atr_threshold=True,
         use_risk_adjusted=True,
-        min_risk_reward_ratio=2.0,  # Соотношение риск/прибыль 2:1 (соответствует торговым параметрам TP=25%, SL=10%)
-        max_hold_periods=48,  # Максимум 48 * 15m = 12 часов для качественных сделок (смягчено: было 32)
-        min_profit_pct=1.0,  # Минимальная прибыль 1.0% для классификации как LONG/SHORT (смягчено: было 1.5%)
+        min_risk_reward_ratio=2.0,
+        max_hold_periods=48,
+        min_profit_pct=1.0,
     )
     
     target_dist = df_with_target['target'].value_counts().to_dict()
-    print(f"✅ Target distribution:")
+    safe_print(f"OK: Target distribution:")
     for target_val, count in sorted(target_dist.items()):
         pct = (count / len(df_with_target)) * 100
         target_name = {-1: "SHORT", 0: "HOLD", 1: "LONG"}.get(
             target_val, f"UNKNOWN({target_val})")
-        print(f"    {target_name:6s}: {count:5d} ({pct:5.1f}%)")
+        safe_print(f"    {target_name:6s}: {count:5d} ({pct:5.1f}%)")
     
     # === Шаг 4: Подготовка данных для ML ===
-    print(f"\n[Step 4] Preparing data for ML...")
+    safe_print(f"\n[Step 4] Preparing data for ML...")
     X, y = feature_engineer.prepare_features_for_ml(df_with_target)
-    print(f"✅ Prepared data: X.shape={X.shape}, y.shape={y.shape}")
+    safe_print(f"OK: Prepared data: X.shape={X.shape}, y.shape={y.shape}")
     
     # Проверяем, что данных достаточно для LSTM
     if len(df_with_target) < args.lstm_sequence_length + 100:
-        print(f"⚠️  WARNING: Not enough data for LSTM (need at least {args.lstm_sequence_length + 100} rows, got {len(df_with_target)})")
-        print(f"   Consider reducing --lstm_sequence_length or collecting more data")
+        safe_print(f"WARNING: Not enough data for LSTM (need at least {args.lstm_sequence_length + 100} rows, got {len(df_with_target)})")
+        safe_print(f"   Consider reducing --lstm_sequence_length or collecting more data")
     
     # === Шаг 5: Обучение QuadEnsemble ===
-    print(f"\n[Step 5] Training QuadEnsemble...")
-    print(f"   This will train 4 models sequentially:")
-    print(f"   1. RandomForest")
-    print(f"   2. XGBoost")
-    print(f"   3. LightGBM")
-    print(f"   4. LSTM (this may take longer)")
-    print()
+    safe_print(f"\n[Step 5] Training QuadEnsemble...")
+    safe_print(f"   This will train 4 models sequentially:")
+    safe_print(f"   1. RandomForest")
+    safe_print(f"   2. XGBoost")
+    safe_print(f"   3. LightGBM")
+    safe_print(f"   4. LSTM (this may take longer)")
+    safe_print()
     
     # Вычисляем веса классов для фокуса на прибыльных сделках
     from sklearn.utils.class_weight import compute_class_weight
@@ -234,11 +257,11 @@ def main():
         else:  # LONG or SHORT
             class_weight_dict[cls] = base_weights[i] * 3.0  # Увеличиваем вес LONG/SHORT
     
-    print(f"   📊 Class weights:")
+    safe_print(f"   Class weights:")
     for cls, weight in class_weight_dict.items():
         label_name = "LONG" if cls == 1 else ("SHORT" if cls == -1 else "HOLD")
-        print(f"      {label_name}: {weight:.3f}")
-    print()
+        safe_print(f"      {label_name}: {weight:.3f}")
+    safe_print()
     
     trainer = ModelTrainer()
     
@@ -262,25 +285,25 @@ def main():
             class_weight=class_weight_dict,  # Улучшенные веса классов
         )
         
-        print(f"\n📊 QuadEnsemble Results:")
-        print(f"  RandomForest CV Accuracy: {metrics['rf_metrics']['cv_mean']:.4f} (+/- {metrics['rf_metrics']['cv_std'] * 2:.4f})")
-        print(f"  XGBoost CV Accuracy: {metrics['xgb_metrics']['cv_mean']:.4f} (+/- {metrics['xgb_metrics']['cv_std'] * 2:.4f})")
-        print(f"  LightGBM CV Accuracy: {metrics['lgb_metrics']['cv_mean']:.4f} (+/- {metrics['lgb_metrics']['cv_std'] * 2:.4f})")
-        print(f"  LSTM Accuracy: {metrics['lstm_metrics'].get('accuracy', 0):.4f}")
-        print(f"\n  Ensemble Weights:")
-        print(f"    RF:   {metrics['rf_weight']:.3f}")
-        print(f"    XGB:  {metrics['xgb_weight']:.3f}")
-        print(f"    LGB:  {metrics['lgb_weight']:.3f}")
-        print(f"    LSTM: {metrics['lstm_weight']:.3f}")
+        safe_print(f"\nQuadEnsemble Results:")
+        safe_print(f"  RandomForest CV Accuracy: {metrics['rf_metrics']['cv_mean']:.4f} (+/- {metrics['rf_metrics']['cv_std'] * 2:.4f})")
+        safe_print(f"  XGBoost CV Accuracy: {metrics['xgb_metrics']['cv_mean']:.4f} (+/- {metrics['xgb_metrics']['cv_std'] * 2:.4f})")
+        safe_print(f"  LightGBM CV Accuracy: {metrics['lgb_metrics']['cv_mean']:.4f} (+/- {metrics['lgb_metrics']['cv_std'] * 2:.4f})")
+        safe_print(f"  LSTM Accuracy: {metrics['lstm_metrics'].get('accuracy', 0):.4f}")
+        safe_print(f"\n  Ensemble Weights:")
+        safe_print(f"    RF:   {metrics['rf_weight']:.3f}")
+        safe_print(f"    XGB:  {metrics['xgb_weight']:.3f}")
+        safe_print(f"    LGB:  {metrics['lgb_weight']:.3f}")
+        safe_print(f"    LSTM: {metrics['lstm_weight']:.3f}")
         
     except Exception as e:
-        print(f"❌ ERROR during training: {e}")
+        safe_print(f"ERROR during training: {e}")
         import traceback
         traceback.print_exc()
         return
     
     # === Шаг 6: Сохранение модели ===
-    print(f"\n[Step 6] Saving model...")
+    safe_print(f"\n[Step 6] Saving model...")
     model_filename = f"quad_ensemble_{args.symbol}_{args.interval.replace('m', '')}_{mode_suffix}.pkl"
     
     try:
@@ -295,16 +318,16 @@ def main():
             model_type="quad_ensemble",
         )
         
-        print(f"✅ Model saved: {model_filename}")
-        print(f"\n🎉 Training completed successfully!")
-        print(f"\n💡 Next steps:")
-        print(f"   1. Test the model: python -m bot.ml.diagnose_model ml_models/{model_filename}")
-        print(f"   2. Backtest: python backtest_ml_strategy.py --model ml_models/{model_filename} --symbol {args.symbol} --days 30")
-        print(f"   3. Use in live trading: Enable ML strategy in config")
-        print(f"   4. Compare with other models: Check backtest results")
+        safe_print(f"OK: Model saved: {model_filename}")
+        safe_print(f"\nSUCCESS: Training completed successfully!")
+        safe_print(f"\nNext steps:")
+        safe_print(f"   1. Test the model: python -m bot.ml.diagnose_model ml_models/{model_filename}")
+        safe_print(f"   2. Backtest: python backtest_ml_strategy.py --model ml_models/{model_filename} --symbol {args.symbol} --days 30")
+        safe_print(f"   3. Use in live trading: Enable ML strategy in config")
+        safe_print(f"   4. Compare with other models: Check backtest results")
         
     except Exception as e:
-        print(f"❌ ERROR saving model: {e}")
+        safe_print(f"ERROR saving model: {e}")
         import traceback
         traceback.print_exc()
 

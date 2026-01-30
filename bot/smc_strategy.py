@@ -17,6 +17,9 @@ import pandas as pd
 
 from bot.strategy import Action, Signal
 
+# Глобальный словарь для отслеживания последних сигналов по символам
+_last_signal_times = {}
+
 
 @dataclass
 class SMCZone:
@@ -31,22 +34,51 @@ class SMCZone:
 
 class SMCStrategy:
     """Класс стратегии Smart Money Concepts."""
-    
+
     def __init__(self, params):
         self.params = params
+
+    def _should_generate_signal(self, symbol: str, current_timestamp: pd.Timestamp) -> bool:
+        """
+        Проверяет, можно ли генерировать сигнал для данного символа в текущий момент времени.
+        Сигналы генерируются только на закрытых свечах каждые 15 минут.
+        """
+        global _last_signal_times
+
+        # 1. Проверка на 15-минутный интервал (0, 15, 30, 45 минут)
+        if current_timestamp.minute % 15 != 0:
+            return False
+
+        # 2. Проверка, что в этом 15-минутном блоке сигнала еще не было
+        current_bucket = current_timestamp.replace(second=0, microsecond=0)
+        
+        last_signal_time = _last_signal_times.get(symbol)
+        if last_signal_time is not None:
+            if isinstance(last_signal_time, pd.Timestamp):
+                last_bucket = last_signal_time.replace(second=0, microsecond=0)
+            else:
+                last_bucket = pd.to_datetime(last_signal_time).replace(second=0, microsecond=0)
+                
+            if last_bucket == current_bucket:
+                return False
+
+        return True
 
     def get_signals(self, df: pd.DataFrame, symbol: str = "Unknown") -> List[Signal]:
         """
         Основной метод получения сигналов.
-        
-        Args:
-            df: DataFrame с данными OHLCV
-            symbol: Торговая пара для логирования
-            
-        Returns:
-            Список сигналов SMC
         """
         if len(df) < 200:  # Минимум для EMA 200
+            return []
+
+        # Получаем timestamp последней свечи для фильтрации
+        last_row = df.iloc[-1]
+        last_ts = last_row.get('timestamp', last_row.name)
+        if not isinstance(last_ts, pd.Timestamp):
+            last_ts = pd.to_datetime(last_ts)
+
+        # Проверка 15-минутного фильтра
+        if not self._should_generate_signal(symbol, last_ts):
             return []
 
         # 1. Подготовка данных в NumPy для скорости
@@ -66,13 +98,6 @@ class SMCStrategy:
         ema_200 = df['close'].ewm(span=200, adjust=False).mean().values
         
         current_idx = len(df) - 1
-        last_row = df.iloc[-1]
-        
-        # Безопасно получаем timestamp последней свечи
-        last_ts = last_row.get('timestamp', last_row.name)
-        if not isinstance(last_ts, pd.Timestamp):
-            last_ts = pd.to_datetime(last_ts)
-            
         close_price = closes[current_idx]
         curr_ema = ema_200[current_idx]
         
@@ -182,6 +207,10 @@ class SMCStrategy:
                 print(f"         - Mitigated: {stats['mitigated']}")
                 print(f"         - Session blocked: {stats['session_filter_blocked']}")
                 print(f"         - No touch: {stats['no_touch']}")
+
+        if signals:
+            global _last_signal_times
+            _last_signal_times[symbol] = last_ts
 
         return signals
 

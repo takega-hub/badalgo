@@ -1,0 +1,36 @@
+================================================================================
+ML STRATEGY BACKTEST DETAILED REPORT
+================================================================================
+
+Model: triple_ensemble_BTCUSDT_15_mtf
+Symbol: BTCUSDT
+Date: 2026-01-30 17:57:46
+Days Back: 3
+
+SUMMARY METRICS:
+----------------------------------------
+Total PnL: $115.07 (+11.51%)
+Win Rate: 100.00%
+Profit Factor: 0.00
+Max Drawdown: 0.00%
+Sharpe Ratio: 39.84
+Total Trades: 2
+
+DETAILED TRADES:
+----------------------------------------
+
+Trade #1:
+  Entry: 2026-01-29 23:30:00 @ $84634.50 (SHORT)
+  Exit: 2026-01-30 01:30:00 @ $81981.30 (TP)
+  PnL: $30.15 (+31.35%)
+  Confidence: 17.77%
+  SL: $93097.95, TP: $83111.08
+  Reason: ml_SHORT_сила_слабое_17%_TP_1.80%_SL_0.80%
+
+Trade #2:
+  Entry: 2026-01-30 02:00:00 @ $81857.70 (LONG)
+  Exit: 2026-01-30 14:45:00 @ $82961.40 (END_OF_BACKTEST)
+  PnL: $84.92 (+13.48%)
+  Confidence: 37.87%
+  SL: $80638.02, TP: $84599.93
+  Reason: ml_LONG_сила_слабое_37%_TP_3.35%_SL_1.49%
