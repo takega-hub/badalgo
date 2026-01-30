@@ -818,6 +818,27 @@
                 </div>
                 
                 <div id="strategy-settings-container">
+                    <!-- ML Model Selection for this symbol -->
+                    <div style="margin-bottom: 20px; padding: 15px; background: rgba(153, 51, 255, 0.1); border: 1px solid #9933ff; border-radius: 8px;">
+                        <h3 style="color: #9933ff; margin-top: 0; margin-bottom: 10px; font-size: 1.1em;">🤖 ML Model for this Symbol</h3>
+                        <div class="form-group">
+                            <label style="color: #aaa; font-size: 0.9em;">Model Type:</label>
+                            <select id="symbol-ml-model-type" style="width: 100%; padding: 8px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;">
+                                <option value="">Use Global Preference</option>
+                                <option value="rf">Random Forest</option>
+                                <option value="xgb">XGBoost</option>
+                                <option value="ensemble">Ensemble (RF + XGBoost)</option>
+                                <option value="triple_ensemble">TripleEnsemble (RF + XGBoost + LightGBM)</option>
+                                <option value="quad_ensemble">QuadEnsemble (RF + XGBoost + LightGBM + LSTM)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="symbol-ml-mtf-enabled" style="margin-right: 10px; width: 18px; height: 18px;">
+                                <span style="color: #aaa; font-size: 0.9em;">Enable MTF (Multi-Timeframe) for this symbol</span>
+                            </label>
+                        </div>
+                    </div>
                 
                 <div class="stat-item" style="margin-bottom: 15px;">
                     <label style="display: flex; align-items: center; cursor: pointer;">
@@ -4134,6 +4155,12 @@
                     if (breakoutTrendHybridCheckbox) breakoutTrendHybridCheckbox.checked = settings.enable_breakout_trend_hybrid_strategy || false;
                     if (amtOfCheckbox) amtOfCheckbox.checked = settings.enable_amt_of_strategy || false;
                     if (strategyPrioritySelect) strategyPrioritySelect.value = settings.strategy_priority || 'trend';
+                    
+                    // Обновляем ML настройки символа
+                    const symbolModelTypeSelect = document.getElementById('symbol-ml-model-type');
+                    const symbolMtfCheckbox = document.getElementById('symbol-ml-mtf-enabled');
+                    if (symbolModelTypeSelect) symbolModelTypeSelect.value = settings.ml_model_type || '';
+                    if (symbolMtfCheckbox) symbolMtfCheckbox.checked = settings.ml_mtf_enabled === true;
                 }
             } catch (error) {
                 console.error('Error loading strategy settings for symbol:', error);
@@ -4857,6 +4884,8 @@
                 const vboCheckbox = document.getElementById('enable-vbo-strategy');
                 const breakoutTrendHybridCheckbox = document.getElementById('enable-breakout-trend-hybrid-strategy');
                 const amtOfCheckbox = document.getElementById('enable-amt-of-strategy');
+                const symbolModelTypeSelect = document.getElementById('symbol-ml-model-type');
+                const symbolMtfCheckbox = document.getElementById('symbol-ml-mtf-enabled');
                 
                 // Проверяем наличие элементов
                 const missingElements = [];
@@ -4884,7 +4913,9 @@
                     enable_vbo_strategy: vboCheckbox ? vboCheckbox.checked : false,
                     enable_breakout_trend_hybrid_strategy: breakoutTrendHybridCheckbox ? breakoutTrendHybridCheckbox.checked : false,
                     enable_amt_of_strategy: amtOfCheckbox ? amtOfCheckbox.checked : false,
-                        strategy_priority: selectedPriority
+                    strategy_priority: selectedPriority,
+                    ml_model_type: symbolModelTypeSelect ? (symbolModelTypeSelect.value || null) : null,
+                    ml_mtf_enabled: symbolMtfCheckbox ? symbolMtfCheckbox.checked : null
                 };
                 
                 const response = await fetch(`/api/settings/symbol/${selectedSymbol}`, {
