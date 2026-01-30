@@ -742,6 +742,8 @@ def load_settings() -> AppSettings:
     ml_min_strength = os.getenv("ML_MIN_SIGNAL_STRENGTH", "").strip()
     ml_stability = os.getenv("ML_STABILITY_FILTER", "").strip()
     ml_mtf_enabled_env = os.getenv("ML_MTF_ENABLED", "").strip()
+    if not ml_mtf_enabled_env:
+        ml_mtf_enabled_env = cleaned_env_values.get("ML_MTF_ENABLED", "").strip()
     
     # Применяем настройки из .env ПЕРЕД автоматическим поиском модели
     if ml_strategy_type:

@@ -302,7 +302,7 @@ def _save_settings_to_env(settings: AppSettings):
         env_dict['ML_MIN_SIGNAL_STRENGTH'] = str(settings.ml_min_signal_strength)
         env_dict['ML_STABILITY_FILTER'] = str(settings.ml_stability_filter).lower()
         # Флаг MTF для ML
-        env_dict['ML_MTF_ENABLED'] = '1' if getattr(settings, 'ml_mtf_enabled', False) else '0'
+        env_dict['ML_MTF_ENABLED'] = str(settings.ml_mtf_enabled).lower()
         if settings.ml_model_type_for_all:
             env_dict['ML_MODEL_TYPE_FOR_ALL'] = str(settings.ml_model_type_for_all).lower()
         else:
