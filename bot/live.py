@@ -921,7 +921,7 @@ def _calculate_tp_sl_for_signal(
             # с соотношением риска 2-3:1 в пределах этих границ
             # ВАЖНО: Проценты интерпретируются как проценты от МАРЖИ с учетом плеча!
             max_tp_pct_margin = settings.risk.take_profit_pct  # Максимальный TP от маржи (например, 0.30 для 30%)
-            max_sl_pct_margin = settings.risk.stop_loss_pct    # Максимальный SL от маржи (например, 0.15 для 15%)
+            max_sl_pct_margin = settings.risk.stop_loss_pct    # Максимальный SL от маржи (например, 0.25 минутдля 15%)
             
             # КРИТИЧЕСКАЯ ПРОВЕРКА: Если проценты > 1.0 (100%), вероятно они не разделены на 100
             if max_tp_pct_margin > 1.0:
@@ -3433,7 +3433,7 @@ def _sync_closed_positions_from_bybit(
                 # Попытка 2: Ищем в истории исполненных ордеров
                 if not order_id:
                     try:
-                        exec_start_time = int((exit_time - timedelta(minutes=15)).timestamp() * 1000)
+                        exec_start_time = int((exit_time - timedelta(minutes=25)).timestamp() * 1000)
                         exec_end_time = int((exit_time + timedelta(minutes=5)).timestamp() * 1000)
                         exec_resp = client.get_execution_list(
                             symbol=symbol,
@@ -3893,7 +3893,7 @@ def run_live_from_api(
                     if "_" in model_filename:
                         parts = model_filename.replace(".pkl", "").split("_")
                         symbol_match = False
-                        # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_15 или quad_ensemble_SYMBOL_15
+                        # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_25 минутили quad_ensemble_SYMBOL_15
                         if len(parts) >= 3 and (parts[0] == "triple" or parts[0] == "quad"):
                             if parts[2] == symbol:
                                 symbol_match = True
@@ -3921,7 +3921,7 @@ def run_live_from_api(
                 model_filename = Path(current_settings.ml_model_path).name
                 if "_" in model_filename:
                     parts = model_filename.replace(".pkl", "").split("_")
-                    # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_15 или quad_ensemble_SYMBOL_15
+                    # Для triple_ensemble и quad_ensemble: формат triple_ensemble_SYMBOL_25 минутили quad_ensemble_SYMBOL_15
                     if len(parts) >= 3 and (parts[0] == "triple" or parts[0] == "quad"):
                         if parts[2] == symbol:
                             model_needs_update = False  # Модель соответствует символу
@@ -4745,12 +4745,12 @@ def run_live_from_api(
                                     age_hours = time_diff_seconds / 3600
                                     
                                     # ВАЖНО: Проверяем свежесть сигнала перед тем как считать его соответствующим последней свече
-                                    # Сигнал должен быть не старше 15 минут от последней свечи, чтобы считаться свежим
-                                    MAX_FRESH_AGE_SECONDS = 900  # 15 минут
+                                    # Сигнал должен быть не старше 25 минут от последней свечи, чтобы считаться свежим
+                                    MAX_FRESH_AGE_SECONDS = 1500  # 25 минут
                                     is_fresh_by_age = time_diff_seconds <= MAX_FRESH_AGE_SECONDS
                                     
                                     if price_match and is_fresh_by_age:
-                                        # Цена совпадает и сигнал свежий (не старше 15 минут) - это сигнал с последней свечи
+                                        # Цена совпадает и сигнал свежий (не старше 25 минут) - это сигнал с последней свечи
                                         # Обновим timestamp на время последней свечи (не на текущее время!)
                                         is_last_row_signal = True
                                         matches_last_candle = True
@@ -4765,14 +4765,14 @@ def run_live_from_api(
                                     
                                     
                             
-                            # ВАЖНО: Добавляем только свежие сигналы (не старше 15 минут от последней свечи)
+                            # ВАЖНО: Добавляем только свежие сигналы (не старше 25 минут от последней свечи)
                             # Это предотвращает обработку старых сигналов из исторических данных
-                            MAX_SIGNAL_AGE_SECONDS = 900  # 15 минут
+                            MAX_SIGNAL_AGE_SECONDS = 1500  # 25 минут
                             
                             # Сигнал считается свежим если:
                             # 1. Соответствует последней свече по времени (в пределах 1 минуты) ИЛИ
-                            # 2. Соответствует последней свече по цене И не старше 15 минут ИЛИ
-                            # 3. Не старше 15 минут от последней свечи
+                            # 2. Соответствует последней свече по цене И не старше 25 минут ИЛИ
+                            # 3. Не старше 25 минут от последней свечи
                             is_fresh = (
                                 matches_last_candle or 
                                 (is_last_row_signal and time_diff_seconds <= MAX_SIGNAL_AGE_SECONDS) or
@@ -5179,7 +5179,8 @@ def run_live_from_api(
                                 sig_ts_py = sig_ts_utc.to_pydatetime()
                                 
                                 time_diff_seconds = abs((sig_ts_py - last_candle_time).total_seconds())
-                                if time_diff_seconds <= 60:
+                                # Увеличиваем допуск до 25 минут (1500с), чтобы не пропускать сигналы предыдущих свечей
+                                if time_diff_seconds <= 1500:
                                     updated_ts = datetime.now(timezone.utc)
                                     # updated_ts уже tz-aware (UTC), поэтому НЕ используем tz_localize
                                     sig.timestamp = pd.Timestamp(updated_ts)
@@ -5325,7 +5326,7 @@ def run_live_from_api(
                         
                         hist_ts_py = hist_ts.to_pydatetime()
                         
-                        # Проверяем возраст сигнала (должен быть не старше 15 минут)
+                        # Проверяем возраст сигнала (должен быть не старше 25 минут)
                         # ВАЖНО: Все сравнения выполняем в MSK для единообразия
                         import pytz
                         msk_tz = pytz.timezone('Europe/Moscow')
@@ -5344,8 +5345,9 @@ def run_live_from_api(
                                 symbol
                             )
                         
-                        if age_from_now_minutes <= 25:
-                                # Сигнал свежий (не старше 15 минут) - проверяем, что он actionable (не HOLD)
+                        # Увеличиваем порог до 40 минут, чтобы дать запас для 15м свечей (15м свеча + 25м запас)
+                        if age_from_now_minutes <= 40:
+                                # Сигнал свежий - проверяем, что он actionable (не HOLD)
                                 hist_action = hist_signal.get("action", "").upper()
                                 if hist_action in ("LONG", "SHORT"):
                                     hist_price = hist_signal.get("price", 0)
@@ -5543,7 +5545,7 @@ def run_live_from_api(
             ]
             # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ml_signals_only должен формироваться из ml_actionable,
             # а не из all_signals, чтобы исключить слабые сигналы, отфильтрованные по confidence
-            ml_signals_only = ml_actionable.copy() if ml_actionable else []
+            ml_signals_only = [s for s in all_signals if s.reason.lower().startswith('ml_') and s.action in (Action.LONG, Action.SHORT)]
             momentum_signals_only = [
                 s for s in all_signals
                 if s.reason.startswith("momentum_") and s.action in (StrategyAction.LONG, StrategyAction.SHORT)
@@ -5572,9 +5574,9 @@ def run_live_from_api(
             # Объединяем старые стратегии для обратной совместимости
             main_strategy_signals = trend_signals_only + flat_signals_only
             
-            # Функция для проверки, является ли сигнал свежим (строгая проверка: не старше 15 минут от текущего времени)
+            # Функция для проверки, является ли сигнал свежим (строгая проверка: не старше 25 минут от текущего времени)
             def is_signal_fresh(sig, df_ready):
-                """Проверяет, является ли сигнал свежим (не старше 15 минут от текущего времени или соответствует последней свече).
+                """Проверяет, является ли сигнал свежим (не старше 25 минут от текущего времени или соответствует последней свече).
 
                 ВАЖНО: Все сравнения выполняются в MSK для единообразия, независимо от часового пояса сервера.
                 Это гарантирует корректную работу с сигналами из истории, которые хранятся в MSK.
@@ -5627,10 +5629,11 @@ def run_live_from_api(
                     if abs((signal_time_msk - last_candle_time_msk).total_seconds()) <= 60 or abs((signal_time_msk - last_candle_time_msk).total_seconds()) <= 960:
                         return True
 
-                    # 2) Если сигнал не старше 15 минут относительно текущего времени — он свежий
+                    # 2) Если сигнал не старше 25 минут относительно текущего времени — он свежий
                     # Сравниваем в MSK
                     time_diff_from_now = abs((current_time_msk - signal_time_msk).total_seconds())
-                    if time_diff_from_now <= 1500:  # 15 минут = 900 секунд
+                    # Увеличиваем порог до 40 минут (2400с), чтобы дать запас для 15м свечей
+                    if time_diff_from_now <= 2400:  # 40 минут
                         return True
 
                     return False
@@ -5641,7 +5644,7 @@ def run_live_from_api(
                     # В случае ошибки считаем сигнал не свежим для строгости
                     return False
             
-            # Фильтруем только свежие сигналы (не старше 15 минут = ~1 свеча на 15m таймфрейме)
+            # Фильтруем только свежие сигналы (не старше 25 минут = ~1 свеча на 15m таймфрейме)
             # Сигналы могут быть исполнены только один раз и только если они свежие
             fresh_main_signals = [s for s in main_strategy_signals if is_signal_fresh(s, df_ready)]
             fresh_ml_signals = [s for s in ml_signals_only if is_signal_fresh(s, df_ready)]
@@ -5835,7 +5838,8 @@ def run_live_from_api(
                             ts_log_msk = pd.Timestamp(ts_log).tz_convert(msk_tz).to_pydatetime()
                         
                         age_from_now_minutes = abs((current_time_msk - ts_log_msk).total_seconds()) / 60
-                        is_fresh_after_save = age_from_now_minutes <= 25
+                        # Используем тот же порог 40 минут
+                        is_fresh_after_save = age_from_now_minutes <= 40
                     except:
                         pass
                     
@@ -6457,7 +6461,7 @@ def run_live_from_api(
             
             # Сначала проверяем свежесть сигналов из объектов (уже обновленных через update_signal_object_timestamp_if_fresh)
             if available_signals:
-                # Проверяем, есть ли свежие сигналы (в пределах 15 минут)
+                # Проверяем, есть ли свежие сигналы (в пределах 25 минут)
                 for name, s in available_signals:
                     if is_signal_fresh(s, df_ready):
                         # Дополнительно проверяем возраст от текущего времени (в MSK для единообразия)
@@ -6705,7 +6709,7 @@ def run_live_from_api(
                             # Если нет свежих сигналов - НЕ выбираем старые сигналы, ждем свежие
                             sig = None
                             # Детальное логирование для диагностики проблемы со свежестью
-                            _log(f"⏳ Priority mode (no position): No fresh signals available. Waiting for fresh signals (max age: 15 minutes)...", symbol)
+                            _log(f"⏳ Priority mode (no position): No fresh signals available. Waiting for fresh signals (max age: 25 minutes)...", symbol)
                             _log(f"📊 Signal freshness diagnostic for {symbol}:", symbol)
                             
                             # Логируем информацию о последней свече
@@ -6773,7 +6777,7 @@ def run_live_from_api(
                             
                             print(
                                 "[live] ⏳ Priority mode (no position): No fresh signals available. "
-                                "Waiting for fresh signals (max age: 15 minutes)..."
+                                "Waiting for fresh signals (max age: 25 minutes)..."
                             )
                         else:
                             sig = None
@@ -6823,7 +6827,7 @@ def run_live_from_api(
                                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                         priority_sig_fresh = age_from_now_minutes <= 25
                                         
-                                        # КРИТИЧЕСКИ ВАЖНО: Все сигналы проверяются строго - не старше 15 минут
+                                        # КРИТИЧЕСКИ ВАЖНО: Все сигналы проверяются строго - не старше 25 минут
                                         # Не делаем исключений для противоположных сигналов
                                         priority_sig_acceptable = priority_sig_fresh
                                         is_opposite_direction = (
@@ -6837,7 +6841,7 @@ def run_live_from_api(
                                     print(f"[live]     ⚠️ Error checking freshness: {e}")
                             
                             # Если есть свежий сигнал от приоритетной стратегии - используем его (может закрыть/развернуть позицию)
-                            # КРИТИЧЕСКИ ВАЖНО: Только свежие сигналы (не старше 15 минут)
+                            # КРИТИЧЕСКИ ВАЖНО: Только свежие сигналы (не старше 25 минут)
                             if priority_sig and priority_sig_fresh:
                                 sig = priority_sig
                             else:
@@ -6878,7 +6882,7 @@ def run_live_from_api(
                                                     signal_ts = signal_ts.tz_convert('UTC')
                                                 current_time_utc = datetime.now(timezone.utc)
                                                 same_strategy_sig_age = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
-                                                same_strategy_sig_fresh = same_strategy_sig_age <= 15
+                                                same_strategy_sig_fresh = same_strategy_sig_age <= 25
                                         except Exception as e:
                                             print(f"[live]     ⚠️ Error checking same strategy signal freshness: {e}")
                             
@@ -6902,7 +6906,7 @@ def run_live_from_api(
                                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                                         priority_sig_fresh = age_from_now_minutes <= 25
                                         
-                                        # КРИТИЧЕСКИ ВАЖНО: Все сигналы проверяются строго - не старше 15 минут
+                                        # КРИТИЧЕСКИ ВАЖНО: Все сигналы проверяются строго - не старше 25 минут
                                         # Не делаем исключений для противоположных сигналов
                                         priority_sig_acceptable = priority_sig_fresh
                                         is_opposite_direction = (
@@ -6977,14 +6981,14 @@ def run_live_from_api(
             # --- КОНЕЦ ВЫБОРА СИГНАЛА ---
 
             # 6. Финальная проверка свежести (предотвращаем торговлю на «протухших» данных)
-            # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 15 минут)
+            # КРИТИЧЕСКИ ВАЖНО: Бот открывает позиции ТОЛЬКО по свежим сигналам (не старше 25 минут)
             # Если свежих сигналов нет - бот ждет новых сигналов, НЕ открывает позиции по старым
             ts = sig.timestamp
             is_fresh_check = is_signal_fresh(sig, df_ready)
             strategy_type = get_strategy_type_from_signal(sig.reason)
             
-            # СТРОГИЙ критерий: ТОЛЬКО сигналы не старше 15 минут от текущего времени
-            max_age_minutes = 25  # 15 минут - максимальный возраст сигнала для открытия позиции
+            # СТРОГИЙ критерий: ТОЛЬКО сигналы не старше 25 минут от текущего времени
+            max_age_minutes = 40  # Увеличено до 40 минут
             
             # Проверяем возраст сигнала от текущего времени
             if not is_fresh_check:
@@ -7005,12 +7009,12 @@ def run_live_from_api(
                         age_from_now_minutes = abs((current_time_utc - signal_ts.to_pydatetime()).total_seconds()) / 60
                         age_from_now_hours = age_from_now_minutes / 60
                         
-                        # ВСЕ сигналы: если сигнал в пределах 15 минут от текущего времени - обрабатываем немедленно
-                        if age_from_now_minutes <= 25:
+                        # ВСЕ сигналы: если сигнал в пределах 40 минут от текущего времени - обрабатываем немедленно
+                        if age_from_now_minutes <= 40:
                             print(f"[live] ✅ {strategy_name} signal is FRESH (age from now: {age_from_now_minutes:.1f} min) - processing IMMEDIATELY")
                             is_fresh_check = True  # Помечаем как свежий для дальнейшей обработки
                         else:
-                            # Сигнал старше 15 минут - ФИЛЬТРУЕМ (не открываем позицию)
+                            # Сигнал старше 40 минут - ФИЛЬТРУЕМ (не открываем позицию)
                             should_filter = True
                             if age_from_now_hours >= 1:
                                 print(f"[live] ⚠️ FILTERED: {strategy_name} signal {sig.action.value} @ ${sig.price:.2f} - too old (timestamp: {ts_str}, age: {age_from_now_hours:.1f} hours, max: {max_age_minutes} min)")
@@ -7027,12 +7031,12 @@ def run_live_from_api(
                 if should_filter:
                     if bot_state:
                         bot_state["current_status"] = "Running"
-                        bot_state["last_action"] = "Waiting for fresh signal (max age: 15 min)..."
+                        bot_state["last_action"] = "Waiting for fresh signal (max age: 25 min)..."
                         bot_state["last_action_time"] = datetime.now(timezone.utc).isoformat()
                     update_worker_status(
                         symbol,
                         current_status="Running",
-                        last_action="Waiting for fresh signal (max age: 15 min)...",
+                        last_action="Waiting for fresh signal (max age: 25 min)...",
                     )
                     # Используем короткую задержку (5 секунд) вместо полного live_poll_seconds,
                     # чтобы воркер не считался "мертвым" во время ожидания свежего сигнала
@@ -7110,7 +7114,7 @@ def run_live_from_api(
             
             print(f"[live] ✅ Signal passed processed check (ID: {signal_id}), proceeding to open position...")
             
-            # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 15 минут от текущего времени
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Не обрабатываем сигналы старше 40 минут от текущего времени
             # ПРИМЕЧАНИЕ: Эта проверка дублирует логику выше, но оставлена для дополнительной безопасности
             # Если сигнал уже прошел проверку выше (is_fresh_check = True), то эта проверка должна пропустить его
             signal_age_minutes = None
@@ -7148,13 +7152,13 @@ def run_live_from_api(
                         signal_age_minutes = age_delta.total_seconds() / 60
                         signal_age_hours = signal_age_minutes / 60
                         
-                        # СТРОГАЯ проверка: ТОЛЬКО сигналы в пределах 15 минут
+                        # СТРОГАЯ проверка: ТОЛЬКО сигналы в пределах 40 минут
                         should_filter_by_age = False
-                        if signal_age_minutes <= 25:
-                            # Сигнал свежий (в пределах 15 минут)
+                        if signal_age_minutes <= 40:
+                            # Сигнал свежий (в пределах 40 минут)
                             print(f"[live] ✅ Signal age check passed: {signal_age_minutes:.1f} minutes (within {max_age_minutes} min limit)")
                         else:
-                            # Сигнал старше 15 минут - ФИЛЬТРУЕМ (не открываем позицию)
+                            # Сигнал старше 40 минут - ФИЛЬТРУЕМ (не открываем позицию)
                             should_filter_by_age = True
                             strategy_name = get_strategy_type_from_signal(sig.reason).upper()
                             ts_str = ts.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ts, 'strftime') else str(ts)
