@@ -362,7 +362,7 @@ class MultiSymbolManager:
             # primary_symbol остается из self.settings (глобальный PRIMARY_SYMBOL)
         
         # Автоматически находим ML модель для символа, если ML стратегия включена
-                # ВАЖНО: Всегда переопределяем ml_model_path для каждого символа, даже если он уже установлен
+        # ВАЖНО: Всегда переопределяем ml_model_path для каждого символа, даже если он уже установлен
         if symbol_settings.enable_ml_strategy:
             import pathlib
             models_dir = pathlib.Path(__file__).parent.parent / "ml_models"
@@ -394,8 +394,6 @@ class MultiSymbolManager:
                 # Если ключ кэша изменился, очищаем кэш для этого символа
                 if symbol in self._model_cache_keys and self._model_cache_keys.get(symbol) != cache_key:
                     print(f"[MultiSymbol] 🔄 Model selection changed for {symbol}, clearing cache")
-                    print(f"[MultiSymbol]    Old key: {self._model_cache_keys.get(symbol)}")
-                    print(f"[MultiSymbol]    New key: {cache_key}")
                     if symbol in self._model_cache:
                         del self._model_cache[symbol]
                 
@@ -1016,14 +1014,13 @@ class MultiSymbolManager:
                 sys.stdout.flush()
                 
                 # Обновляем настройки для всех существующих воркеров
-                # ОПТИМИЗАЦИЯ: Пропускаем обновление настроек для существующих воркеров, если они не изменились
-                # Это значительно ускоряет update_settings() и предотвращает блокировку Flask
-                print(f"[MultiSymbol] ⚙️  Skipping settings update for existing workers (will be updated when needed)...")
+                # ОПТИМИЗАЦИЯ: Обновляем настройки воркеров, чтобы они подхватили новые модели
+                print(f"[MultiSymbol] ⚙️  Updating settings for existing workers...")
+                for symbol, worker in self.workers.items():
+                    if symbol in self.settings.active_symbols:
+                        worker.settings = self._create_settings_for_symbol(symbol)
+                        print(f"[MultiSymbol] ⚙️  Updated settings for {symbol} worker")
                 sys.stdout.flush()
-                
-                # ВАЖНО: Не обновляем настройки существующих воркеров здесь, чтобы не блокировать Flask
-                # Настройки будут обновлены при следующем обращении или при запуске воркеров
-                # Это значительно ускоряет update_settings() и предотвращает блокировку
                 
                 # Инициализируем воркеры для новых активных символов
                 print(f"[MultiSymbol] ⚙️  Initializing workers for active symbols: {self.settings.active_symbols}")
