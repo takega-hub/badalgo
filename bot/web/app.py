@@ -2325,73 +2325,51 @@ def api_ml_models_all_pairs():
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         models_info = {}
         
-        # Получаем предпочтение типа модели и флаг MTF
-        model_type_preference = getattr(settings, 'ml_model_type_for_all', None)
-        ml_mtf_enabled = getattr(settings, 'ml_mtf_enabled', False)
+        # Получаем глобальные предпочтения
+        global_model_type_preference = getattr(settings, 'ml_model_type_for_all', None)
+        global_ml_mtf_enabled = getattr(settings, 'ml_mtf_enabled', False)
         
         models_dir = Path(__file__).parent.parent.parent / "ml_models"
         trainer = ModelTrainer()
         
         for symbol in symbols:
+            # Получаем настройки для конкретного символа
+            symbol_settings = settings.get_strategy_settings_for_symbol(symbol)
+            
+            # Приоритет: настройки символа > глобальные настройки
+            model_type_preference = symbol_settings.ml_model_type if symbol_settings.ml_model_type else global_model_type_preference
+            ml_mtf_enabled = symbol_settings.ml_mtf_enabled if symbol_settings.ml_mtf_enabled is not None else global_ml_mtf_enabled
+            
             # Ищем модель для символа
             found_model = None
             
-            # Сначала проверяем, есть ли явно выбранная модель в settings.ml_model_path
-            # и соответствует ли она текущему символу И типу модели (если ml_model_type_for_all задан)
-            if settings.ml_model_path:
-                model_path_obj = Path(settings.ml_model_path)
-                if model_path_obj.exists():
-                    # Извлекаем символ и тип модели из имени файла модели
-                    model_filename = model_path_obj.name
-                    # Формат: ensemble_BTCUSDT_15.pkl или rf_ETHUSDT_15.pkl
-                    if "_" in model_filename:
-                        parts = model_filename.replace('.pkl', '').split('_')
-                        if len(parts) >= 2 and parts[1] == symbol:
-                            # Модель соответствует текущему символу
-                            model_type_from_filename = parts[0].lower()
-                            if model_type_preference:
-                                # Если задан глобальный тип модели, проверяем соответствие
-                                if model_type_from_filename == model_type_preference.lower():
-                                    found_model = str(model_path_obj)
-                                    print(f"[web] Using explicitly selected model for {symbol}: {found_model} (matches type: {model_type_preference})")
-                                else:
-                                    # Явно выбранная модель не соответствует глобальному типу - игнорируем
-                                    print(
-                                        f"[web] Explicit model for {symbol} "
-                                        f"({model_type_from_filename}) doesn't match global preference "
-                                        f"({model_type_preference}), ignoring it"
-                                    )
-                            else:
-                                # Глобальный тип не задан - используем явно выбранную модель
-                                found_model = str(model_path_obj)
-                                print(f"[web] Using explicitly selected model for {symbol}: {found_model}")
+            # Если для символа задан конкретный тип модели, ищем его
+            if model_type_preference:
+                # Ищем модель указанного типа
+                pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                for model_file in sorted(models_dir.glob(pattern), reverse=True):
+                    if model_file.is_file():
+                        found_model = str(model_file)
+                        break
             
-            # Если явно выбранная модель не найдена или не соответствует символу/типу, ищем автоматически
+            # Если модель не найдена по предпочтению, пробуем автоматический выбор
             if not found_model:
-                if model_type_preference:
-                    # Ищем модель указанного типа
-                    pattern = f"{model_type_preference}_{symbol}_*.pkl"
+                # Автоматический выбор:
+                # Если включен MTF-режим, сначала пробуем quad_ensemble / triple_ensemble,
+                # иначе используем старый приоритет ensemble > rf > xgb
+                if ml_mtf_enabled:
+                    auto_types = ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]
+                else:
+                    auto_types = ["ensemble", "rf", "xgb"]
+                
+                for model_type in auto_types:
+                    pattern = f"{model_type}_{symbol}_*.pkl"
                     for model_file in sorted(models_dir.glob(pattern), reverse=True):
                         if model_file.is_file():
                             found_model = str(model_file)
                             break
-                else:
-                    # Автоматический выбор:
-                    # Если включен MTF-режим, сначала пробуем quad_ensemble / triple_ensemble,
-                    # иначе используем старый приоритет ensemble > rf > xgb
-                    if ml_mtf_enabled:
-                        auto_types = ["quad_ensemble", "triple_ensemble", "ensemble", "rf", "xgb"]
-                    else:
-                        auto_types = ["ensemble", "rf", "xgb"]
-                    
-                    for model_type in auto_types:
-                        pattern = f"{model_type}_{symbol}_*.pkl"
-                        for model_file in sorted(models_dir.glob(pattern), reverse=True):
-                            if model_file.is_file():
-                                found_model = str(model_file)
-                                break
-                        if found_model:
-                            break
+                    if found_model:
+                        break
             
             if found_model:
                 try:
