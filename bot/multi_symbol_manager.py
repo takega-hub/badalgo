@@ -405,7 +405,9 @@ class MultiSymbolManager:
                     
                     # СНАЧАЛА: Проверяем, есть ли явно выбранная модель в settings.ml_model_path
                     # и соответствует ли она текущему символу И типу модели (если ml_model_type_for_all задан)
-                    if self.settings.ml_model_path:
+                    # ВАЖНО: Если для символа задан конкретный тип модели (model_type_preference),
+                    # мы игнорируем глобально выбранную модель, так как она скорее всего от другого символа.
+                    if self.settings.ml_model_path and not getattr(symbol_settings, 'ml_model_type', None):
                         explicit_model_path = pathlib.Path(self.settings.ml_model_path)
                         if explicit_model_path.exists():
                             # Извлекаем символ и тип модели из имени файла
